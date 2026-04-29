@@ -1,33 +1,36 @@
 # Transcriber
 
-Spec workspace for a menu-bar-first macOS meeting recorder/transcriber.
+Menu-bar macOS app that captures meeting audio (mic + system) and produces high-fidelity markdown transcripts via ElevenLabs Scribe v2 or Cohere Transcribe (local).
 
-Core promise:
+> Spec: `docs/SPEC.md` · Open questions: `docs/QUESTIONS.md` · Implementation roadmap: `docs/superpowers/plans/2026-04-29-MASTER-ROADMAP.md`
 
-> Never miss the record of an important meeting.
+## Build
 
-This is not an AI notes app. It is call-capture insurance: when a calendar meeting starts, the app prompts the user, records microphone plus system audio, saves audio by default, transcribes the call, and writes a durable `transcript.md`.
+Requires macOS 15+, Xcode 16, Swift 6.
 
-## Current V1 Contract
+### Library + tests
 
-- Menu-bar-first macOS app.
-- Apple Calendar/EventKit watcher first.
-- Prompt at meeting start.
-- One-click start.
-- Capture microphone and system audio.
-- Default mode: transcribe and save audio.
-- Default engine: ElevenLabs.
-- Record-only product surface. No import flow.
-- No live transcript display.
-- No transcript history UI.
-- Files saved to Finder in one folder per meeting.
-- Every session ends with `transcript.md`, even if transcription fails.
+```bash
+swift build
+swift test
+```
 
-## Key Files
+### App
 
-- [docs/SPEC.md](docs/SPEC.md) - product and technical spec.
-- [docs/DECISIONS.md](docs/DECISIONS.md) - accepted decisions from the planning discussion.
-- [docs/QUESTIONS.md](docs/QUESTIONS.md) - uniquely named open questions.
-- [docs/AGENT_REVIEW_NOTES.md](docs/AGENT_REVIEW_NOTES.md) - synthesized GStack agent recommendations.
-- [docs/QA.md](docs/QA.md) - quality checklist and acceptance criteria.
-- [docs/REFERENCES.md](docs/REFERENCES.md) - useful code/API/product references.
+Open `TranscriberApp/TranscriberApp.xcodeproj` in Xcode and Product → Run.
+
+The first launch will prompt for microphone and screen-recording permissions on later slices once capture is wired up. Bundle identifier is `com.szymonsypniewicz.transcriber`.
+
+The Xcode project is generated from `TranscriberApp/project.yml` via [`xcodegen`](https://github.com/yonaskolb/XcodeGen). The generated `.xcodeproj` is tracked, so you do **not** need `xcodegen` installed to build. If you need to regenerate the project (e.g. after editing `project.yml`):
+
+```bash
+brew install xcodegen
+cd TranscriberApp && xcodegen generate
+```
+
+## Architecture
+
+- `TranscriberCore` — pure-Swift library, no AppKit. All business logic, all unit-tested.
+- `TranscriberApp` — Xcode app target. Thin shell: lifecycle, menu bar, permission flows.
+
+Slices ship from `docs/superpowers/plans/`. See `MASTER-ROADMAP.md` for the slice list.
