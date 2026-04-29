@@ -14,7 +14,10 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
     private let endpoint = URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
 
     public init(apiKey: String, session: URLSession = .shared) {
-        self.apiKey = apiKey
+        // Trim whitespace + newlines so users who store keys via `security
+        // add-generic-password -w` (which preserves trailing newlines from
+        // some shells) don't get confusing 401s or header rejections.
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         self.session = session
     }
 

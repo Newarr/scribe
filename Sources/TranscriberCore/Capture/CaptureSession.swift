@@ -73,18 +73,26 @@ public actor CaptureSession {
         try await micWriter.finalize()
         try await systemWriter.finalize()
         try collector.writeSidecar(to: directory.ptsSidecar)
-        try writeTranscriptStub()
+        // Atomic rename .partial -> .m4a MUST happen before the transcript stub,
+        // so the stub never references files that don't exist yet on disk.
         try directory.finalize()
+        try writeTranscriptStub()
         status = .finalized
         Log.lifecycle.info("Capture finalized")
     }
 
+    /// Writes the placeholder transcript that survives a crash before the cloud engine
+    /// runs. Status is `pending` (matches TranscriptWriter.writePending) so the slice 7
+    /// recovery scan finds both the stub and engine-written pending transcripts under
+    /// one query.
     private nonisolated func writeTranscriptStub() throws {
         let stub = """
         ---
-        status: pending_transcription
-        mic: mic.m4a
-        system: system.m4a
+        schema: transcriber/v1
+        status: pending
+        audio:
+          - mic.m4a
+          - system.m4a
         pts: pts.json
         ---
 
