@@ -48,6 +48,25 @@ public final class CalendarLookup: Sendable {
         return chosen.map(Self.makeEvent(from:))
     }
 
+    /// Fetches every meeting-context event whose [start, end] range overlaps
+    /// the [windowStart, windowEnd] range. Used by `CalendarWatcher` to populate
+    /// the rolling cache in a single EventKit query rather than 291 sampled
+    /// `eventOverlapping` probes (codex slice-6 review P2.1).
+    public func fetchEvents(from windowStart: Date, to windowEnd: Date) -> [CalendarEvent] {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        guard status == .fullAccess || status == .authorized else { return [] }
+
+        let store = EKEventStore()
+        let predicate = store.predicateForEvents(
+            withStart: windowStart,
+            end: windowEnd,
+            calendars: nil
+        )
+        return store.events(matching: predicate)
+            .filter(Self.isMeetingContext)
+            .map(Self.makeEvent(from:))
+    }
+
     /// True if the EKEvent is plausibly a meeting (timed + busy). All-day entries
     /// like birthdays / holidays / OOO and `.free` blockers are excluded so they
     /// don't hijack the recording's context.

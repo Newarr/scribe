@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private let calendar = CalendarLookup()
     private let calendarWatcher = CalendarWatcher()
     private var wakeObserver: NSObjectProtocol?
+    private var calendarChangeObserver: NSObjectProtocol?
 
     private var currentSessionDirectory: SessionDirectory?
     private var currentSessionStartedAt: Date?
@@ -63,6 +64,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
         }
 
+        // Refresh the cache when EventKit posts a store-changed notification
+        // (user added/edited/deleted an event in Calendar.app). Without this
+        // the prompt path would show stale data until the next 60s tick
+        // (codex slice-6 review P2.2).
+        calendarChangeObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { [weak self] in
+                Log.calendar.info("Calendar store changed: forcing refresh")
+                await self?.calendarWatcher.refreshNow()
+            }
+        }
+
         let m = RecordingMenu { [weak self] action in
             Task { @MainActor in await self?.handle(action) }
         }
@@ -105,6 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
+        }
+        if let calendarChangeObserver {
+            NotificationCenter.default.removeObserver(calendarChangeObserver)
+            self.calendarChangeObserver = nil
         }
         Task { await self.calendarWatcher.stop() }
         let inflight = Array(inflightTasks.values)

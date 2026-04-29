@@ -10,10 +10,9 @@ public protocol CalendarLookupProtocol: Sendable {
     func fetchEvents(from windowStart: Date, to windowEnd: Date) async -> [CalendarEvent]
 }
 
-/// Adapts the slice 3 `CalendarLookup` to the protocol. Slice 3's lookup only
-/// returned a single event for a single point-in-time; for the watcher we need
-/// the full window. Adds a window-spanning fetch that mirrors `eventOverlapping`'s
-/// EventKit query.
+/// Adapts `CalendarLookup` to the protocol. Uses the window-fetch method so a
+/// 24-hour cache refresh is a single EKEventStore query instead of 291 sampled
+/// `eventOverlapping` probes.
 public struct CalendarLookupAdapter: CalendarLookupProtocol {
     private let lookup: CalendarLookup
 
@@ -22,23 +21,7 @@ public struct CalendarLookupAdapter: CalendarLookupProtocol {
     }
 
     public func fetchEvents(from windowStart: Date, to windowEnd: Date) async -> [CalendarEvent] {
-        // Sample the window densely (every 5 minutes) and dedupe by start date.
-        // Slice 3's CalendarLookup.eventOverlapping returns at most one event
-        // per call, so we need multiple probes to surface a 24h window. Slice
-        // 6b can replace this with a direct EKEventStore.events(matching:)
-        // query that returns the full window in one shot — but that would mean
-        // duplicating the EKEventStore wiring outside of CalendarLookup.
-        var events: [CalendarEvent] = []
-        var seen = Set<Date>()
-        let stride: TimeInterval = 5 * 60
-        var probe = windowStart
-        while probe <= windowEnd {
-            if let event = lookup.eventOverlapping(probe), seen.insert(event.startDate).inserted {
-                events.append(event)
-            }
-            probe = probe.addingTimeInterval(stride)
-        }
-        return events
+        lookup.fetchEvents(from: windowStart, to: windowEnd)
     }
 }
 
