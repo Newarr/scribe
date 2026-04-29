@@ -1,0 +1,22 @@
+{
+  "language_code": "en",
+  "language_probability": 0.99,
+  "text": "Hi Faris, can you hear me? Yes, I can hear you.",
+  "words": [
+    {"text": "Hi", "type": "word", "start": 0.10, "end": 0.30, "channel_index": 0},
+    {"text": "Faris", "type": "word", "start": 0.31, "end": 0.65, "channel_index": 0},
+    {"text": ",", "type": "spacing", "start": 0.65, "end": 0.66, "channel_index": 0},
+    {"text": "can", "type": "word", "start": 0.80, "end": 0.95, "channel_index": 0},
+    {"text": "you", "type": "word", "start": 0.96, "end": 1.05, "channel_index": 0},
+    {"text": "hear", "type": "word", "start": 1.06, "end": 1.25, "channel_index": 0},
+    {"text": "me", "type": "word", "start": 1.26, "end": 1.40, "channel_index": 0},
+    {"text": "?", "type": "spacing", "start": 1.40, "end": 1.41, "channel_index": 0},
+    {"text": "Yes", "type": "word", "start": 1.60, "end": 1.85, "channel_index": 1},
+    {"text": ",", "type": "spacing", "start": 1.85, "end": 1.86, "channel_index": 1},
+    {"text": "I", "type": "word", "start": 1.95, "end": 2.05, "channel_index": 1},
+    {"text": "can", "type": "word", "start": 2.06, "end": 2.20, "channel_index": 1},
+    {"text": "hear", "type": "word", "start": 2.21, "end": 2.40, "channel_index": 1},
+    {"text": "you", "type": "word", "start": 2.41, "end": 2.55, "channel_index": 1},
+    {"text": ".", "type": "spacing", "start": 2.55, "end": 2.56, "channel_index": 1}
+  ]
+}

@@ -37,6 +37,43 @@ final class ElevenLabsScribeBackendTests: XCTestCase {
         XCTAssertEqual(response.detectedLanguage, "en")
     }
 
+    func testMultichannelResponseProducesChannelKeyedSpeakers() async throws {
+        let body = try Data(contentsOf: fixture("elevenlabs-multichannel-success"))
+        MockURLProtocol.handler = { request in
+            // Note: Foundation strips httpBody by the time URLProtocol sees the request,
+            // so request-side multipart params (use_multi_channel, diarize, num_speakers)
+            // can't be asserted here. The backend's static mode->params switch is the
+            // safety net; this test focuses on the response-parsing path that's
+            // multichannel-specific (channel_index -> speaker_<n>).
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, body)
+        }
+
+        let backend = ElevenLabsScribeBackend(apiKey: "test-key", session: mockSession)
+        let req = EngineRequest(
+            audioURL: try makeTinyWAV(),
+            mode: .multichannel,
+            languageCode: "en",
+            keyterms: []
+        )
+        let response = try await backend.transcribe(req)
+
+        XCTAssertEqual(response.utterances.count, 2)
+        XCTAssertEqual(response.utterances[0].speaker, "speaker_0")
+        XCTAssertTrue(response.utterances[0].text.contains("Hi"))
+        XCTAssertTrue(response.utterances[0].text.contains("Faris"))
+        XCTAssertEqual(response.utterances[1].speaker, "speaker_1")
+        XCTAssertTrue(response.utterances[1].text.contains("Yes"))
+    }
+
+    /// Defensive direct test of the mode->params dispatch since the URLProtocol mock
+    /// can't see the request body. Calls the parser directly so this stays a unit test.
+    func testParserGroupsByChannelIndex() throws {
+        let body = try Data(contentsOf: fixture("elevenlabs-multichannel-success"))
+        let response = try ElevenLabsScribeBackend.parse(body)
+        XCTAssertEqual(response.utterances.count, 2)
+        XCTAssertEqual(response.utterances.map(\.speaker), ["speaker_0", "speaker_1"])
+    }
+
     func testRateLimitMapsToRetryableError() async throws {
         let body = try Data(contentsOf: fixture("elevenlabs-rate-limit"))
         MockURLProtocol.handler = { request in
