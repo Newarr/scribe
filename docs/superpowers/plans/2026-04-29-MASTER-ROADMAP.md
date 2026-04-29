@@ -129,7 +129,7 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 | 4 | ⏳ expand when starting (depends on Spike B) | — | not started |
 | 5 | ⏳ expand when starting | — | not started |
 | 6 | ⏳ expand when starting | — | not started |
-| 7 | ⏳ expand when starting | — | not started |
+| 7 | ✅ `2026-04-29-slice-07-recovery-retry.md` | `transcriber-slice-7` | shipped 2026-04-29 (jumped slice 4-6 because slice 4 needs Spike B) |
 | 8 | ⏳ expand when starting (depends on Spike A) | — | not started |
 | 9 | ⏳ expand when starting | — | not started |
 
