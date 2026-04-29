@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var status: SessionStatus = .idle
     private let permissions = PermissionsService()
     private let calendar = CalendarLookup()
+    private let calendarWatcher = CalendarWatcher()
+    private var wakeObserver: NSObjectProtocol?
 
     private var currentSessionDirectory: SessionDirectory?
     private var currentSessionStartedAt: Date?
@@ -38,7 +40,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
         try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
 
-        Task { _ = await self.calendar.requestAccess() }
+        Task {
+            _ = await self.calendar.requestAccess()
+            // Kick the watcher after permission resolves so its first refresh
+            // hits a permission-granted EKEventStore. If permission was
+            // denied, the watcher still runs but every refresh sees an empty
+            // event list — by spec calendar never blocks recording.
+            await self.calendarWatcher.start()
+        }
+
+        // Refresh the watcher's cache on wake-from-sleep. Long lid-closed
+        // gaps would otherwise leave the cache stale until the next 60s tick.
+        let nc = NSWorkspace.shared.notificationCenter
+        wakeObserver = nc.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { [weak self] in
+                Log.calendar.info("Wake-from-sleep: forcing calendar refresh")
+                await self?.calendarWatcher.refreshNow()
+            }
+        }
 
         let m = RecordingMenu { [weak self] action in
             Task { @MainActor in await self?.handle(action) }
@@ -79,6 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         processWatcher?.stop()
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+        Task { await self.calendarWatcher.stop() }
         let inflight = Array(inflightTasks.values)
         let hasLiveCapture = (session != nil)
 
@@ -142,7 +170,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             return
         }
         Log.lifecycle.info("Detection candidate: \(app.bundleID, privacy: .public)")
-        let choice = await startPromptCoordinator.prompt(for: app)
+        // Enrich the prompt with the overlapping calendar event title if one
+        // is in cache. Spec line 167: "Start recording 'Acme Weekly'?".
+        let event = await calendarWatcher.eventOverlapping(Date())
+        Log.calendar.info("Prompt enrichment: matched=\(event != nil ? "yes" : "no", privacy: .public)")
+        let choice = await startPromptCoordinator.prompt(for: app, event: event)
         switch choice {
         case .start:
             await startRecording()
@@ -217,7 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             self.currentSessionDirectory = dir
             self.currentSessionStartedAt = Date()
 
-            let event = self.calendar.eventOverlapping(Date())
+            // Slice 6: prefer the watcher cache (already populated, no
+            // EventKit round-trip on the start path). Fall back to the
+            // direct lookup if the cache hasn't been refreshed yet.
+            let event = await calendarWatcher.eventOverlapping(Date())
+                ?? calendar.eventOverlapping(Date())
             self.currentCalendarEvent = event
             Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
 
