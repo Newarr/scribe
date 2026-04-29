@@ -7,6 +7,12 @@ public enum AudioMixer {
     /// Mix two mono input files into a single mono PCM WAV at the target sample rate.
     /// Uses simple equal-gain sum with safe peak clipping at +/- 1.0. Output is 16-bit
     /// signed integer little-endian PCM (Whisper/Scribe-friendly default).
+    ///
+    /// TODO(slice 4): this implementation buffers each input fully into memory and
+    /// allocates a third full-size mixed buffer before writing. A 2-hour mono 48kHz
+    /// recording is ~1.4GB peak. Slice 4 (AEC pre-pass) needs streaming for the Rust
+    /// AEC3 subprocess pipeline anyway; convert this to chunked stream-mix at that
+    /// point. Tracked in codex review of slice 2 (P2).
     public static func mix(
         mic: URL,
         system: URL,

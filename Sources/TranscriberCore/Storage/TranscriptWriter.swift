@@ -4,18 +4,18 @@ public struct TranscriptContext: Sendable {
     public let title: String
     public let date: String          // YYYY-MM-DD
     public let engine: String        // "elevenlabs" | "cohere"
-    public let audioRelativePath: String
+    public let audioRelativePaths: [String]  // every source track that survives capture
     public let startedAt: String     // ISO8601
     public let endedAt: String
     public let attendees: [String]   // wikilink-formatted, e.g. "[[Faris Riaz]]"
     public let language: String?
 
-    public init(title: String, date: String, engine: String, audioRelativePath: String,
+    public init(title: String, date: String, engine: String, audioRelativePaths: [String],
                 startedAt: String, endedAt: String, attendees: [String], language: String?) {
         self.title = title
         self.date = date
         self.engine = engine
-        self.audioRelativePath = audioRelativePath
+        self.audioRelativePaths = audioRelativePaths
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.attendees = attendees
@@ -30,7 +30,7 @@ public enum TranscriptWriter {
 
         # \(c.title)
 
-        > Transcription pending. Audio captured at `\(c.audioRelativePath)`.
+        > Transcription pending. Audio captured at \(audioReferenceList(c.audioRelativePaths)).
         """
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -56,7 +56,7 @@ public enum TranscriptWriter {
 
         # Transcription Failed
 
-        Audio was captured and saved as `\(c.audioRelativePath)`.
+        Audio was captured and saved as \(audioReferenceList(c.audioRelativePaths)).
 
         Error: \(errorMessage)
         """
@@ -69,7 +69,14 @@ public enum TranscriptWriter {
         lines.append("date: \(c.date)")
         lines.append("engine: \(c.engine)")
         if let lang = c.language { lines.append("language: \(lang)") }
-        lines.append("audio: \(c.audioRelativePath)")
+        if c.audioRelativePaths.count == 1 {
+            lines.append("audio: \(c.audioRelativePaths[0])")
+        } else {
+            lines.append("audio:")
+            for path in c.audioRelativePaths {
+                lines.append("  - \(path)")
+            }
+        }
         lines.append("started_at: \(c.startedAt)")
         lines.append("ended_at: \(c.endedAt)")
         if !c.attendees.isEmpty {
@@ -78,6 +85,17 @@ public enum TranscriptWriter {
         }
         lines.append("---")
         return lines.joined(separator: "\n")
+    }
+
+    private static func audioReferenceList(_ paths: [String]) -> String {
+        switch paths.count {
+        case 0: return "(no audio captured)"
+        case 1: return "`\(paths[0])`"
+        case 2: return "`\(paths[0])` and `\(paths[1])`"
+        default:
+            let prefix = paths.dropLast().map { "`\($0)`" }.joined(separator: ", ")
+            return "\(prefix), and `\(paths.last!)`"
+        }
     }
 
     private static func formatMMSS(_ seconds: Double) -> String {

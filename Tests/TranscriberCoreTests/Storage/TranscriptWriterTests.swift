@@ -15,7 +15,7 @@ final class TranscriptWriterTests: XCTestCase {
             title: "Test",
             date: "2026-04-29",
             engine: "elevenlabs",
-            audioRelativePath: "audio.m4a",
+            audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
             attendees: ["[[Szymon]]", "[[Faris]]"],
@@ -34,7 +34,7 @@ final class TranscriptWriterTests: XCTestCase {
         let url = tmp.appendingPathComponent("transcript.md")
         let context = TranscriptContext(
             title: "Faris Sync", date: "2026-04-29",
-            engine: "elevenlabs", audioRelativePath: "audio.m4a",
+            engine: "elevenlabs", audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
             attendees: ["[[Szymon Sypniewicz]]", "[[Faris Riaz]]"],
             language: "en"
@@ -59,7 +59,7 @@ final class TranscriptWriterTests: XCTestCase {
         let url = tmp.appendingPathComponent("transcript.md")
         let context = TranscriptContext(
             title: "T", date: "2026-04-29", engine: "elevenlabs",
-            audioRelativePath: "audio.m4a",
+            audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
             attendees: [], language: nil
         )
@@ -70,5 +70,28 @@ final class TranscriptWriterTests: XCTestCase {
         XCTAssertTrue(content.contains("status: failed"))
         XCTAssertTrue(content.contains("Rate limited after 3 retries"))
         XCTAssertTrue(content.contains("Audio was captured and saved as `audio.m4a`."))
+    }
+
+    /// CDX-S2.1: when capture produces multiple source tracks (mic + system),
+    /// the transcript must reference all of them so users can find every audio
+    /// asset, not just the primary one.
+    func testMultipleAudioPathsRenderAsYAMLList() throws {
+        let url = tmp.appendingPathComponent("transcript.md")
+        let context = TranscriptContext(
+            title: "Two-Track Sync", date: "2026-04-29",
+            engine: "elevenlabs",
+            audioRelativePaths: ["mic.m4a", "system.m4a"],
+            startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
+            attendees: [], language: nil
+        )
+
+        try TranscriptWriter.writePending(at: url, context: context)
+        let pending = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(pending.contains("audio:\n  - mic.m4a\n  - system.m4a"))
+        XCTAssertTrue(pending.contains("`mic.m4a` and `system.m4a`"))
+
+        try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "boom")
+        let failed = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(failed.contains("Audio was captured and saved as `mic.m4a` and `system.m4a`."))
     }
 }
