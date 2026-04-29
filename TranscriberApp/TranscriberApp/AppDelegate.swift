@@ -1,4 +1,5 @@
 import AppKit
+import EventKit  // .EKEventStoreChanged notification name (codex slice-6 final-review P1)
 import TranscriberCore
 
 // @unchecked Sendable: all mutable state on this class is accessed through
