@@ -70,18 +70,18 @@ public enum TranscriptWriter {
         lines.append("engine: \(c.engine)")
         if let lang = c.language { lines.append("language: \(lang)") }
         if c.audioRelativePaths.count == 1 {
-            lines.append("audio: \(c.audioRelativePaths[0])")
+            lines.append("audio: \"\(yamlEscape(c.audioRelativePaths[0]))\"")
         } else {
             lines.append("audio:")
             for path in c.audioRelativePaths {
-                lines.append("  - \(path)")
+                lines.append("  - \"\(yamlEscape(path))\"")
             }
         }
         lines.append("started_at: \(c.startedAt)")
         lines.append("ended_at: \(c.endedAt)")
         if !c.attendees.isEmpty {
             lines.append("attendees:")
-            for a in c.attendees { lines.append("  - \"\(a)\"") }
+            for a in c.attendees { lines.append("  - \"\(yamlEscape(a))\"") }
         }
         lines.append("---")
         return lines.joined(separator: "\n")
@@ -106,5 +106,11 @@ public enum TranscriptWriter {
     private static func yamlEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
+         // Strip newlines + carriage returns: real YAML wraps multi-line scalars
+         // in a different syntax, but our values (titles, paths, attendee names)
+         // shouldn't have newlines; if they do, collapsing them is safer than
+         // emitting broken frontmatter that the supervisor's reader rejects.
+         .replacingOccurrences(of: "\n", with: " ")
+         .replacingOccurrences(of: "\r", with: " ")
     }
 }

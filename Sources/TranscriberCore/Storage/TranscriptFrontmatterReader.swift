@@ -49,7 +49,8 @@ public enum TranscriptFrontmatterReader {
                 while i < lines.count {
                     let item = lines[i]
                     if item.hasPrefix("  - ") {
-                        audioPaths.append(String(item.dropFirst(4)))
+                        audioPaths.append(String(item.dropFirst(4))
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
                         i += 1
                     } else {
                         break

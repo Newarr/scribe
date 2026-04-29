@@ -66,6 +66,24 @@ public actor CaptureSession {
     }
 
     public func stop() async throws {
+        // Codex extensive-review P2.1 fix: actor reentrance during await means a
+        // double Stop (double-click, keyboard shortcut, Quit-while-stopping)
+        // could re-enter and double-finalize. Guard against any non-recording
+        // state up front; if .stopping is already in progress, return cleanly.
+        // If the session already finalized, return success without re-running.
+        switch status {
+        case .stopping, .finalized:
+            Log.lifecycle.info("Stop ignored: already \(self.status.rawValue, privacy: .public)")
+            return
+        case .failed:
+            return
+        case .idle, .starting:
+            // Stop called before start completed — odd but recoverable. Skip.
+            return
+        case .recording:
+            break
+        }
+
         status = .stopping
         Log.lifecycle.info("Stopping capture")
         await mic.stop()

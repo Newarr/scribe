@@ -26,7 +26,7 @@ final class TranscriptWriterTests: XCTestCase {
         let content = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(content.contains("status: pending"))
         XCTAssertTrue(content.contains("title: \"Test\""))
-        XCTAssertTrue(content.contains("audio: audio.m4a"))
+        XCTAssertTrue(content.contains("audio: \"audio.m4a\""))
         XCTAssertTrue(content.contains("# Test"))
     }
 
@@ -87,7 +87,7 @@ final class TranscriptWriterTests: XCTestCase {
 
         try TranscriptWriter.writePending(at: url, context: context)
         let pending = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(pending.contains("audio:\n  - mic.m4a\n  - system.m4a"))
+        XCTAssertTrue(pending.contains("audio:\n  - \"mic.m4a\"\n  - \"system.m4a\""))
         XCTAssertTrue(pending.contains("`mic.m4a` and `system.m4a`"))
 
         try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "boom")

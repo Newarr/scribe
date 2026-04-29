@@ -80,13 +80,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         processWatcher?.stop()
         let inflight = Array(inflightTasks.values)
-        guard !inflight.isEmpty else { return .terminateNow }
+        let hasLiveCapture = (session != nil)
 
-        Log.lifecycle.info("Quit requested with \(inflight.count, privacy: .public) in-flight task(s); cancelling and waiting up to 3s")
+        // Codex extensive-review P1.1 fix: a live CaptureSession isn't tracked
+        // in inflightTasks, so a Quit during recording previously exited
+        // immediately with the SCStream + AVAssetWriter still live, leaving
+        // .partial files and no transcript. Finalize the capture first.
+        if !hasLiveCapture && inflight.isEmpty { return .terminateNow }
+
+        Log.lifecycle.info("Quit requested: capture=\(hasLiveCapture, privacy: .public), in-flight tasks=\(inflight.count, privacy: .public); finalizing up to 10s")
         inflight.forEach { $0.cancel() }
 
         Task { @MainActor in
-            let deadline = Date().addingTimeInterval(3.0)
+            // First, finalize any active recording. This produces mic.m4a +
+            // system.m4a + transcript.md so the next launch's supervisor can
+            // pick up the rest of the pipeline.
+            if hasLiveCapture {
+                await self.stopRecording()
+            }
+
+            // Then wait briefly for in-flight transcription tasks to observe
+            // cancellation. status: retrying on disk survives, so the next
+            // launch resumes them.
+            let deadline = Date().addingTimeInterval(10.0)
             for task in inflight {
                 let remaining = deadline.timeIntervalSinceNow
                 if remaining <= 0 { break }
@@ -286,26 +302,37 @@ extension AppDelegate {
         context: TranscriptContext,
         event: CalendarEvent?
     ) -> TranscriptionWorker {
-        let multichannelURL = dir.url.appendingPathComponent("multichannel.wav")
+        // Pre-AEC default: single-channel diarized (slice 2 path).
+        //
+        // Spec line 117 (`decision_engine_payload_multichannel`) requires the mic
+        // channel to be AEC-cleaned before multichannel upload. Spec line 119
+        // explicitly forbids "dirty 2-channel uploads" as a fallback because they
+        // reproduce a known failure mode where the remote speaker is decoded
+        // twice. Slice 4 ships AEC + flips this back to multichannel with
+        // mic.cleaned.wav. Until then, mix to mono and rely on diarize=true.
+        let mixedURL = dir.url.appendingPathComponent("mixed.wav")
         let keychain = KeychainStore(service: keychainService, account: keychainAccount)
         let apiKey = (try? keychain.read()) ?? ""
         let backend = ElevenLabsScribeBackend(apiKey: apiKey)
         let keyterms = event?.keyterms ?? []
         let request = EngineRequest(
-            audioURL: multichannelURL,
-            mode: .multichannel,
+            audioURL: mixedURL,
+            mode: .singleChannelDiarized(numSpeakers: 2),
             languageCode: nil,
             keyterms: keyterms
         )
+        // SpeakerMappingBuilder returns empty for single-channel diarized
+        // because diarization clusters voices by acoustic features, not by
+        // channel — speaker_0/_1 don't reliably correspond to mic vs system.
         let mapping = SpeakerMappingBuilder.build(event: event, mode: request.mode)
 
         let prepareAudio: @Sendable () async throws -> Void = {
             let fm = FileManager.default
-            if fm.fileExists(atPath: multichannelURL.path) { return }
-            try await MultichannelWAVBuilder.build(
+            if fm.fileExists(atPath: mixedURL.path) { return }
+            try await AudioMixer.mix(
                 mic: dir.micFinal,
                 system: dir.systemFinal,
-                output: multichannelURL,
+                output: mixedURL,
                 sampleRate: 16000
             )
         }
