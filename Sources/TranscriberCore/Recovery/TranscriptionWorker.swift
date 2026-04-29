@@ -132,29 +132,38 @@ public actor TranscriptionWorker {
     }
 
     private func writeRetrying(failedAttempts: Int, lastError: Error) {
-        // We intentionally re-use writeFailed's body shape but stamp `status: retrying`.
-        // TranscriptWriter doesn't currently expose a writeRetrying call; produce the
-        // equivalent file inline so we don't drift from the writer's shape.
-        let body = """
-        ---
-        schema: transcriber/v1
-        status: retrying
-        title: "\(context.title.replacingOccurrences(of: "\"", with: "\\\""))"
-        date: \(context.date)
-        engine: \(context.engine)
-        audio:
-        \(context.audioRelativePaths.map { "  - \($0)" }.joined(separator: "\n"))
-        started_at: \(context.startedAt)
-        ended_at: \(context.endedAt)
-        attempts: \(failedAttempts)
-        ---
+        // Build the retrying-status frontmatter inline. Must mirror every field
+        // the supervisor's TranscriptFrontmatterReader knows how to restore,
+        // including language + attendees, so a relaunch during the backoff
+        // doesn't lose the calendar-enriched metadata that was on the original
+        // pending transcript (codex slice-7 final-review P2.2).
+        var lines: [String] = ["---", "schema: transcriber/v1", "status: retrying"]
+        lines.append("title: \"\(context.title.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"")
+        lines.append("date: \(context.date)")
+        lines.append("engine: \(context.engine)")
+        if let lang = context.language { lines.append("language: \(lang)") }
+        if context.audioRelativePaths.count == 1 {
+            lines.append("audio: \(context.audioRelativePaths[0])")
+        } else {
+            lines.append("audio:")
+            for p in context.audioRelativePaths { lines.append("  - \(p)") }
+        }
+        lines.append("started_at: \(context.startedAt)")
+        lines.append("ended_at: \(context.endedAt)")
+        if !context.attendees.isEmpty {
+            lines.append("attendees:")
+            for a in context.attendees { lines.append("  - \"\(a)\"") }
+        }
+        lines.append("attempts: \(failedAttempts)")
+        lines.append("---")
+        lines.append("")
+        lines.append("# \(context.title)")
+        lines.append("")
+        lines.append("> Transcription failed (attempt \(failedAttempts)/\(policy.maxAttempts)). Retrying.")
+        lines.append(">")
+        lines.append("> Last error: \(String(describing: lastError))")
 
-        # \(context.title)
-
-        > Transcription failed (attempt \(failedAttempts)/\(policy.maxAttempts)). Retrying.
-        >
-        > Last error: \(String(describing: lastError))
-        """
+        let body = lines.joined(separator: "\n")
         do {
             try body.write(to: directory.transcript, atomically: true, encoding: .utf8)
         } catch {
