@@ -30,5 +30,7 @@
 	<string>Transcriber captures system audio so the other speakers in your call can be transcribed. No video is recorded.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Transcriber reads the calendar event overlapping the current recording so the transcript can label speakers with attendee names. Calendar access is optional; recording works without it.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Transcriber reads the calendar event overlapping the current recording so the transcript can label speakers with attendee names. Calendar access is optional; recording works without it.</string>
 </dict>
 </plist>

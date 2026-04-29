@@ -158,11 +158,12 @@ extension AppDelegate {
             }
 
             let backend = ElevenLabsScribeBackend(apiKey: apiKey)
+            let keyterms = event?.keyterms ?? []
             let req = EngineRequest(
                 audioURL: multichannelURL,
                 mode: .multichannel,
                 languageCode: nil,
-                keyterms: []
+                keyterms: keyterms
             )
             let size = (try? multichannelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             Log.engine.info("Uploading 2-ch to ElevenLabs, bytes=\(size, privacy: .public)")

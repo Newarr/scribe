@@ -39,4 +39,27 @@ public struct CalendarEvent: Sendable, Equatable {
     public var isOneOnOne: Bool {
         attendees.count == 2 && attendees.contains(where: { $0.isCurrentUser })
     }
+
+    /// Build a bounded keyterm list to feed to the cloud engine: event title words
+    /// (length > 2 to skip "of", "to") plus attendee display names. Spec rule
+    /// (lines 105-115): never raw descriptions, attendee emails, meeting URLs,
+    /// dial-ins, or passcodes. Title + display names are explicitly allowed.
+    /// Capped at 16 entries to keep the request bounded.
+    public var keyterms: [String] {
+        var terms: [String] = []
+        let titleWords = title
+            .components(separatedBy: .whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+            .filter { $0.count > 2 }
+        terms.append(contentsOf: titleWords)
+        terms.append(contentsOf: attendees.map(\.name))
+        // Dedupe preserving order, cap at 16.
+        var seen = Set<String>()
+        var deduped: [String] = []
+        for term in terms where seen.insert(term).inserted {
+            deduped.append(term)
+            if deduped.count >= 16 { break }
+        }
+        return deduped
+    }
 }
