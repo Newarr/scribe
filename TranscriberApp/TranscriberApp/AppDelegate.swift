@@ -7,9 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var session: CaptureSession?
     private var status: SessionStatus = .idle
     private let permissions = PermissionsService()
+    private let calendar = CalendarLookup()
 
     private var currentSessionDirectory: SessionDirectory?
     private var currentSessionStartedAt: Date?
+    private var currentCalendarEvent: CalendarEvent?
 
     private var outputRoot: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -19,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
         try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+
+        // Trigger calendar permission prompt early so first-time recording isn't held up.
+        // Failure is fine; recording still works without calendar.
+        Task { _ = await self.calendar.requestAccess() }
 
         let m = RecordingMenu { [weak self] action in
             Task { @MainActor in await self?.handle(action) }
@@ -55,12 +61,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.session = session
             self.currentSessionDirectory = dir
             self.currentSessionStartedAt = Date()
+
+            // Snapshot the overlapping calendar event at session start. Slice 6 will add
+            // a continuous watcher; slice 3 only needs the value at start time.
+            let event = self.calendar.eventOverlapping(Date())
+            self.currentCalendarEvent = event
+            Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
+
             try await session.start()
             self.status = .recording
             menu?.rebuild(for: status)
         } catch {
             Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
             self.status = .failed
+            self.currentCalendarEvent = nil
             menu?.rebuild(for: status)
         }
     }
@@ -70,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let session, let dir = currentSessionDirectory else { return }
         let endedAt = Date()
         let started = currentSessionStartedAt ?? endedAt
+        let event = currentCalendarEvent
 
         var stopSucceeded = false
         do {
@@ -83,38 +98,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.session = nil
         self.currentSessionDirectory = nil
         self.currentSessionStartedAt = nil
+        self.currentCalendarEvent = nil
         menu?.rebuild(for: status)
 
-        // Only run transcription if capture finalized cleanly. If session.stop() threw,
-        // mic.m4a / system.m4a may be missing or partial, and the AudioMixer would crash
-        // or produce garbage. The transcript stub from CaptureSession was never written
-        // in that case either, so the failed-stop session has no transcript on disk.
-        // Slice 7's recovery layer can rescue these by detecting orphaned .partial files.
         guard stopSucceeded else { return }
 
         // Fire-and-forget transcription. Slice 7 will add proper queueing + retry.
         Task { [weak self] in
-            await self?.transcribe(directory: dir, startedAt: started, endedAt: endedAt)
+            await self?.transcribe(directory: dir, startedAt: started, endedAt: endedAt, event: event)
         }
     }
 }
 
 extension AppDelegate {
     @MainActor
-    func transcribe(directory dir: SessionDirectory, startedAt: Date, endedAt: Date) async {
-        let mixedURL = dir.url.appendingPathComponent("mixed.wav")
+    func transcribe(directory dir: SessionDirectory, startedAt: Date, endedAt: Date, event: CalendarEvent?) async {
+        let multichannelURL = dir.url.appendingPathComponent("multichannel.wav")
         let transcriptURL = dir.transcript
         let isoFmt = ISO8601DateFormatter()
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "yyyy-MM-dd"
+
+        let title = event?.title ?? "Manual recording \(dir.url.lastPathComponent)"
+        let attendees = (event?.attendees ?? []).map { "[[\($0.name)]]" }
+
         let context = TranscriptContext(
-            title: "Manual recording \(dir.url.lastPathComponent)",
+            title: title,
             date: dayFmt.string(from: startedAt),
             engine: "elevenlabs",
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             startedAt: isoFmt.string(from: startedAt),
             endedAt: isoFmt.string(from: endedAt),
-            attendees: [],
+            attendees: attendees,
             language: nil
         )
         do {
@@ -124,10 +139,10 @@ extension AppDelegate {
         }
 
         do {
-            try await AudioMixer.mix(
+            try await MultichannelWAVBuilder.build(
                 mic: dir.micFinal,
                 system: dir.systemFinal,
-                output: mixedURL,
+                output: multichannelURL,
                 sampleRate: 16000
             )
 
@@ -144,28 +159,26 @@ extension AppDelegate {
 
             let backend = ElevenLabsScribeBackend(apiKey: apiKey)
             let req = EngineRequest(
-                audioURL: mixedURL,
-                mode: .singleChannelDiarized(numSpeakers: 2),
+                audioURL: multichannelURL,
+                mode: .multichannel,
                 languageCode: nil,
                 keyterms: []
             )
-            let size = (try? mixedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            Log.engine.info("Uploading to ElevenLabs, bytes=\(size, privacy: .public)")
+            let size = (try? multichannelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            Log.engine.info("Uploading 2-ch to ElevenLabs, bytes=\(size, privacy: .public)")
             let response = try await backend.transcribe(req)
 
-            // CDX-S2-CHAL.6: empty utterance list typically means silent / corrupt audio
-            // or an API edge response. Don't write `status: complete` with a blank body
-            // — it looks like the transcript ran when nothing was actually transcribed.
             if response.utterances.isEmpty {
                 Log.engine.error("ElevenLabs returned no utterances")
                 try TranscriptWriter.writeFailed(
                     at: transcriptURL,
                     context: context,
-                    errorMessage: "No speech detected in mixed audio. The mic and system tracks may be silent, corrupt, or below ElevenLabs' detection threshold."
+                    errorMessage: "No speech detected in the 2-channel upload. The mic and system tracks may be silent, corrupt, or below ElevenLabs' detection threshold."
                 )
                 return
             }
 
+            let mapping = SpeakerMappingBuilder.build(event: event, mode: req.mode)
             let completedContext = TranscriptContext(
                 title: context.title,
                 date: context.date,
@@ -180,17 +193,14 @@ extension AppDelegate {
                 at: transcriptURL,
                 context: completedContext,
                 utterances: response.utterances,
-                speakerMapping: [:]
+                speakerMapping: mapping
             )
-            Log.engine.info("Transcript complete, utterances=\(response.utterances.count, privacy: .public)")
+            Log.engine.info("Transcript complete, utterances=\(response.utterances.count, privacy: .public), mapped=\(mapping.count, privacy: .public)")
         } catch {
             Log.engine.error("Transcription failed: \(String(describing: error), privacy: .public)")
             do {
                 try TranscriptWriter.writeFailed(at: transcriptURL, context: context, errorMessage: String(describing: error))
             } catch {
-                // If the failed-transcript write itself fails (disk full, permissions),
-                // log it loudly. The user has lost the durable status record but the
-                // audio files are still on disk.
                 Log.engine.error("Failed to write failed-transcript marker: \(String(describing: error), privacy: .public)")
             }
         }
