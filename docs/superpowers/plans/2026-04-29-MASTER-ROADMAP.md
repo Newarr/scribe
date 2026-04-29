@@ -131,6 +131,7 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 | 6 | ✅ `2026-04-29-slice-06-calendar-full.md` | `transcriber-slice-6` | shipped 2026-04-29 (watcher + cache + wake + EKEventStoreChanged refresh + prompt enrichment) |
 | 7 | ✅ `2026-04-29-slice-07-recovery-retry.md` | `transcriber-slice-7` | shipped 2026-04-29 (jumped slice 4-6 because slice 4 needs Spike B) |
 | 8 | ⏳ expand when starting (depends on Spike A) | — | not started |
-| 9 | ⏳ expand when starting | — | not started |
+| 9a | ✅ `2026-04-29-slice-09a-output-contract.md` | `transcriber-slice-9a` | shipped 2026-04-29 (audio.m4a + metadata.json on every terminal state; signing/notarize/Homebrew defer to slice 9b) |
+| 9b | ⏳ expand when ready (signing certs + notarize + Homebrew + LUFS normalization + keep_raw_streams setting) | — | not started |
 
 Update this table as plans are written and slices ship.
