@@ -82,11 +82,36 @@ public actor TranscriptionWorker {
                     writeFailed(reason: msg)
                     return .failed(reason: msg)
                 }
+                // Slice 9a output contract: produce audio.m4a (mixed playback
+                // file) before writing the completed transcript so the
+                // transcript can reference audio.m4a as the canonical
+                // audio path. AudioFinalizer mixes mic.m4a + system.m4a;
+                // failure here is terminal but the engine's response is
+                // already in hand — we still write the complete transcript
+                // pointing at raw streams as fallback.
+                let audioFinalURL = directory.url.appendingPathComponent("audio.m4a")
+                var completedAudioPath = "audio.m4a"
+                do {
+                    try await AudioFinalizer.finalize(
+                        mic: directory.micFinal,
+                        system: directory.systemFinal,
+                        output: audioFinalURL,
+                        sampleRate: 48000
+                    )
+                } catch {
+                    Log.engine.error("AudioFinalizer failed; transcript will reference raw streams: \(String(describing: error), privacy: .public)")
+                    // Fall back to raw streams in the completed transcript;
+                    // user can still play mic.m4a + system.m4a.
+                    completedAudioPath = ""
+                }
+
                 let completedContext = TranscriptContext(
                     title: context.title,
                     date: context.date,
                     engine: context.engine,
-                    audioRelativePaths: context.audioRelativePaths,
+                    audioRelativePaths: completedAudioPath.isEmpty
+                        ? context.audioRelativePaths
+                        : [completedAudioPath],
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
                     attendees: context.attendees,
@@ -102,6 +127,20 @@ public actor TranscriptionWorker {
                 } catch {
                     Log.engine.error("writeComplete failed: \(String(describing: error), privacy: .public)")
                     return .failed(reason: "transcript write failed: \(error)")
+                }
+                // metadata.json — JSON mirror of the frontmatter so agents
+                // and downstream pipelines have a machine-readable surface
+                // (spec lines 285-288).
+                let metadataURL = directory.url.appendingPathComponent("metadata.json")
+                let metadata = MetadataJSONWriter.Metadata(
+                    status: .complete,
+                    context: completedContext,
+                    audio: completedAudioPath.isEmpty ? "mic.m4a" : completedAudioPath
+                )
+                do {
+                    try MetadataJSONWriter.write(at: metadataURL, metadata: metadata)
+                } catch {
+                    Log.engine.error("metadata.json write failed: \(String(describing: error), privacy: .public)")
                 }
                 return .complete
             } catch is CancellationError {

@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import TranscriberCore
 
 final class TranscriptionWorkerTests: XCTestCase {
@@ -17,6 +18,52 @@ final class TranscriptionWorkerTests: XCTestCase {
         let final = await worker.run()
         XCTAssertEqual(final, .complete)
         XCTAssertEqual(TranscriptStatusReader.read(at: dir().transcript), .complete)
+    }
+
+    /// Slice 9a output contract: a successful run must produce
+    /// `audio.m4a` + `metadata.json` and the completed transcript should
+    /// reference `audio.m4a` (not the raw mic/system files).
+    func testSuccessfulRunProducesAudioAndMetadata() async throws {
+        let dir = self.dir()
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        // AudioFinalizer needs real m4a inputs to mix.
+        try writeAACSilence(to: dir.micFinal, durationSec: 0.3)
+        try writeAACSilence(to: dir.systemFinal, durationSec: 0.3)
+
+        let worker = makeWorker(responses: [.success(makeResponse())])
+        let final = await worker.run()
+        XCTAssertEqual(final, .complete)
+
+        let audioPath = dir.url.appendingPathComponent("audio.m4a").path
+        let metadataPath = dir.url.appendingPathComponent("metadata.json").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioPath), "audio.m4a missing")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: metadataPath), "metadata.json missing")
+
+        // metadata.json should round-trip with audio = "audio.m4a".
+        let data = try Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        let metadata = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: data)
+        XCTAssertEqual(metadata.audio, "audio.m4a")
+        XCTAssertEqual(metadata.status, "complete")
+
+        // transcript.md should reference audio.m4a too.
+        let transcript = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("audio: \"audio.m4a\""),
+                      "completed transcript should reference audio.m4a, got: \(transcript.prefix(500))")
+    }
+
+    private func writeAACSilence(to url: URL, durationSec: Double) throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48000,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64_000
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        let frames = AVAudioFrameCount(durationSec * 48000)
+        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+        buf.frameLength = frames
+        try file.write(from: buf)
     }
 
     func testTransientFailureThenSuccessOnRetry() async throws {
