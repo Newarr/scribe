@@ -122,7 +122,7 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 
 | Slice | Plan written | Worktree | Status |
 |---|---|---|---|
-| 0 | ✅ `2026-04-29-slice-00-scaffolding.md` | — | not started |
+| 0 | ✅ `2026-04-29-slice-00-scaffolding.md` | `transcriber-slice-0` | shipped 2026-04-29 |
 | 1 | ✅ `2026-04-29-slice-01-manual-record.md` | — | not started |
 | 2 | ✅ `2026-04-29-slice-02-single-channel-cloud.md` | — | not started |
 | 3 | ⏳ expand when starting | — | not started |
