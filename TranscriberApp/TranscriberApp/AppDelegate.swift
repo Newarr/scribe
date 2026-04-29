@@ -13,10 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentSessionStartedAt: Date?
     private var currentCalendarEvent: CalendarEvent?
 
-    /// In-flight transcription tasks (fresh recordings + resumed sessions), keyed
-    /// by per-spawn UUID so each task can self-remove on completion. Tracked so
-    /// applicationShouldTerminate can cancel them and observe completion before quitting.
     private var inflightTasks: [UUID: Task<Void, Never>] = [:]
+
+    // Detection layer (slice 5 light)
+    private var detectionEngine: DetectionEngine?
+    private var processWatcher: ProcessWatcher?
+    private let startPromptCoordinator = StartPromptCoordinator()
 
     private static let keychainService = "com.szymonsypniewicz.transcriber"
     private static let keychainAccount = "elevenlabs-api-key"
@@ -41,8 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItem = item
         self.menu = m
 
-        // Resume any orphaned sessions from a previous launch (mid-transcribe crash,
-        // unfinalized stop, retry-pending). Runs in the background so launch is fast.
+        // Resume orphaned sessions in the background.
         let outputRoot = self.outputRoot
         let resumeId = UUID()
         let resumeTask = Task { [weak self] in
@@ -50,9 +51,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self?.removeTask(id: resumeId)
         }
         inflightTasks[resumeId] = resumeTask
+
+        // Detection layer: process allowlist watcher feeds DetectionEngine,
+        // engine fires onCandidate after dwell, app shows the start prompt.
+        let engine = DetectionEngine(dwellTime: 30) { [weak self] app in
+            await self?.handleDetectionCandidate(app)
+        }
+        self.detectionEngine = engine
+        let watcher = ProcessWatcher(
+            onLaunch: { app in
+                Task { await engine.handleLaunch(of: app) }
+            },
+            onQuit: { app in
+                Task { await engine.handleQuit(of: app) }
+            }
+        )
+        self.processWatcher = watcher
+        watcher.start()
+        Log.lifecycle.info("Detection layer started (allowlist size=\(MeetingApps.allowlist.count, privacy: .public), dwellTime=30s)")
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        processWatcher?.stop()
         let inflight = Array(inflightTasks.values)
         guard !inflight.isEmpty else { return .terminateNow }
 
@@ -60,9 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inflight.forEach { $0.cancel() }
 
         Task { @MainActor in
-            // Wait at most 3 seconds for tasks to observe cancellation and exit
-            // cleanly. On-disk status: retrying state survives so the next launch
-            // resumes from there.
             let deadline = Date().addingTimeInterval(3.0)
             for task in inflight {
                 let remaining = deadline.timeIntervalSinceNow
@@ -90,6 +107,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .record: await startRecording()
         case .stop:   await stopRecording()
         case .quit:   NSApp.terminate(nil)
+        }
+    }
+
+    /// Engine fires this when an allowlisted app has been running for the
+    /// dwell window without being skipped or quitting. Show the start prompt
+    /// and route the user's choice. Ignore if a recording is already active.
+    @MainActor
+    func handleDetectionCandidate(_ app: MeetingApp) async {
+        guard status != .recording, status != .starting else {
+            Log.lifecycle.info("Detection candidate \(app.bundleID, privacy: .public) ignored: already \(self.status.rawValue, privacy: .public)")
+            return
+        }
+        Log.lifecycle.info("Detection candidate: \(app.bundleID, privacy: .public)")
+        let choice = await startPromptCoordinator.prompt(for: app)
+        switch choice {
+        case .start:
+            await startRecording()
+        case .notAMeeting:
+            await detectionEngine?.suppress(app)
+            Log.lifecycle.info("User suppressed \(app.bundleID, privacy: .public) for 30 minutes")
+        case .skipForNow:
+            // No-op; if the user reopens the app a future launch event will re-dwell.
+            Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now")
         }
     }
 
@@ -149,12 +189,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard stopSucceeded else { return }
 
-        // Persist the rich event-aware context to disk BEFORE spawning the
-        // worker, so a crash/cancel before the worker writes anything still
-        // leaves a transcript with the original title/attendees/language.
-        // Codex slice-7 P2.1 fix: SessionSupervisor on next launch reads this
-        // context via TranscriptFrontmatterReader and preserves it across
-        // resume.
         let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event)
         do {
             try TranscriptWriter.writePending(at: dir.transcript, context: context)
@@ -162,10 +196,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
         }
 
-        // Dispatch a TranscriptionWorker for this session. The worker handles
-        // pending->retrying->complete|failed transitions, retry policy, and
-        // cancellation on quit. Tracked in inflightTasks by UUID so the task
-        // can self-remove on completion (codex slice-7 P2.4 fix).
         let worker = Self.makeWorker(dir: dir, context: context, event: event)
         let id = UUID()
         let task = Task { [weak self] in
@@ -175,8 +205,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inflightTasks[id] = task
     }
 }
-
-// MARK: - Worker construction shared by fresh + resumed paths
 
 extension AppDelegate {
     nonisolated static func makeContext(
@@ -220,8 +248,6 @@ extension AppDelegate {
         )
         let mapping = SpeakerMappingBuilder.build(event: event, mode: request.mode)
 
-        // prepareAudio: if multichannel.wav is missing (fresh recording or resumed
-        // session that crashed pre-mix), build it from mic.m4a + system.m4a.
         let prepareAudio: @Sendable () async throws -> Void = {
             let fm = FileManager.default
             if fm.fileExists(atPath: multichannelURL.path) { return }
@@ -249,14 +275,6 @@ extension AppDelegate {
         let result = await supervisor.scanAndResume(
             under: root,
             contextFactory: { dir in
-                // Resumed sessions don't have the original calendar event in memory,
-                // and the existing transcript on disk already carries title +
-                // attendees from when slice 3's writePending ran. Until a full
-                // frontmatter reader exists, the resumed context here is minimal —
-                // the worker's writeComplete will replace title/attendees with these
-                // basic values, so the resumed transcript may lose some enrichment
-                // metadata. Slice 6 (calendar enrichment full) can fix this by
-                // adding a TranscriptContextReader.
                 let isoFmt = ISO8601DateFormatter()
                 let dayFmt = DateFormatter()
                 dayFmt.dateFormat = "yyyy-MM-dd"

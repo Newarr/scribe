@@ -10,17 +10,21 @@ import Foundation
 /// running as the trigger signal. Slice 5b would augment with an SCK-driven
 /// audio-activity probe.
 public final class ProcessWatcher: @unchecked Sendable {
-    public protocol Delegate: AnyObject, Sendable {
-        func processWatcher(_ watcher: ProcessWatcher, didDetectMeetingAppLaunch app: MeetingApp)
-        func processWatcher(_ watcher: ProcessWatcher, didDetectMeetingAppQuit app: MeetingApp)
-    }
+    public typealias Handler = @Sendable (MeetingApp) -> Void
 
-    public weak var delegate: (any Delegate)?
     private let workspace: NSWorkspace
+    private let onLaunch: Handler
+    private let onQuit: Handler
     private var observers: [NSObjectProtocol] = []
 
-    public init(workspace: NSWorkspace = .shared) {
+    public init(
+        workspace: NSWorkspace = .shared,
+        onLaunch: @escaping Handler,
+        onQuit: @escaping Handler
+    ) {
         self.workspace = workspace
+        self.onLaunch = onLaunch
+        self.onQuit = onQuit
     }
 
     public func start() {
@@ -37,7 +41,7 @@ public final class ProcessWatcher: @unchecked Sendable {
         // don't miss ongoing sessions on relaunch.
         for runningApp in workspace.runningApplications {
             if let id = runningApp.bundleIdentifier, let meetingApp = MeetingApps.appFor(bundleID: id) {
-                delegate?.processWatcher(self, didDetectMeetingAppLaunch: meetingApp)
+                onLaunch(meetingApp)
             }
         }
     }
@@ -51,13 +55,13 @@ public final class ProcessWatcher: @unchecked Sendable {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let id = app.bundleIdentifier,
               let meetingApp = MeetingApps.appFor(bundleID: id) else { return }
-        delegate?.processWatcher(self, didDetectMeetingAppLaunch: meetingApp)
+        onLaunch(meetingApp)
     }
 
     private func handleTerminate(_ note: Notification) {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let id = app.bundleIdentifier,
               let meetingApp = MeetingApps.appFor(bundleID: id) else { return }
-        delegate?.processWatcher(self, didDetectMeetingAppQuit: meetingApp)
+        onQuit(meetingApp)
     }
 }
