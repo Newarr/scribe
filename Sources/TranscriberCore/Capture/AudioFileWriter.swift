@@ -4,13 +4,14 @@ public final class AudioFileWriter: @unchecked Sendable {
     public enum WriterError: Error {
         case notStarted
         case alreadyStarted
+        case inputNotAcceptedByWriter
         case writerFailed(Error?)
     }
 
     private let writer: AVAssetWriter
     private let input: AVAssetWriterInput
-    private let queue = DispatchQueue(label: "audio.writer", qos: .userInitiated)
     private var started = false
+    private var sessionStarted = false
 
     public init(url: URL, sampleRate: Int, channelCount: Int) throws {
         try? FileManager.default.removeItem(at: url)
@@ -22,20 +23,28 @@ public final class AudioFileWriter: @unchecked Sendable {
             AVSampleRateKey: sampleRate,
             AVEncoderBitRateKey: 64_000
         ]
-        input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
-        input.expectsMediaDataInRealTime = true
-        writer.add(input)
+        let createdInput = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        createdInput.expectsMediaDataInRealTime = true
+        guard writer.canAdd(createdInput) else {
+            throw WriterError.inputNotAcceptedByWriter
+        }
+        writer.add(createdInput)
+        self.input = createdInput
     }
 
     public func start() throws {
         guard !started else { throw WriterError.alreadyStarted }
         guard writer.startWriting() else { throw WriterError.writerFailed(writer.error) }
-        writer.startSession(atSourceTime: .zero)
         started = true
     }
 
     public func append(_ buffer: CMSampleBuffer) throws {
         guard started else { throw WriterError.notStarted }
+        if !sessionStarted {
+            let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+            writer.startSession(atSourceTime: pts)
+            sessionStarted = true
+        }
         guard input.isReadyForMoreMediaData else { return }
         if !input.append(buffer) {
             throw WriterError.writerFailed(writer.error)

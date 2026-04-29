@@ -29,20 +29,40 @@ public actor CaptureSession {
         status = .starting
         Log.lifecycle.info("Starting capture, dir=\(self.directory.url.lastPathComponent, privacy: .public)")
 
-        try micWriter.start()
-        try systemWriter.start()
+        var startedWriters = false
+        var startedMic = false
+        var startedSystem = false
 
-        mic.setHandler { [weak self] buf in
-            self?.ingest(stream: .mic, buffer: buf)
-        }
-        system.setHandler { [weak self] buf in
-            self?.ingest(stream: .system, buffer: buf)
-        }
+        do {
+            try micWriter.start()
+            try systemWriter.start()
+            startedWriters = true
 
-        try await mic.start()
-        try await system.start()
-        status = .recording
-        Log.lifecycle.info("Capture started")
+            mic.setHandler { [weak self] buf in
+                self?.ingest(stream: .mic, buffer: buf)
+            }
+            system.setHandler { [weak self] buf in
+                self?.ingest(stream: .system, buffer: buf)
+            }
+
+            try await mic.start()
+            startedMic = true
+            try await system.start()
+            startedSystem = true
+
+            status = .recording
+            Log.lifecycle.info("Capture started")
+        } catch {
+            Log.lifecycle.error("Start failed during partial setup, rolling back: \(String(describing: error), privacy: .public)")
+            if startedSystem { await system.stop() }
+            if startedMic { await mic.stop() }
+            if startedWriters {
+                try? await micWriter.finalize()
+                try? await systemWriter.finalize()
+            }
+            status = .failed
+            throw error
+        }
     }
 
     public func stop() async throws {
@@ -53,9 +73,24 @@ public actor CaptureSession {
         try await micWriter.finalize()
         try await systemWriter.finalize()
         try collector.writeSidecar(to: directory.ptsSidecar)
+        try writeTranscriptStub()
         try directory.finalize()
         status = .finalized
         Log.lifecycle.info("Capture finalized")
+    }
+
+    private nonisolated func writeTranscriptStub() throws {
+        let stub = """
+        ---
+        status: pending_transcription
+        mic: mic.m4a
+        system: system.m4a
+        pts: pts.json
+        ---
+
+        Transcription not yet performed. Awaiting transcription engine.
+        """
+        try stub.write(to: directory.transcript, atomically: true, encoding: .utf8)
     }
 
     private nonisolated func ingest(stream: PTSCollector.StreamID, buffer: CMSampleBuffer) {

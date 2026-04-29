@@ -50,6 +50,10 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("pts.json")
     }
 
+    public var transcript: URL {
+        url.appendingPathComponent("transcript.md")
+    }
+
     public func finalize() throws {
         let fileManager = FileManager.default
 
