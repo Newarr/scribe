@@ -49,12 +49,13 @@ public actor TranscriptionWorker {
     }
 
     public func run() async -> FinalState {
-        // Skip work if the on-disk transcript is already terminal. This makes
-        // the worker idempotent: SessionSupervisor can re-dispatch without
-        // re-running completed work.
-        if let existing = TranscriptStatusReader.read(at: directory.transcript),
-           existing == .complete || existing == .failed {
-            return existing == .complete ? .complete : .failed(reason: "already terminal on disk")
+        // Read the on-disk transcript once. Used both to skip already-terminal
+        // sessions AND to recover the retry attempt count after an app relaunch
+        // mid-backoff (codex slice-7 P2.2).
+        let existing = TranscriptFrontmatterReader.read(at: directory.transcript)
+
+        if let existing, existing.status == .complete || existing.status == .failed {
+            return existing.status == .complete ? .complete : .failed(reason: "already terminal on disk")
         }
 
         // One-shot audio preparation before the retry loop. Failure here is
@@ -69,7 +70,9 @@ public actor TranscriptionWorker {
             return .failed(reason: reason)
         }
 
-        var failedAttempts = 0
+        // Resume from the persisted attempt count, not from zero, so a relaunch
+        // during the 5m/30m backoff doesn't grant a fresh retry budget.
+        var failedAttempts = existing?.attempts ?? 0
         while true {
             if Task.isCancelled { return .cancelled }
             do {

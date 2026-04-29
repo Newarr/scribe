@@ -64,6 +64,45 @@ final class TranscriptionWorkerTests: XCTestCase {
         XCTAssertTrue(reason.contains("No speech"), "reason should mention no-speech: \(reason)")
     }
 
+    /// CDX-S7-CHAL.P2.2: when resuming a `retrying` session whose attempt count
+    /// is already at the policy max, the worker must NOT grant a fresh budget.
+    /// One transient failure here should write `failed` and never sleep.
+    func testRetryingSessionResumesFromPersistedAttempts() async throws {
+        try FileManager.default.createDirectory(at: dir().url, withIntermediateDirectories: true)
+        // Pre-populate the transcript at attempts=3 (the cloud policy's max
+        // failure count). After this, a single fresh failure is terminal.
+        let stub = """
+        ---
+        schema: transcriber/v1
+        status: retrying
+        title: "Test Session"
+        date: 2026-04-29
+        engine: elevenlabs
+        audio:
+          - mic.m4a
+          - system.m4a
+        started_at: 2026-04-29T14:30:00Z
+        ended_at: 2026-04-29T15:00:00Z
+        attempts: 3
+        ---
+
+        body
+        """
+        try stub.write(to: dir().transcript, atomically: true, encoding: .utf8)
+
+        let counter = SleepCounter()
+        let worker = makeWorker(
+            responses: [.failure(ElevenLabsScribeBackend.BackendError.rateLimited)],
+            sleep: { _ in await counter.increment() }
+        )
+        let final = await worker.run()
+        guard case .failed = final else {
+            return XCTFail("expected .failed (budget exhausted), got \(final)")
+        }
+        let sleeps = await counter.count
+        XCTAssertEqual(sleeps, 0, "worker must not retry once persisted attempts hits policy max; \(sleeps) sleeps observed")
+    }
+
     func testIdempotentOnAlreadyComplete() async throws {
         // Session dir must exist before we can write the pre-populated transcript.
         try FileManager.default.createDirectory(at: dir().url, withIntermediateDirectories: true)

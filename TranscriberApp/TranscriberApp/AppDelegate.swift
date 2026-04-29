@@ -13,9 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentSessionStartedAt: Date?
     private var currentCalendarEvent: CalendarEvent?
 
-    /// In-flight transcription tasks (fresh recordings + resumed sessions). Tracked so
+    /// In-flight transcription tasks (fresh recordings + resumed sessions), keyed
+    /// by per-spawn UUID so each task can self-remove on completion. Tracked so
     /// applicationShouldTerminate can cancel them and observe completion before quitting.
-    private var inflightTasks: [Task<Void, Never>] = []
+    private var inflightTasks: [UUID: Task<Void, Never>] = [:]
 
     private static let keychainService = "com.szymonsypniewicz.transcriber"
     private static let keychainAccount = "elevenlabs-api-key"
@@ -43,15 +44,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Resume any orphaned sessions from a previous launch (mid-transcribe crash,
         // unfinalized stop, retry-pending). Runs in the background so launch is fast.
         let outputRoot = self.outputRoot
+        let resumeId = UUID()
         let resumeTask = Task { [weak self] in
             await Self.runSupervisor(under: outputRoot)
-            await self?.cleanupFinishedTasks()
+            await self?.removeTask(id: resumeId)
         }
-        inflightTasks.append(resumeTask)
+        inflightTasks[resumeId] = resumeTask
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let inflight = inflightTasks.filter { !$0.isCancelled }
+        let inflight = Array(inflightTasks.values)
         guard !inflight.isEmpty else { return .terminateNow }
 
         Log.lifecycle.info("Quit requested with \(inflight.count, privacy: .public) in-flight task(s); cancelling and waiting up to 3s")
@@ -78,8 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func cleanupFinishedTasks() {
-        inflightTasks.removeAll { $0.isCancelled }
+    private func removeTask(id: UUID) {
+        inflightTasks.removeValue(forKey: id)
     }
 
     @MainActor
@@ -147,17 +149,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard stopSucceeded else { return }
 
+        // Persist the rich event-aware context to disk BEFORE spawning the
+        // worker, so a crash/cancel before the worker writes anything still
+        // leaves a transcript with the original title/attendees/language.
+        // Codex slice-7 P2.1 fix: SessionSupervisor on next launch reads this
+        // context via TranscriptFrontmatterReader and preserves it across
+        // resume.
+        let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event)
+        do {
+            try TranscriptWriter.writePending(at: dir.transcript, context: context)
+        } catch {
+            Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
+        }
+
         // Dispatch a TranscriptionWorker for this session. The worker handles
         // pending->retrying->complete|failed transitions, retry policy, and
-        // cancellation on quit. Fire-and-forget Task tracked in inflightTasks
-        // so applicationShouldTerminate can cancel cleanly.
-        let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event)
+        // cancellation on quit. Tracked in inflightTasks by UUID so the task
+        // can self-remove on completion (codex slice-7 P2.4 fix).
         let worker = Self.makeWorker(dir: dir, context: context, event: event)
+        let id = UUID()
         let task = Task { [weak self] in
             _ = await worker.run()
-            await self?.cleanupFinishedTasks()
+            await self?.removeTask(id: id)
         }
-        inflightTasks.append(task)
+        inflightTasks[id] = task
     }
 }
 

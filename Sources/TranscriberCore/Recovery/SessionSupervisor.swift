@@ -38,11 +38,25 @@ public actor SessionSupervisor {
             }
             let dir = SessionDirectory(url: entry)
 
+            // Read existing frontmatter once. Reused for: terminal-status
+            // skip, original-context preservation, attempts count.
+            let existing = TranscriptFrontmatterReader.read(at: dir.transcript)
+
+            // P2.3 fix: never overwrite a terminal transcript, even if the
+            // user has manually moved/deleted the audio. Spec lets users keep
+            // audio "until manually deleted" which implies they may also
+            // delete it; deleting audio shouldn't clobber the completed
+            // transcript body.
+            if let existing, existing.status == .complete || existing.status == .failed {
+                result.skipped += 1
+                continue
+            }
+
             let recovery = OrphanRecoverer.recover(dir)
             if recovery == .rescued { result.rescued += 1 }
 
             if recovery == .noAudio {
-                let context = contextFactory(dir)
+                let context = existing?.context ?? contextFactory(dir)
                 do {
                     try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: "Session audio is missing. The capture session may have been interrupted before any audio was written.")
                     result.markedFailed += 1
@@ -52,17 +66,14 @@ public actor SessionSupervisor {
                 continue
             }
 
-            let status = TranscriptStatusReader.read(at: dir.transcript)
-            switch status {
-            case .complete, .failed:
-                result.skipped += 1
-                continue
-            case .pending, .retrying, .none:
-                let context = contextFactory(dir)
-                let worker = workerFactory(dir, context)
-                workers.append(worker)
-                result.resumed += 1
-            }
+            // Pending or retrying (or no transcript yet for fresh-rescued
+            // orphans) — prefer the on-disk context (carries title +
+            // attendees + language from the original session) over the
+            // placeholder factory.
+            let context = existing?.context ?? contextFactory(dir)
+            let worker = workerFactory(dir, context)
+            workers.append(worker)
+            result.resumed += 1
         }
 
         // Dispatch all workers concurrently. Each is its own actor; running them
