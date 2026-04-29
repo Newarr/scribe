@@ -127,14 +127,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .notAMeeting:
             await detectionEngine?.suppress(app)
             Log.lifecycle.info("User suppressed \(app.bundleID, privacy: .public) for 30 minutes")
+            // Codex P1 fix: ProcessWatcher only emits launch/terminate events,
+            // so a long-running app (Chrome left open) needs an explicit re-arm
+            // when the TTL expires. Schedule a one-shot Task that re-fires the
+            // launch event 30 minutes later if the app is still running.
+            scheduleRearm(for: app, after: 30 * 60)
         case .skipForNow:
-            // No-op; if the user reopens the app a future launch event will re-dwell.
             Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now")
         }
     }
 
     @MainActor
+    private func scheduleRearm(for app: MeetingApp, after seconds: TimeInterval) {
+        let id = UUID()
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            } catch {
+                return
+            }
+            if Task.isCancelled { return }
+            // Only re-fire if the app is still running on the user's machine.
+            let stillRunning = NSWorkspace.shared.runningApplications.contains {
+                $0.bundleIdentifier == app.bundleID
+            }
+            guard stillRunning, let engine = await self?.detectionEngineSnapshot() else {
+                await self?.removeTask(id: id)
+                return
+            }
+            Log.lifecycle.info("Re-arming detection for \(app.bundleID, privacy: .public) after Skip TTL")
+            await engine.handleLaunch(of: app)
+            await self?.removeTask(id: id)
+        }
+        inflightTasks[id] = task
+    }
+
+    @MainActor
+    private func detectionEngineSnapshot() -> DetectionEngine? {
+        detectionEngine
+    }
+
+    @MainActor
     private func startRecording() async {
+        // Codex P2 fix: claim .starting before any await so concurrent
+        // detection candidates (or a menu Record + a candidate firing
+        // simultaneously) can't pass the handleDetectionCandidate guard
+        // and create two CaptureSessions.
+        guard status != .recording, status != .starting else {
+            Log.lifecycle.info("startRecording skipped: already \(self.status.rawValue, privacy: .public)")
+            return
+        }
+        self.status = .starting
+        menu?.rebuild(for: status)
+
         if permissions.microphoneStatus() != .granted {
             _ = await permissions.requestMicrophone()
         }
