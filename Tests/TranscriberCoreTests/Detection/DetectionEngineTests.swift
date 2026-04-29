@@ -58,16 +58,20 @@ final class DetectionEngineTests: XCTestCase {
 
     func testRedundantLaunchEventsDebounce() async throws {
         let captured = FireCounter()
-        let engine = DetectionEngine(dwellTime: 0.1) { _ in
+        // Bump dwellTime + final wait to absorb CI's scheduling jitter — local
+        // runs at 0.1s/250ms passed locally but raced GitHub Actions' actor
+        // dispatch where the third dwell timer hadn't fired by the assertion.
+        // Final wait is now ~10x the dwell which has plenty of headroom.
+        let engine = DetectionEngine(dwellTime: 0.2) { _ in
             await captured.increment()
         }
         let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
         await engine.handleLaunch(of: zoom)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
         await engine.handleLaunch(of: zoom)
-        try await Task.sleep(nanoseconds: 30_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
         await engine.handleLaunch(of: zoom)
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await Task.sleep(nanoseconds: 2_000_000_000)
         let count = await captured.value
         XCTAssertEqual(count, 1, "redundant launches must debounce; got \(count) callbacks")
     }
