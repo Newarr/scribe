@@ -1,7 +1,13 @@
 import AppKit
 import TranscriberCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+// @unchecked Sendable: all mutable state on this class is accessed through
+// @MainActor methods, so it's effectively single-threaded. The @MainActor
+// guard is enforced at compile time on the methods themselves; the Sendable
+// promise here just lets us pass `self` into @Sendable closures (e.g.
+// DetectionEngine.OnCandidate) without the compiler losing track of that
+// MainActor invariant. Required for CI's Xcode 16 strict-concurrency mode.
+final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var statusItem: NSStatusItem?
     private var menu: RecordingMenu?
     private var session: CaptureSession?
