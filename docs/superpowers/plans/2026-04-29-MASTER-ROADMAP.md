@@ -124,7 +124,7 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 |---|---|---|---|
 | 0 | ✅ `2026-04-29-slice-00-scaffolding.md` | `transcriber-slice-0` | shipped 2026-04-29 |
 | 1 | ✅ `2026-04-29-slice-01-manual-record.md` | `transcriber-slice-1` | shipped 2026-04-29 (TCC grant deferred to user first-launch) |
-| 2 | ✅ `2026-04-29-slice-02-single-channel-cloud.md` | — | not started |
+| 2 | ✅ `2026-04-29-slice-02-single-channel-cloud.md` | `transcriber-slice-2` | shipped 2026-04-29 (TCC grant + ElevenLabs API key deferred to user setup) |
 | 3 | ⏳ expand when starting | — | not started |
 | 4 | ⏳ expand when starting (depends on Spike B) | — | not started |
 | 5 | ⏳ expand when starting | — | not started |
