@@ -13,6 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentSessionStartedAt: Date?
     private var currentCalendarEvent: CalendarEvent?
 
+    /// In-flight transcription tasks (fresh recordings + resumed sessions). Tracked so
+    /// applicationShouldTerminate can cancel them and observe completion before quitting.
+    private var inflightTasks: [Task<Void, Never>] = []
+
+    private static let keychainService = "com.szymonsypniewicz.transcriber"
+    private static let keychainAccount = "elevenlabs-api-key"
+
     private var outputRoot: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return docs.appendingPathComponent("Transcriber", isDirectory: true)
@@ -22,8 +29,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
         try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
 
-        // Trigger calendar permission prompt early so first-time recording isn't held up.
-        // Failure is fine; recording still works without calendar.
         Task { _ = await self.calendar.requestAccess() }
 
         let m = RecordingMenu { [weak self] action in
@@ -34,6 +39,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = m.menu
         self.statusItem = item
         self.menu = m
+
+        // Resume any orphaned sessions from a previous launch (mid-transcribe crash,
+        // unfinalized stop, retry-pending). Runs in the background so launch is fast.
+        let outputRoot = self.outputRoot
+        let resumeTask = Task { [weak self] in
+            await Self.runSupervisor(under: outputRoot)
+            await self?.cleanupFinishedTasks()
+        }
+        inflightTasks.append(resumeTask)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let inflight = inflightTasks.filter { !$0.isCancelled }
+        guard !inflight.isEmpty else { return .terminateNow }
+
+        Log.lifecycle.info("Quit requested with \(inflight.count, privacy: .public) in-flight task(s); cancelling and waiting up to 3s")
+        inflight.forEach { $0.cancel() }
+
+        Task { @MainActor in
+            // Wait at most 3 seconds for tasks to observe cancellation and exit
+            // cleanly. On-disk status: retrying state survives so the next launch
+            // resumes from there.
+            let deadline = Date().addingTimeInterval(3.0)
+            for task in inflight {
+                let remaining = deadline.timeIntervalSinceNow
+                if remaining <= 0 { break }
+                _ = await withTaskGroup(of: Void.self) { group in
+                    group.addTask { _ = await task.value }
+                    group.addTask { try? await Task.sleep(nanoseconds: UInt64(max(0, remaining) * 1_000_000_000)) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    @MainActor
+    private func cleanupFinishedTasks() {
+        inflightTasks.removeAll { $0.isCancelled }
     }
 
     @MainActor
@@ -62,8 +108,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.currentSessionDirectory = dir
             self.currentSessionStartedAt = Date()
 
-            // Snapshot the overlapping calendar event at session start. Slice 6 will add
-            // a continuous watcher; slice 3 only needs the value at start time.
             let event = self.calendar.eventOverlapping(Date())
             self.currentCalendarEvent = event
             Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
@@ -103,26 +147,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard stopSucceeded else { return }
 
-        // Fire-and-forget transcription. Slice 7 will add proper queueing + retry.
-        Task { [weak self] in
-            await self?.transcribe(directory: dir, startedAt: started, endedAt: endedAt, event: event)
+        // Dispatch a TranscriptionWorker for this session. The worker handles
+        // pending->retrying->complete|failed transitions, retry policy, and
+        // cancellation on quit. Fire-and-forget Task tracked in inflightTasks
+        // so applicationShouldTerminate can cancel cleanly.
+        let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event)
+        let worker = Self.makeWorker(dir: dir, context: context, event: event)
+        let task = Task { [weak self] in
+            _ = await worker.run()
+            await self?.cleanupFinishedTasks()
         }
+        inflightTasks.append(task)
     }
 }
 
+// MARK: - Worker construction shared by fresh + resumed paths
+
 extension AppDelegate {
-    @MainActor
-    func transcribe(directory dir: SessionDirectory, startedAt: Date, endedAt: Date, event: CalendarEvent?) async {
-        let multichannelURL = dir.url.appendingPathComponent("multichannel.wav")
-        let transcriptURL = dir.transcript
+    nonisolated static func makeContext(
+        dir: SessionDirectory,
+        startedAt: Date,
+        endedAt: Date,
+        event: CalendarEvent?
+    ) -> TranscriptContext {
         let isoFmt = ISO8601DateFormatter()
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "yyyy-MM-dd"
-
         let title = event?.title ?? "Manual recording \(dir.url.lastPathComponent)"
         let attendees = (event?.attendees ?? []).map { "[[\($0.name)]]" }
-
-        let context = TranscriptContext(
+        return TranscriptContext(
             title: title,
             date: dayFmt.string(from: startedAt),
             engine: "elevenlabs",
@@ -132,78 +185,81 @@ extension AppDelegate {
             attendees: attendees,
             language: nil
         )
-        do {
-            try TranscriptWriter.writePending(at: transcriptURL, context: context)
-        } catch {
-            Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
-        }
+    }
 
-        do {
+    nonisolated static func makeWorker(
+        dir: SessionDirectory,
+        context: TranscriptContext,
+        event: CalendarEvent?
+    ) -> TranscriptionWorker {
+        let multichannelURL = dir.url.appendingPathComponent("multichannel.wav")
+        let keychain = KeychainStore(service: keychainService, account: keychainAccount)
+        let apiKey = (try? keychain.read()) ?? ""
+        let backend = ElevenLabsScribeBackend(apiKey: apiKey)
+        let keyterms = event?.keyterms ?? []
+        let request = EngineRequest(
+            audioURL: multichannelURL,
+            mode: .multichannel,
+            languageCode: nil,
+            keyterms: keyterms
+        )
+        let mapping = SpeakerMappingBuilder.build(event: event, mode: request.mode)
+
+        // prepareAudio: if multichannel.wav is missing (fresh recording or resumed
+        // session that crashed pre-mix), build it from mic.m4a + system.m4a.
+        let prepareAudio: @Sendable () async throws -> Void = {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: multichannelURL.path) { return }
             try await MultichannelWAVBuilder.build(
                 mic: dir.micFinal,
                 system: dir.systemFinal,
                 output: multichannelURL,
                 sampleRate: 16000
             )
-
-            let keychain = KeychainStore(
-                service: "com.szymonsypniewicz.transcriber",
-                account: "elevenlabs-api-key"
-            )
-            guard let apiKey = try keychain.read(), !apiKey.isEmpty else {
-                let setupHint = "ElevenLabs API key not found in Keychain. Set it with: security add-generic-password -s 'com.szymonsypniewicz.transcriber' -a 'elevenlabs-api-key' -w '<your-key>' -U"
-                try TranscriptWriter.writeFailed(at: transcriptURL, context: context, errorMessage: setupHint)
-                Log.engine.error("API key missing")
-                return
-            }
-
-            let backend = ElevenLabsScribeBackend(apiKey: apiKey)
-            let keyterms = event?.keyterms ?? []
-            let req = EngineRequest(
-                audioURL: multichannelURL,
-                mode: .multichannel,
-                languageCode: nil,
-                keyterms: keyterms
-            )
-            let size = (try? multichannelURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            Log.engine.info("Uploading 2-ch to ElevenLabs, bytes=\(size, privacy: .public)")
-            let response = try await backend.transcribe(req)
-
-            if response.utterances.isEmpty {
-                Log.engine.error("ElevenLabs returned no utterances")
-                try TranscriptWriter.writeFailed(
-                    at: transcriptURL,
-                    context: context,
-                    errorMessage: "No speech detected in the 2-channel upload. The mic and system tracks may be silent, corrupt, or below ElevenLabs' detection threshold."
-                )
-                return
-            }
-
-            let mapping = SpeakerMappingBuilder.build(event: event, mode: req.mode)
-            let completedContext = TranscriptContext(
-                title: context.title,
-                date: context.date,
-                engine: context.engine,
-                audioRelativePaths: context.audioRelativePaths,
-                startedAt: context.startedAt,
-                endedAt: context.endedAt,
-                attendees: context.attendees,
-                language: response.detectedLanguage
-            )
-            try TranscriptWriter.writeComplete(
-                at: transcriptURL,
-                context: completedContext,
-                utterances: response.utterances,
-                speakerMapping: mapping
-            )
-            Log.engine.info("Transcript complete, utterances=\(response.utterances.count, privacy: .public), mapped=\(mapping.count, privacy: .public)")
-        } catch {
-            Log.engine.error("Transcription failed: \(String(describing: error), privacy: .public)")
-            do {
-                try TranscriptWriter.writeFailed(at: transcriptURL, context: context, errorMessage: String(describing: error))
-            } catch {
-                Log.engine.error("Failed to write failed-transcript marker: \(String(describing: error), privacy: .public)")
-            }
         }
+
+        return TranscriptionWorker(
+            directory: dir,
+            context: context,
+            engine: backend,
+            request: request,
+            speakerMapping: mapping,
+            policy: .cloud,
+            prepareAudio: prepareAudio
+        )
+    }
+
+    nonisolated static func runSupervisor(under root: URL) async {
+        let supervisor = SessionSupervisor()
+        let result = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { dir in
+                // Resumed sessions don't have the original calendar event in memory,
+                // and the existing transcript on disk already carries title +
+                // attendees from when slice 3's writePending ran. Until a full
+                // frontmatter reader exists, the resumed context here is minimal —
+                // the worker's writeComplete will replace title/attendees with these
+                // basic values, so the resumed transcript may lose some enrichment
+                // metadata. Slice 6 (calendar enrichment full) can fix this by
+                // adding a TranscriptContextReader.
+                let isoFmt = ISO8601DateFormatter()
+                let dayFmt = DateFormatter()
+                dayFmt.dateFormat = "yyyy-MM-dd"
+                return TranscriptContext(
+                    title: "Resumed session \(dir.url.lastPathComponent)",
+                    date: dayFmt.string(from: Date()),
+                    engine: "elevenlabs",
+                    audioRelativePaths: ["mic.m4a", "system.m4a"],
+                    startedAt: isoFmt.string(from: Date()),
+                    endedAt: isoFmt.string(from: Date()),
+                    attendees: [],
+                    language: nil
+                )
+            },
+            workerFactory: { dir, ctx in
+                makeWorker(dir: dir, context: ctx, event: nil)
+            }
+        )
+        Log.lifecycle.info("Supervisor scan: resumed=\(result.resumed, privacy: .public), rescued=\(result.rescued, privacy: .public), markedFailed=\(result.markedFailed, privacy: .public), skipped=\(result.skipped, privacy: .public)")
     }
 }

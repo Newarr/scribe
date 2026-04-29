@@ -17,6 +17,8 @@ public actor TranscriptionWorker {
         case cancelled
     }
 
+    public typealias PrepareAudio = @Sendable () async throws -> Void
+
     private let directory: SessionDirectory
     private let context: TranscriptContext
     private let engine: TranscriptionEngine
@@ -24,6 +26,7 @@ public actor TranscriptionWorker {
     private let speakerMapping: [String: String]
     private let policy: RetryPolicy
     private let sleep: Sleep
+    private let prepareAudio: PrepareAudio
 
     public init(
         directory: SessionDirectory,
@@ -32,7 +35,8 @@ public actor TranscriptionWorker {
         request: EngineRequest,
         speakerMapping: [String: String] = [:],
         policy: RetryPolicy = .cloud,
-        sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+        sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+        prepareAudio: @escaping PrepareAudio = { /* no-op: caller handled prep */ }
     ) {
         self.directory = directory
         self.context = context
@@ -41,6 +45,7 @@ public actor TranscriptionWorker {
         self.speakerMapping = speakerMapping
         self.policy = policy
         self.sleep = sleep
+        self.prepareAudio = prepareAudio
     }
 
     public func run() async -> FinalState {
@@ -50,6 +55,18 @@ public actor TranscriptionWorker {
         if let existing = TranscriptStatusReader.read(at: directory.transcript),
            existing == .complete || existing == .failed {
             return existing == .complete ? .complete : .failed(reason: "already terminal on disk")
+        }
+
+        // One-shot audio preparation before the retry loop. Failure here is
+        // terminal — if we can't even build the upload audio, retry won't fix it.
+        do {
+            try await prepareAudio()
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            let reason = "Audio preparation failed: \(error)"
+            writeFailed(reason: reason)
+            return .failed(reason: reason)
         }
 
         var failedAttempts = 0
