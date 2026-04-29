@@ -12,7 +12,8 @@ let package = Package(
         .testTarget(
             name: "TranscriberCoreTests",
             dependencies: ["TranscriberCore"],
-            path: "Tests/TranscriberCoreTests"
+            path: "Tests/TranscriberCoreTests",
+            resources: [.copy("Engines/Fixtures")]
         )
     ]
 )

@@ -1,0 +1,16 @@
+{
+  "language_code": "en",
+  "language_probability": 0.99,
+  "text": "Hello there. How are you doing today?",
+  "words": [
+    {"text": "Hello", "type": "word", "start": 0.10, "end": 0.45, "speaker_id": "speaker_0"},
+    {"text": "there", "type": "word", "start": 0.46, "end": 0.80, "speaker_id": "speaker_0"},
+    {"text": ".", "type": "spacing", "start": 0.80, "end": 0.81, "speaker_id": "speaker_0"},
+    {"text": "How", "type": "word", "start": 1.20, "end": 1.40, "speaker_id": "speaker_1"},
+    {"text": "are", "type": "word", "start": 1.41, "end": 1.55, "speaker_id": "speaker_1"},
+    {"text": "you", "type": "word", "start": 1.56, "end": 1.70, "speaker_id": "speaker_1"},
+    {"text": "doing", "type": "word", "start": 1.71, "end": 1.95, "speaker_id": "speaker_1"},
+    {"text": "today", "type": "word", "start": 1.96, "end": 2.30, "speaker_id": "speaker_1"},
+    {"text": "?", "type": "spacing", "start": 2.30, "end": 2.31, "speaker_id": "speaker_1"}
+  ]
+}
