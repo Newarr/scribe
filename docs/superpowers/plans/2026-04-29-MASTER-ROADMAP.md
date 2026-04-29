@@ -127,7 +127,7 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 | 2 | ✅ `2026-04-29-slice-02-single-channel-cloud.md` | `transcriber-slice-2` | shipped 2026-04-29 (TCC grant + ElevenLabs API key deferred to user setup) |
 | 3 | ✅ `2026-04-29-slice-03-multichannel-calendar.md` | `transcriber-slice-3` | shipped 2026-04-29 (TCC + calendar permission + headphones for clean multichannel until slice 4 AEC) |
 | 4 | ⏳ expand when starting (depends on Spike B) | — | not started |
-| 5 | ⏳ expand when starting | — | not started |
+| 5 | ✅ `2026-04-29-slice-05-detection-light.md` | `transcriber-slice-5` | shipped 2026-04-29 (light: process allowlist + dwell + skip; mic-active + bidirectional audio deferred to slice 5b) |
 | 6 | ⏳ expand when starting | — | not started |
 | 7 | ✅ `2026-04-29-slice-07-recovery-retry.md` | `transcriber-slice-7` | shipped 2026-04-29 (jumped slice 4-6 because slice 4 needs Spike B) |
 | 8 | ⏳ expand when starting (depends on Spike A) | — | not started |
