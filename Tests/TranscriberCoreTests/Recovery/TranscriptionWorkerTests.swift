@@ -51,6 +51,34 @@ final class TranscriptionWorkerTests: XCTestCase {
                       "completed transcript should reference audio.m4a, got: \(transcript.prefix(500))")
     }
 
+    /// CDX-S9a.P2.1: failed transcripts must also produce audio.m4a +
+    /// metadata.json per the spec output contract. Without this, JSON
+    /// consumers see no asset at all on auth failures, retry exhaustion,
+    /// or empty-utterance responses.
+    func testFailedRunStillProducesAudioAndMetadata() async throws {
+        let dir = self.dir()
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try writeAACSilence(to: dir.micFinal, durationSec: 0.3)
+        try writeAACSilence(to: dir.systemFinal, durationSec: 0.3)
+
+        // Terminal failure: unauthorized. No retries.
+        let worker = makeWorker(responses: [.failure(ElevenLabsScribeBackend.BackendError.unauthorized)])
+        let final = await worker.run()
+        guard case .failed = final else {
+            return XCTFail("expected .failed for unauthorized, got \(final)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.url.appendingPathComponent("audio.m4a").path),
+                      "audio.m4a must exist on failure path so the failed transcript template's `Audio was captured and saved as` reference is valid")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.url.appendingPathComponent("metadata.json").path),
+                      "metadata.json must exist on failure path")
+
+        let data = try Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        let metadata = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: data)
+        XCTAssertEqual(metadata.status, "failed")
+        XCTAssertEqual(metadata.audio, "audio.m4a", "failure metadata must reference the canonical audio asset, not raw streams")
+    }
+
     private func writeAACSilence(to url: URL, durationSec: Double) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
         let settings: [String: Any] = [

@@ -27,6 +27,10 @@ public actor TranscriptionWorker {
     private let policy: RetryPolicy
     private let sleep: Sleep
     private let prepareAudio: PrepareAudio
+    /// The canonical audio file path used in transcript + metadata. Either
+    /// "audio.m4a" (after AudioFinalizer succeeded) or "" (use raw streams).
+    /// Set once per run() invocation by `prepareCanonicalAudio`.
+    private var canonicalAudioPath: String = ""
 
     public init(
         directory: SessionDirectory,
@@ -70,6 +74,13 @@ public actor TranscriptionWorker {
             return .failed(reason: reason)
         }
 
+        // Slice 9a output contract: produce audio.m4a (mixed playback file)
+        // up front, BEFORE the retry loop, so it exists for every terminal
+        // state — including failed transcripts (codex slice-9a review P2.1).
+        // Spec line 280's failed-transcript template ("Audio was captured
+        // and saved as audio.m4a") requires this.
+        let canonicalAudioPath = await prepareCanonicalAudio()
+
         // Resume from the persisted attempt count, not from zero, so a relaunch
         // during the 5m/30m backoff doesn't grant a fresh retry budget.
         var failedAttempts = existing?.attempts ?? 0
@@ -82,36 +93,19 @@ public actor TranscriptionWorker {
                     writeFailed(reason: msg)
                     return .failed(reason: msg)
                 }
-                // Slice 9a output contract: produce audio.m4a (mixed playback
-                // file) before writing the completed transcript so the
-                // transcript can reference audio.m4a as the canonical
-                // audio path. AudioFinalizer mixes mic.m4a + system.m4a;
-                // failure here is terminal but the engine's response is
-                // already in hand — we still write the complete transcript
-                // pointing at raw streams as fallback.
-                let audioFinalURL = directory.url.appendingPathComponent("audio.m4a")
-                var completedAudioPath = "audio.m4a"
-                do {
-                    try await AudioFinalizer.finalize(
-                        mic: directory.micFinal,
-                        system: directory.systemFinal,
-                        output: audioFinalURL,
-                        sampleRate: 48000
-                    )
-                } catch {
-                    Log.engine.error("AudioFinalizer failed; transcript will reference raw streams: \(String(describing: error), privacy: .public)")
-                    // Fall back to raw streams in the completed transcript;
-                    // user can still play mic.m4a + system.m4a.
-                    completedAudioPath = ""
-                }
-
+                // Build the completed transcript context using whatever audio
+                // path the up-front finalizer produced. canonicalAudioPath is
+                // either "audio.m4a" (success) or empty (fall back to raw
+                // streams). The metadata.json + transcript.md must agree so
+                // JSON consumers and humans see the same canonical asset
+                // (codex slice-9a review P2.2).
                 let completedContext = TranscriptContext(
                     title: context.title,
                     date: context.date,
                     engine: context.engine,
-                    audioRelativePaths: completedAudioPath.isEmpty
+                    audioRelativePaths: canonicalAudioPath.isEmpty
                         ? context.audioRelativePaths
-                        : [completedAudioPath],
+                        : [canonicalAudioPath],
                     startedAt: context.startedAt,
                     endedAt: context.endedAt,
                     attendees: context.attendees,
@@ -128,20 +122,7 @@ public actor TranscriptionWorker {
                     Log.engine.error("writeComplete failed: \(String(describing: error), privacy: .public)")
                     return .failed(reason: "transcript write failed: \(error)")
                 }
-                // metadata.json — JSON mirror of the frontmatter so agents
-                // and downstream pipelines have a machine-readable surface
-                // (spec lines 285-288).
-                let metadataURL = directory.url.appendingPathComponent("metadata.json")
-                let metadata = MetadataJSONWriter.Metadata(
-                    status: .complete,
-                    context: completedContext,
-                    audio: completedAudioPath.isEmpty ? "mic.m4a" : completedAudioPath
-                )
-                do {
-                    try MetadataJSONWriter.write(at: metadataURL, metadata: metadata)
-                } catch {
-                    Log.engine.error("metadata.json write failed: \(String(describing: error), privacy: .public)")
-                }
+                writeMetadata(status: .complete, context: completedContext, audioPath: canonicalAudioPath)
                 return .complete
             } catch is CancellationError {
                 return .cancelled
@@ -211,10 +192,77 @@ public actor TranscriptionWorker {
     }
 
     private func writeFailed(reason: String) {
+        // Failure transcripts reference whatever audio actually exists on
+        // disk: audio.m4a if the finalizer ran successfully (slice 9a),
+        // otherwise the raw mic + system streams from capture finalization.
+        // Metadata.json mirrors the same audio reference for consistency
+        // (codex slice-9a P2.2).
+        let audioPaths: [String] = canonicalAudioPath.isEmpty
+            ? context.audioRelativePaths
+            : [canonicalAudioPath]
+        let failedContext = TranscriptContext(
+            title: context.title,
+            date: context.date,
+            engine: context.engine,
+            audioRelativePaths: audioPaths,
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            attendees: context.attendees,
+            language: context.language
+        )
         do {
-            try TranscriptWriter.writeFailed(at: directory.transcript, context: context, errorMessage: reason)
+            try TranscriptWriter.writeFailed(at: directory.transcript, context: failedContext, errorMessage: reason)
         } catch {
             Log.engine.error("writeFailed failed: \(String(describing: error), privacy: .public)")
+        }
+        writeMetadata(status: .failed, context: failedContext, audioPath: canonicalAudioPath)
+    }
+
+    /// Runs AudioFinalizer to produce audio.m4a from the raw streams.
+    /// Returns "audio.m4a" on success, "" on failure (caller falls back to
+    /// the raw stream list). Result is also stored on the actor so failure
+    /// paths can stamp the same canonical path into metadata.
+    private func prepareCanonicalAudio() async -> String {
+        let audioFinalURL = directory.url.appendingPathComponent("audio.m4a")
+        do {
+            try await AudioFinalizer.finalize(
+                mic: directory.micFinal,
+                system: directory.systemFinal,
+                output: audioFinalURL,
+                sampleRate: 48000
+            )
+            canonicalAudioPath = "audio.m4a"
+            return canonicalAudioPath
+        } catch {
+            Log.engine.error("AudioFinalizer failed; output will reference raw streams: \(String(describing: error), privacy: .public)")
+            canonicalAudioPath = ""
+            return ""
+        }
+    }
+
+    /// Writes metadata.json mirroring the transcript frontmatter. Called from
+    /// every terminal state (complete, failed) so JSON consumers always have
+    /// a current snapshot. Best-effort — failure logs but doesn't escalate.
+    private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String) {
+        // Metadata.audio is a single string per spec line 251-255; pick the
+        // first audio reference. With audio.m4a present, that's "audio.m4a".
+        // With raw-streams fallback, that's mic.m4a (or whatever's first in
+        // the array). The transcript's `audio:` key still lists every track,
+        // so JSON consumers preferring single-asset semantics get the
+        // primary while transcript readers see the full set.
+        let primaryAudio = audioPath.isEmpty
+            ? (context.audioRelativePaths.first ?? "mic.m4a")
+            : audioPath
+        let metadata = MetadataJSONWriter.Metadata(
+            status: status,
+            context: context,
+            audio: primaryAudio
+        )
+        let metadataURL = directory.url.appendingPathComponent("metadata.json")
+        do {
+            try MetadataJSONWriter.write(at: metadataURL, metadata: metadata)
+        } catch {
+            Log.engine.error("metadata.json write failed: \(String(describing: error), privacy: .public)")
         }
     }
 
