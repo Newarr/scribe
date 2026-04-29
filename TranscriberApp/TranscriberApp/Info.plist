@@ -25,6 +25,8 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Szymon Sypniewicz. All rights reserved.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Transcriber records meeting audio to produce transcripts.</string>
+	<string>Transcriber records meeting audio for transcription. Audio stays on your Mac unless you've configured a cloud engine.</string>
+	<key>NSScreenCaptureDescription</key>
+	<string>Transcriber captures system audio so the other speakers in your call can be transcribed. No video is recorded.</string>
 </dict>
 </plist>
