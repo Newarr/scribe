@@ -159,6 +159,30 @@ For future `Transcribe only` mode:
 - Temporary audio may exist until transcript succeeds.
 - Delete temporary audio after successful transcription.
 
+### Audio normalization
+
+The mixed `audio.m4a` should be loudness-normalized so playback levels
+are consistent across sessions and devices.
+
+- Target: -16 LUFS integrated loudness, true-peak ≤ -1 dBTP.
+- Reference: ITU-R BS.1770-4 with EBU R128 gating.
+
+V1.0 status: **deferred to V1.1**.
+
+V1.0-rc1 ships an RMS-style approximation in `AudioFinalizer`:
+power-preserving mix (single-active passes through at unity, dual-active
+sums at 1/√2 each) with a hard per-sample peak limit at 0.891 (≈ -1
+dBFS). This produces consistent perceived volume on synthetic and
+typical-call inputs but is not BS.1770-compliant — true BS.1770 is a
+~400-line gating + true-peak-oversampling pass that landed too late
+for V1.0. Files written by V1.0-rc1 will read back at slightly
+different LUFS than a future V1.1 file mixed via real BS.1770.
+
+This deviation is intentional and documented; V1.1 will replace the
+RMS approximation with a real BS.1770 pass and the audio.m4a contract
+will not change (still mono AAC, 48 kHz). Files written under either
+implementation remain valid input for the engine.
+
 ## End Guard
 
 The app must prevent runaway recordings.

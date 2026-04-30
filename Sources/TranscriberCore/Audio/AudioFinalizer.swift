@@ -13,11 +13,14 @@ import Foundation
 /// Mix recipe: power-preserving — single-active side passes through at its
 /// original amplitude, dual-active sides are scaled by 1/√2 each (so two
 /// uncorrelated full-scale signals don't clip the sum). Per-sample peak
-/// limit at 0.891 ≈ -1 dBFS gives true-peak headroom per spec line 208.
+/// limit at 0.891 ≈ -1 dBFS gives true-peak headroom per spec § Audio
+/// normalization.
 ///
-/// LUFS normalization (spec line 208, target -16 LUFS / true peak ≤ -1
-/// dBTP) is approximated as RMS-style mixing per the D3 plan decision —
-/// shipping rc1 with documented spec deviation; real BS.1770 is V1.1.
+/// LUFS normalization (spec § Audio normalization, target -16 LUFS /
+/// true peak ≤ -1 dBTP) is approximated as power-preserving RMS-style
+/// scaling per the D3 plan decision — shipping rc1 with documented
+/// spec deviation; real BS.1770 lands in V1.1. See docs/SPEC.md
+/// "Audio normalization" for the contract and the intentional gap.
 public enum AudioFinalizer {
     public enum FinalizeError: Error, Equatable {
         case readFailed(URL)
