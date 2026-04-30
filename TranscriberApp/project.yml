@@ -9,8 +9,8 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "15.0"
-    MARKETING_VERSION: "1.0.0-rc2"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.0.0-rc3"
+    CURRENT_PROJECT_VERSION: "4"
 packages:
   TranscriberCore:
     path: ..

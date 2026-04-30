@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.0.0-rc3 - 2026-04-30
+
+Closes every entry in `docs/KNOWN_ISSUES.md` from the rc2 four-parallel
+codex audit (15 architectural P0/P1s + 9 P2s).
+
+### Capture pipeline correctness
+
+- **CAP-1** AudioFileWriter backpressure-drop is now terminal — the
+  session ends `.failed` instead of `.complete` with silent audio gaps.
+- **CAP-2** AudioFinalizer reads `pts.jsonl` to align mic + system
+  on the same session timeline. Stream that started later gets silence
+  prepended so voices line up. Missing log → legacy zip-from-frame-zero.
+- **CAP-3** Latched stop task. Concurrent `CaptureSession.stop()` calls
+  await the same task instead of returning success-while-stopping.
+  Stop during `.starting` transitions to `.failed` (was silent no-op).
+- **CAP-4** SessionClaim uses `flock(LOCK_EX | LOCK_NB)` on a held FD
+  for the worker's lifetime. OS releases the lock on process death.
+  Heartbeat / release write through the same FD so read-modify-write
+  is atomic by file-lock.
+- **CAP-5** CaptureSession acquires the SessionClaim while live;
+  OrphanRecoverer probes the claim and returns new `.activeCapture`
+  case if held. Supervisor maps to `skipped`. No more rename races
+  between live capture and a peer recovery scan.
+- **CAP-6** writeRetrying returns Bool; persistence failure is
+  terminal. Prevents unbounded retries against an unfixable engine
+  error when the disk briefly loses the attempts count.
+- **CAP-7** SCK stop-failure no longer drops the stream reference.
+  Stream stays populated until `stopCapture` succeeds; on failure,
+  next stop attempt has something to retry against.
+
+### Audio pipeline
+
+- **AUDIO-1** AudioFinalizer.StreamReader gains an NSLock + re-entry
+  guard that fatalErrors on concurrent `produce()` calls — converts
+  the @unchecked Sendable contract from observed-behavior to
+  runtime-enforced.
+- **AUDIO-2** `audio.m4a` replacement uses `FileManager.replaceItemAt`
+  for atomic rename via `renameat()` with RENAME_SWAP semantics.
+
+### Concurrency / state
+
+- **STATE-2** AppDelegate is now `@MainActor` (was `@unchecked Sendable`
+  with ad-hoc `@MainActor` on individual methods). NSApplicationDelegate
+  callbacks run on main per AppKit's contract; Swift strict concurrency
+  enforces it now.
+- **STATE-3** startRecording catch path clears every session field
+  (was clearing only currentCalendarEvent + status).
+- **STATE-4** EndGuard.promptGeneration counter increments on every
+  `.prompted` transition. keepRecording / stopNow accept an optional
+  generation parameter; mismatched generation is a no-op so stale
+  async-resolved clicks can't mutate terminal state.
+
+### Privacy
+
+- **PRIVACY-1** New `TranscriptFrontmatterReader.readStatusAndAttemptsStreaming`
+  uses InputStream byte-by-byte until the second `---` line. Per-line
+  cap (1KB), per-file cap (100 lines). Diagnostics collection now
+  uses it so transcript bodies / titles / attendees are never loaded
+  into memory during diagnostics.
+- **PRIVACY-2** DiagnosticsInstanceID gains `currentState() -> State`
+  with `.configured(secret) | .unreadable`. RNG status is checked.
+  AppDelegate writes the literal string `"unreadable"` into
+  `outputRootHash` when the keychain is unreadable rather than using
+  a phantom-keyed hash.
+
+### Release
+
+- **RELEASE-1** bump-version.sh validates SemVer 2.0 against the BNF
+  before any sed. Rejects shell metacharacters, quotes, paths-hostile
+  strings.
+
+### KNOWN_ISSUES.md is now empty
+
+The codex audit pipeline (8 reviews total over the autonomous run)
+has produced no outstanding architectural findings as of this commit.
+The user can tag `v1.0.0` once `docs/TESTING.md` is walked through.
+
+
+
 ## 1.0.0-rc2 - 2026-04-30
 
 Addresses 4 P0 + 9 P1 + 4 P2 findings from the rc1-final codex review.
