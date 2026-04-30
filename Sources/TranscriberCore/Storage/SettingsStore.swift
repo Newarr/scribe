@@ -1,18 +1,24 @@
 import Foundation
 
-// `UserDefaults` is documented as thread-safe by Apple but does not yet
-// carry a formal `Sendable` conformance in the macOS 14 SDK. Mark it
-// `@unchecked Sendable` retroactively so the SettingsStore actor can
-// accept one across isolation boundaries without a sending-data-race
-// false positive. If Apple ships the conformance natively, this extension
-// becomes a no-op (and the compiler will warn / drop the override).
-extension UserDefaults: @unchecked @retroactive Sendable {}
+/// Sendable wrapper around `UserDefaults`. Apple documents UserDefaults
+/// as thread-safe but doesn't (yet) carry a formal Sendable conformance
+/// in the macOS 14 SDK.
+///
+/// Codex Phase ζ P1.3: a global retroactive `extension UserDefaults:
+/// Sendable` collides with any future Apple-provided conformance OR any
+/// other module declaring the same. Wrap once in our own Sendable
+/// struct and the conformance lives on a type WE own.
+public struct UserDefaultsBox: @unchecked Sendable {
+    public let defaults: UserDefaults
+    public init(_ defaults: UserDefaults) { self.defaults = defaults }
+    public static let standard = UserDefaultsBox(.standard)
+}
 
 /// Snapshot of all settings that drive a session's runtime behavior.
 /// The supervisor / capture session / worker take this snapshot at start
 /// and don't poll back into the store mid-session — settings changes
 /// take effect on the next session, never to the running one.
-public struct SessionSettings: Sendable, Equatable {
+public struct SessionSettings: Sendable, Equatable, Codable {
     public var outputRoot: URL
     public var engineMode: EngineMode
     /// Spec line 102: default OFF means raw mic.m4a + system.m4a are
@@ -39,15 +45,25 @@ public struct SessionSettings: Sendable, Equatable {
 }
 
 /// Settings backing store. UserDefaults under the hood; tests can
-/// inject an in-memory `UserDefaults(suiteName:)` instance.
+/// inject an in-memory `UserDefaults(suiteName:)` instance via
+/// `UserDefaultsBox`.
 ///
-/// All reads go through `snapshot()` so the worker holds an immutable
-/// `SessionSettings` value rather than a live reference. Writes happen
-/// on whichever queue the call lands on; the actor isolation keeps
-/// concurrent writers from racing on multi-key updates (e.g. setting
-/// engineMode and outputRoot from the same Settings UI commit).
+/// Codex Phase ζ P1.4: settings are persisted as a single JSON blob
+/// (key `transcriber.settings.v1`) so multi-key writes are atomic by
+/// construction. Per-key setters do read-modify-write inside the actor;
+/// the actor's serialization makes that safe against concurrent writers.
+///
+/// Reads are also single-blob, so a partial write (e.g. crash mid-
+/// commit) leaves the previous good blob intact rather than mixing
+/// fields from two epochs.
 public actor SettingsStore {
     public enum Key: String, Sendable {
+        /// Single JSON blob holding the whole settings struct.
+        case storage = "transcriber.settings.v1"
+
+        // Legacy per-key keys are no longer used for writes but are
+        // surfaced here so AppDelegate's synchronous accessor can match
+        // the same identifiers if we ever ship a migration path.
         case outputRoot = "transcriber.outputRoot"
         case engineMode = "transcriber.engineMode"
         case keepRawStreams = "transcriber.keepRawStreams"
@@ -73,77 +89,95 @@ public actor SettingsStore {
         }
     }
 
-    private let defaults: UserDefaults
+    private let box: UserDefaultsBox
     private let fallback: Defaults
 
-    public init(defaults: UserDefaults = .standard, fallback: Defaults) {
-        self.defaults = defaults
+    public init(defaults: UserDefaultsBox = .standard, fallback: Defaults) {
+        self.box = defaults
         self.fallback = fallback
     }
 
     /// Returns an immutable view of all settings. Use this at session
     /// start; do not re-read mid-session.
     public func snapshot() -> SessionSettings {
-        SessionSettings(
-            outputRoot: readOutputRoot(),
-            engineMode: readEngineMode(),
-            keepRawStreams: readKeepRawStreams(),
-            aecEnabled: readAECEnabled()
-        )
+        if let data = box.defaults.data(forKey: Key.storage.rawValue),
+           let decoded = try? JSONDecoder().decode(SessionSettings.self, from: data) {
+            return decoded
+        }
+        return fallback.toSnapshot()
     }
 
-    // MARK: - typed setters
+    // MARK: - typed setters (read-modify-write — actor serializes)
 
     public func setOutputRoot(_ url: URL) {
-        defaults.set(url.path, forKey: Key.outputRoot.rawValue)
+        var current = snapshot()
+        current.outputRoot = url
+        commit(current)
     }
 
     public func setEngineMode(_ mode: EngineMode) {
-        defaults.set(mode.rawValue, forKey: Key.engineMode.rawValue)
+        var current = snapshot()
+        current.engineMode = mode
+        commit(current)
     }
 
     public func setKeepRawStreams(_ on: Bool) {
-        defaults.set(on, forKey: Key.keepRawStreams.rawValue)
+        var current = snapshot()
+        current.keepRawStreams = on
+        commit(current)
     }
 
     public func setAECEnabled(_ on: Bool) {
-        defaults.set(on, forKey: Key.aecEnabled.rawValue)
+        var current = snapshot()
+        current.aecEnabled = on
+        commit(current)
     }
 
-    // MARK: - typed getters (private — public surface is `snapshot()`)
-
-    private func readOutputRoot() -> URL {
-        if let path = defaults.string(forKey: Key.outputRoot.rawValue), !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
+    /// Atomic multi-key commit. Phase η Settings UI calls this after
+    /// the user clicks Save so the resulting on-disk state never
+    /// contains a partial mix of old + new fields.
+    public func commit(_ settings: SessionSettings) {
+        if let data = try? JSONEncoder().encode(settings) {
+            box.defaults.set(data, forKey: Key.storage.rawValue)
+        } else {
+            Log.engine.error("SettingsStore: failed to encode SessionSettings")
         }
-        return fallback.outputRoot
     }
+}
 
-    private func readEngineMode() -> EngineMode {
-        guard let raw = defaults.string(forKey: Key.engineMode.rawValue),
-              let mode = EngineMode(rawValue: raw) else {
-            return fallback.engineMode
-        }
-        return mode
+private extension SettingsStore.Defaults {
+    func toSnapshot() -> SessionSettings {
+        SessionSettings(
+            outputRoot: outputRoot,
+            engineMode: engineMode,
+            keepRawStreams: keepRawStreams,
+            aecEnabled: aecEnabled
+        )
     }
+}
 
-    private func readKeepRawStreams() -> Bool {
-        // UserDefaults.bool returns false for missing keys, which is what
-        // we want for the spec-default (off). But to honor an explicit
-        // user-set true, we still need to check object presence — bool
-        // alone can't distinguish "unset" from "set to false."
-        if defaults.object(forKey: Key.keepRawStreams.rawValue) != nil {
-            return defaults.bool(forKey: Key.keepRawStreams.rawValue)
+/// Synchronous read of the same settings blob the actor reads. Useful
+/// from MainActor-bound code paths that can't await an actor hop.
+///
+/// Codex Phase ζ note: this is observably consistent with the actor's
+/// snapshot because both read the same JSON-blob key. There's still a
+/// theoretical race if a write lands between the user's click and the
+/// session-start path, but multi-key inconsistency is impossible
+/// because the blob is the unit of commit.
+public enum SettingsSnapshotReader {
+    public static func read(
+        from box: UserDefaultsBox = .standard,
+        fallback: SettingsStore.Defaults
+    ) -> SessionSettings {
+        if let data = box.defaults.data(forKey: SettingsStore.Key.storage.rawValue),
+           let decoded = try? JSONDecoder().decode(SessionSettings.self, from: data) {
+            return decoded
         }
-        return fallback.keepRawStreams
-    }
-
-    private func readAECEnabled() -> Bool {
-        // D2: default ON means an unset key reads as the fallback (true).
-        // Distinguish unset from explicit-false the same way as above.
-        if defaults.object(forKey: Key.aecEnabled.rawValue) != nil {
-            return defaults.bool(forKey: Key.aecEnabled.rawValue)
-        }
-        return fallback.aecEnabled
+        return SessionSettings(
+            outputRoot: fallback.outputRoot,
+            engineMode: fallback.engineMode,
+            keepRawStreams: fallback.keepRawStreams,
+            aecEnabled: fallback.aecEnabled
+        )
     }
 }

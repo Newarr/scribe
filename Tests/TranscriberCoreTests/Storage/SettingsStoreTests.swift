@@ -3,7 +3,7 @@ import XCTest
 
 final class SettingsStoreTests: XCTestCase {
     private struct TestSuite {
-        let defaults: UserDefaults
+        let box: UserDefaultsBox
         let suiteName: String
     }
 
@@ -14,15 +14,16 @@ final class SettingsStoreTests: XCTestCase {
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             throw XCTSkip("could not create UserDefaults suite")
         }
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        return TestSuite(defaults: defaults, suiteName: suiteName)
+        let box = UserDefaultsBox(defaults)
+        // Capture the box (Sendable) instead of the raw UserDefaults.
+        addTeardownBlock { box.defaults.removePersistentDomain(forName: suiteName) }
+        return TestSuite(box: box, suiteName: suiteName)
     }
 
     private func tempDir() -> URL {
-        // isDirectory:true so the trailing-slash representation matches
-        // SettingsStore's `URL(fileURLWithPath: path, isDirectory: true)`
-        // round-trip — otherwise the stored vs. read URL string differ
-        // by one trailing `/`.
+        // isDirectory:true so trailing-slash representation matches
+        // SettingsStore's URL(fileURLWithPath:..., isDirectory: true)
+        // round-trip — otherwise stored vs read URL string differ.
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
@@ -32,7 +33,7 @@ final class SettingsStoreTests: XCTestCase {
         let suite = try makeSuite()
         let root = tempDir()
         let store = SettingsStore(
-            defaults: suite.defaults,
+            defaults: suite.box,
             fallback: .init(outputRoot: root)
         )
         let snap = await store.snapshot()
@@ -47,7 +48,7 @@ final class SettingsStoreTests: XCTestCase {
         let root = tempDir()
         let altRoot = tempDir()
         let store = SettingsStore(
-            defaults: suite.defaults,
+            defaults: suite.box,
             fallback: .init(outputRoot: root)
         )
         await store.setOutputRoot(altRoot)
@@ -62,48 +63,77 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.aecEnabled, false)
     }
 
-    func testExplicitFalseIsDistinguishedFromUnset() async throws {
-        // Codex regression guard: a Bool-only `defaults.bool(forKey:)`
-        // returns false for both "unset" and "set to false." For
-        // aecEnabled where the fallback is true, that matters: an unset
-        // key should read true, but a deliberate user-set false must read
-        // false.
+    func testCommitWritesAllKeysAtomically() async throws {
+        // Phase ζ P1.4: a single commit() must overwrite every field at
+        // once. Concurrent setters would force a read-modify-write cycle;
+        // commit should bypass that and just stamp the whole struct.
         let suite = try makeSuite()
         let root = tempDir()
+        let altRoot = tempDir()
         let store = SettingsStore(
-            defaults: suite.defaults,
-            fallback: .init(outputRoot: root, aecEnabled: true)
+            defaults: suite.box,
+            fallback: .init(outputRoot: root)
         )
-        let unsetSnap = await store.snapshot()
-        XCTAssertEqual(unsetSnap.aecEnabled, true, "unset key honors fallback")
-
-        await store.setAECEnabled(false)
-        let setSnap = await store.snapshot()
-        XCTAssertEqual(setSnap.aecEnabled, false, "explicit false overrides fallback")
+        let target = SessionSettings(
+            outputRoot: altRoot,
+            engineMode: .local,
+            keepRawStreams: true,
+            aecEnabled: false
+        )
+        await store.commit(target)
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap, target, "commit must persist every field")
     }
 
-    func testInvalidEngineModeStringFallsBackToDefault() async throws {
+    func testCorruptStoredBlobFallsBackToDefaults() async throws {
+        // Phase ζ P1.4 / P1.1: a malformed blob (e.g. older format,
+        // truncation, wrong type planted by a downgrade) must NOT crash
+        // and must NOT misclassify Bool fields as false. Snapshot must
+        // return the spec-correct fallbacks.
         let suite = try makeSuite()
         let root = tempDir()
-        suite.defaults.set("nonsense-engine", forKey: SettingsStore.Key.engineMode.rawValue)
+        suite.box.defaults.set(Data("definitely not json".utf8), forKey: SettingsStore.Key.storage.rawValue)
+
         let store = SettingsStore(
-            defaults: suite.defaults,
-            fallback: .init(outputRoot: root, engineMode: .cloud)
+            defaults: suite.box,
+            fallback: .init(outputRoot: root, engineMode: .cloud, keepRawStreams: false, aecEnabled: true)
         )
         let snap = await store.snapshot()
-        XCTAssertEqual(snap.engineMode, .cloud, "garbage in defaults must not crash; fall back to default")
+        XCTAssertEqual(snap.outputRoot, root)
+        XCTAssertEqual(snap.engineMode, .cloud)
+        XCTAssertEqual(snap.keepRawStreams, false)
+        XCTAssertEqual(snap.aecEnabled, true, "corrupt blob must NOT silently coerce aecEnabled to false")
+    }
+
+    func testWrongTypePlantedUnderStorageKeyFallsBack() async throws {
+        // A user with a downgraded version might have written a String
+        // or an Int under the storage key (not realistic post-rc1, but
+        // exercises the resilience path).
+        let suite = try makeSuite()
+        let root = tempDir()
+        suite.box.defaults.set("string-where-we-expect-data", forKey: SettingsStore.Key.storage.rawValue)
+
+        let store = SettingsStore(
+            defaults: suite.box,
+            fallback: .init(outputRoot: root, aecEnabled: true)
+        )
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap.aecEnabled, true)
     }
 
     func testSnapshotsAreImmutableValueTypes() async throws {
         // SessionSettings is a struct — taking a snapshot twice must
         // give two independent values, and mutating one must not affect
-        // the store. (Failsafe against a future refactor turning it into
-        // a class.)
+        // the store.
+        //
+        // Codex Phase ζ P2.2: also assert snap1 (mutated locally) is now
+        // distinct from snap3 (re-fetched from store) so a future class
+        // refactor that shared a reference would visibly fail.
         let suite = try makeSuite()
         let root = tempDir()
         let store = SettingsStore(
-            defaults: suite.defaults,
-            fallback: .init(outputRoot: root)
+            defaults: suite.box,
+            fallback: .init(outputRoot: root, keepRawStreams: false)
         )
         var snap1 = await store.snapshot()
         let snap2 = await store.snapshot()
@@ -112,13 +142,14 @@ final class SettingsStoreTests: XCTestCase {
         snap1.keepRawStreams.toggle()
         let snap3 = await store.snapshot()
         XCTAssertEqual(snap2, snap3, "mutating a snapshot must not write back through to the store")
+        XCTAssertNotEqual(snap1.keepRawStreams, snap3.keepRawStreams, "local mutation must diverge from the store snapshot")
     }
 
     func testDefaultsConstructorAcceptsCustomFallbacks() async throws {
         let suite = try makeSuite()
         let root = tempDir()
         let store = SettingsStore(
-            defaults: suite.defaults,
+            defaults: suite.box,
             fallback: .init(
                 outputRoot: root,
                 engineMode: .local,
@@ -130,5 +161,31 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.engineMode, .local)
         XCTAssertEqual(snap.keepRawStreams, true)
         XCTAssertEqual(snap.aecEnabled, false)
+    }
+
+    func testSyncReaderObservesStoreCommit() async throws {
+        // SettingsSnapshotReader is the synchronous counterpart for
+        // MainActor-bound code. After the actor commits, a sync read of
+        // the same UserDefaultsBox must see the new state.
+        let suite = try makeSuite()
+        let root = tempDir()
+        let altRoot = tempDir()
+        let store = SettingsStore(
+            defaults: suite.box,
+            fallback: .init(outputRoot: root)
+        )
+        let target = SessionSettings(
+            outputRoot: altRoot,
+            engineMode: .local,
+            keepRawStreams: true,
+            aecEnabled: false
+        )
+        await store.commit(target)
+
+        let syncSnap = SettingsSnapshotReader.read(
+            from: suite.box,
+            fallback: .init(outputRoot: root)
+        )
+        XCTAssertEqual(syncSnap, target)
     }
 }

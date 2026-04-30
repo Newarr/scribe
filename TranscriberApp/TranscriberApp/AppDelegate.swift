@@ -35,63 +35,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     /// Phase ζ: SettingsStore wires runtime contracts (output folder,
     /// engine selection, raw-stream retention, AEC enable) instead of
-    /// hardcoding them. Synchronous accessors below read UserDefaults
-    /// directly (UserDefaults is thread-safe by Apple's contract); the
-    /// actor exists for the Phase η Settings UI which will need
-    /// snapshot semantics on multi-key writes.
-    private let settingsStore: SettingsStore = {
+    /// hardcoding them. The actor handles writes (Phase η Settings UI);
+    /// MainActor-bound reads go through `settings` below, which decodes
+    /// the same single JSON blob via `SettingsSnapshotReader`.
+    private static func defaultSettingsFallback() -> SettingsStore.Defaults {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let defaultRoot = docs.appendingPathComponent("Transcriber", isDirectory: true)
-        return SettingsStore(
-            defaults: .standard,
-            fallback: .init(
-                outputRoot: defaultRoot,
-                engineMode: .cloud,         // rc1: cloud is the only working engine
-                keepRawStreams: false,      // spec line 102
-                aecEnabled: true            // D2
-            )
+        return SettingsStore.Defaults(
+            outputRoot: defaultRoot,
+            engineMode: .cloud,         // rc1: only working engine until Phase ο
+            keepRawStreams: false,      // spec line 102
+            aecEnabled: true            // D2
         )
-    }()
+    }
 
-    /// Synchronous current settings (a fast read from UserDefaults; no
-    /// actor hop). Use this from MainActor-bound code that needs the
-    /// output folder or engine choice without an `await`.
+    private let settingsStore: SettingsStore = SettingsStore(
+        defaults: .standard,
+        fallback: AppDelegate.defaultSettingsFallback()
+    )
+
+    /// Synchronous current settings (no actor hop). Reads the same
+    /// single JSON blob the actor writes, so a Settings UI commit is
+    /// observably consistent here.
     private var settings: SessionSettings {
-        let defaults = UserDefaults.standard
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let fallbackRoot = docs.appendingPathComponent("Transcriber", isDirectory: true)
-
-        let outputRoot: URL = {
-            if let path = defaults.string(forKey: SettingsStore.Key.outputRoot.rawValue), !path.isEmpty {
-                return URL(fileURLWithPath: path, isDirectory: true)
-            }
-            return fallbackRoot
-        }()
-        let engineMode: EngineMode = {
-            if let raw = defaults.string(forKey: SettingsStore.Key.engineMode.rawValue),
-               let mode = EngineMode(rawValue: raw) {
-                return mode
-            }
-            return .cloud
-        }()
-        let keepRaw: Bool = {
-            if defaults.object(forKey: SettingsStore.Key.keepRawStreams.rawValue) != nil {
-                return defaults.bool(forKey: SettingsStore.Key.keepRawStreams.rawValue)
-            }
-            return false
-        }()
-        let aec: Bool = {
-            if defaults.object(forKey: SettingsStore.Key.aecEnabled.rawValue) != nil {
-                return defaults.bool(forKey: SettingsStore.Key.aecEnabled.rawValue)
-            }
-            return true
-        }()
-        return SessionSettings(
-            outputRoot: outputRoot,
-            engineMode: engineMode,
-            keepRawStreams: keepRaw,
-            aecEnabled: aec
-        )
+        SettingsSnapshotReader.read(fallback: Self.defaultSettingsFallback())
     }
 
     private var outputRoot: URL { settings.outputRoot }
@@ -109,7 +76,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
-        try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+        // Codex Phase ζ P1.5: don't silently `try?` the mkdir. If the
+        // user has pointed outputRoot at an unmounted volume or a path
+        // they don't own, log it loudly so the eventual failed-to-record
+        // / empty-recovery-scan symptoms have a breadcrumb.
+        do {
+            try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+        } catch {
+            Log.lifecycle.error("Failed to create outputRoot at \(self.outputRoot.path, privacy: .public): \(String(describing: error), privacy: .public). Recovery scan will skip this scan; please fix the path or grant permission and relaunch.")
+        }
 
         Task {
             _ = await self.calendar.requestAccess()
@@ -521,6 +496,9 @@ extension AppDelegate {
                 makeWorker(dir: dir, context: ctx, event: nil)
             }
         )
-        Log.lifecycle.info("Supervisor scan: resumed=\(result.resumed, privacy: .public), rescued=\(result.rescued, privacy: .public), markedFailed=\(result.markedFailed, privacy: .public), skipped=\(result.skipped, privacy: .public)")
+        // Codex Phase ζ P1.2: include partialAudioMarkedFailed +
+        // recoveryDeferred so launch logs reflect the full ScanResult,
+        // not just the v0 fields.
+        Log.lifecycle.info("Supervisor scan: resumed=\(result.resumed, privacy: .public), rescued=\(result.rescued, privacy: .public), markedFailed=\(result.markedFailed, privacy: .public), partialAudioMarkedFailed=\(result.partialAudioMarkedFailed, privacy: .public), recoveryDeferred=\(result.recoveryDeferred, privacy: .public), totalFailed=\(result.totalFailed, privacy: .public), skipped=\(result.skipped, privacy: .public)")
     }
 }

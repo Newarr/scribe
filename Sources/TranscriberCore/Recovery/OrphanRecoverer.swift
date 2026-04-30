@@ -12,6 +12,15 @@ import Foundation
 /// `.partialAudio(stream:)` case lets `SessionSupervisor` write a
 /// `failed` transcript referencing whichever stream survived (so the user
 /// can still recover the audio manually) without ever calling the engine.
+///
+/// Phase ζ codex fix (P0.1): the previous version classified rename
+/// failures (immutable flag, permission denied, disk full) as
+/// `.partialAudio` because it only inspected the post-state of `.m4a`
+/// paths. That terminally failed sessions whose `.partial` bytes were
+/// still recoverable on the next launch. New code captures pre/post
+/// state and emits `.recoveryDeferred(stream:)` when a `.partial` we
+/// tried to rename is still on disk — supervisor leaves the session
+/// pending so the next scan can retry.
 public enum OrphanRecoverer {
     public enum Stream: String, Sendable, Equatable {
         case mic
@@ -24,9 +33,14 @@ public enum OrphanRecoverer {
         /// Both tracks present (potentially after renaming `.partial`).
         /// Worker may run.
         case rescued
-        /// Exactly one track survived. NOT transcribable per spec line 339;
-        /// caller must write a failed transcript referencing this stream.
+        /// Exactly one track survived AND no `.partial` is left on disk
+        /// awaiting rename. NOT transcribable per spec line 339; caller
+        /// must write a failed transcript referencing this stream.
         case partialAudio(stream: Stream)
+        /// At least one rename attempt failed but the `.partial` bytes are
+        /// still on disk. Caller should NOT terminally fail the session —
+        /// leave it pending so the next scan can retry.
+        case recoveryDeferred(stream: Stream)
         /// No audio whatsoever. Caller must write a failed transcript with
         /// "session audio is missing" body.
         case noAudio
@@ -35,20 +49,40 @@ public enum OrphanRecoverer {
     public static func recover(_ dir: SessionDirectory) -> Result {
         let fm = FileManager.default
 
-        let micFinal = fm.fileExists(atPath: dir.micFinal.path)
-        let sysFinal = fm.fileExists(atPath: dir.systemFinal.path)
-        if micFinal && sysFinal { return .alreadyFinalized }
+        // Capture pre-recovery state so we can detect rename failures
+        // (rather than misclassifying them as "system never existed").
+        let micFinalPre = fm.fileExists(atPath: dir.micFinal.path)
+        let sysFinalPre = fm.fileExists(atPath: dir.systemFinal.path)
+        let micPartialPre = fm.fileExists(atPath: dir.micPartial.path)
+        let sysPartialPre = fm.fileExists(atPath: dir.systemPartial.path)
 
-        if !micFinal && fm.fileExists(atPath: dir.micPartial.path) {
+        if micFinalPre && sysFinalPre { return .alreadyFinalized }
+
+        if !micFinalPre && micPartialPre {
             try? fm.moveItem(at: dir.micPartial, to: dir.micFinal)
         }
-        if !sysFinal && fm.fileExists(atPath: dir.systemPartial.path) {
+        if !sysFinalPre && sysPartialPre {
             try? fm.moveItem(at: dir.systemPartial, to: dir.systemFinal)
         }
 
-        let nowMic = fm.fileExists(atPath: dir.micFinal.path)
-        let nowSys = fm.fileExists(atPath: dir.systemFinal.path)
-        switch (nowMic, nowSys) {
+        let micFinalPost = fm.fileExists(atPath: dir.micFinal.path)
+        let sysFinalPost = fm.fileExists(atPath: dir.systemFinal.path)
+        let micPartialPost = fm.fileExists(atPath: dir.micPartial.path)
+        let sysPartialPost = fm.fileExists(atPath: dir.systemPartial.path)
+
+        // Rename failed if we tried to recover a `.partial` that's still
+        // sitting on disk afterward. Don't terminally fail — defer.
+        let micRenameFailed = micPartialPre && !micFinalPost && micPartialPost
+        let sysRenameFailed = sysPartialPre && !sysFinalPost && sysPartialPost
+        if micRenameFailed || sysRenameFailed {
+            // Pick whichever stream has the unrecovered partial bytes.
+            // If both, prefer mic (arbitrary; the caller doesn't care
+            // which side beyond logging).
+            let stuck: Stream = micRenameFailed ? .mic : .system
+            return .recoveryDeferred(stream: stuck)
+        }
+
+        switch (micFinalPost, sysFinalPost) {
         case (true, true): return .rescued
         case (true, false): return .partialAudio(stream: .mic)
         case (false, true): return .partialAudio(stream: .system)

@@ -90,4 +90,34 @@ final class OrphanRecovererTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemPartial.path))
     }
+
+    /// Codex Phase ζ P0.1: when a `.partial` rename fails (immutable
+    /// flag, permission, transient I/O), the bytes are still on disk and
+    /// recovery should be DEFERRED (not stamped failed) so the next scan
+    /// can retry. Use the immutable file flag (`uchg`) to force a real
+    /// rename failure deterministically, without test-side mocks.
+    func testRenameFailurePreservesPartialAndDefers() throws {
+        let dir = SessionDirectory(url: root)
+        try Data("mic-bytes".utf8).write(to: dir.micPartial)
+        try Data("sys-bytes".utf8).write(to: dir.systemPartial)
+
+        // Set the user-immutable flag on mic.partial. moveItem will fail
+        // with EPERM. Cleanup via teardown unsets it before the temp dir
+        // is wiped.
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: dir.micPartial.path)
+        let micPartialPath = dir.micPartial.path
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: micPartialPath)
+        }
+
+        let result = OrphanRecoverer.recover(dir)
+        // mic rename fails (immutable), system rename succeeds.
+        // Recoverer defers because mic.partial is still on disk.
+        XCTAssertEqual(result, .recoveryDeferred(stream: .mic))
+        // sys.final exists (rename succeeded).
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+        // mic.partial still on disk for next-scan retry.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micPartial.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path), "rename must NOT have produced mic.m4a despite the failure")
+    }
 }

@@ -183,13 +183,103 @@ final class SessionSupervisorTests: XCTestCase {
         XCTAssertEqual(r.partialAudioMarkedFailed, 1)
         XCTAssertEqual(r.resumed, 0)
         XCTAssertEqual(r.rescued, 0, "rescue counter is only for both-tracks recovery")
+        XCTAssertEqual(r.totalFailed, 1, "totalFailed convenience must include partial-audio sessions")
         XCTAssertEqual(TranscriptStatusReader.read(at: dir.transcript), .failed)
 
         // Surviving file is still on disk — user can recover it manually.
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
-        // Failed transcript body must reference the surviving file.
+
+        // Codex Phase ζ P0.2 + P2.1: failed transcript must NOT promise
+        // both audio files when only mic survived. Body asserts the
+        // explicit one-sided message; frontmatter must show single
+        // audio: "mic.m4a" (NOT a list including system.m4a).
         let body = try String(contentsOf: dir.transcript, encoding: .utf8)
-        XCTAssertTrue(body.contains("mic"), "failed transcript body must reference the surviving stream: \(body)")
+        XCTAssertTrue(body.contains("only mic survived"), "failed transcript body must say it's one-sided: \(body)")
+        XCTAssertTrue(body.contains("mic.m4a"), "failed transcript body must reference the surviving file: \(body)")
+        XCTAssertFalse(body.contains("system.m4a"), "failed transcript body must NOT promise system.m4a when only mic survived: \(body)")
+        // Frontmatter audio key uses single-string form when there's
+        // exactly one path; substring check is the cheapest assertion.
+        XCTAssertTrue(body.contains("audio: \"mic.m4a\"") || body.contains("audio:\n  - \"mic.m4a\""), "frontmatter must list only the surviving file: \(body)")
+    }
+
+    /// Phase ζ P0.2 mirror image: system-only also lands a failed
+    /// transcript with system.m4a in the audio path AND no mic.m4a.
+    func testOneSidedSystemOnlyFailedTranscriptDoesNotMentionMic() async throws {
+        let dir = makeSessionDir("partial-system")
+        try Data("sys-bytes".utf8).write(to: dir.systemPartial)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("partial-system") },
+            workerFactory: { d, _ in
+                XCTFail("worker must not run for one-sided audio sessions")
+                return Self.makeWorker(dir: d, responses: [])
+            }
+        )
+        XCTAssertEqual(r.partialAudioMarkedFailed, 1)
+        let body = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(body.contains("only system survived"), body)
+        XCTAssertTrue(body.contains("system.m4a"), body)
+        XCTAssertFalse(body.contains("mic.m4a"), "failed transcript body must NOT promise mic.m4a when only system survived: \(body)")
+    }
+
+    /// Codex Phase ζ P0.1: a session whose `.partial` rename failed
+    /// must NOT be terminally stamped — leave it pending so the next
+    /// scan can retry once the underlying problem (immutable flag,
+    /// transient I/O) clears. Uses the immutable file flag for a
+    /// deterministic rename failure.
+    func testRecoveryDeferredLeavesSessionPending() async throws {
+        let dir = makeSessionDir("rename-fails")
+        try Data("mic-bytes".utf8).write(to: dir.micPartial)
+        try Data("sys-bytes".utf8).write(to: dir.systemPartial)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: dir.micPartial.path)
+        let micPartialPath = dir.micPartial.path
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: micPartialPath)
+        }
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("rename-fails") },
+            workerFactory: { _, _ in
+                XCTFail("worker must not run while recovery is deferred")
+                return Self.makeWorker(dir: dir, responses: [])
+            }
+        )
+        XCTAssertEqual(r.recoveryDeferred, 1)
+        XCTAssertEqual(r.partialAudioMarkedFailed, 0, "deferred is not a terminal failure")
+        XCTAssertEqual(r.markedFailed, 0)
+        XCTAssertEqual(r.totalFailed, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.transcript.path), "deferred recovery must NOT write a failed transcript")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micPartial.path), "stranded .partial bytes must remain for next-scan retry")
+    }
+
+    /// Phase ζ P0.2: noAudio sessions also got the stale-context
+    /// treatment (frontmatter promised both audio files even though
+    /// neither existed). Verify the override produces an empty audio key.
+    func testNoAudioFailedTranscriptDoesNotPromiseFiles() async throws {
+        let dir = makeSessionDir("no-audio")
+        // Pre-populate a pending transcript with rich context (so the
+        // contextFactory isn't the source of the audio paths). The
+        // supervisor's stale-context bug used existing.context.audioRelativePaths
+        // verbatim; the fix overrides it with [] for this case.
+        try TranscriptWriter.writePending(at: dir.transcript, context: Self.makeContext("no-audio"))
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("no-audio") },
+            workerFactory: { _, _ in
+                XCTFail("worker must not run for no-audio sessions")
+                return Self.makeWorker(dir: dir, responses: [])
+            }
+        )
+        XCTAssertEqual(r.markedFailed, 1)
+        let body = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertFalse(body.contains("\"mic.m4a\""), "no-audio failed transcript must not promise files that don't exist: \(body)")
+        XCTAssertFalse(body.contains("\"system.m4a\""), body)
     }
 
     func testFailedSessionIsSkipped() async throws {

@@ -18,6 +18,17 @@ public actor SessionSupervisor {
         /// these — supervisor writes a `failed` transcript referencing the
         /// surviving stream so the user can still recover the audio.
         public var partialAudioMarkedFailed: Int = 0
+        /// Sessions whose `.partial` files couldn't be renamed this scan
+        /// (immutable flag, permission, transient I/O). Left pending so
+        /// the next scan can retry. Surfaced for telemetry; does NOT
+        /// count against `markedFailed` because the session isn't
+        /// terminal.
+        public var recoveryDeferred: Int = 0
+
+        /// Convenience: every transcript this scan terminally marked
+        /// failed. Codex Phase ζ P1.2 — keeps callers from off-by-one
+        /// summing `markedFailed` and `partialAudioMarkedFailed`.
+        public var totalFailed: Int { markedFailed + partialAudioMarkedFailed }
     }
 
     public init() {}
@@ -68,8 +79,16 @@ public actor SessionSupervisor {
                 // audio is NOT transcribable. Write a failed transcript
                 // pointing the user at the surviving file so they can
                 // recover the audio manually.
-                let context = existing?.context ?? contextFactory(dir)
+                //
+                // Codex Phase ζ P0.2: rebuild the context with the
+                // correct audioRelativePaths so frontmatter + body
+                // match reality (don't promise files that aren't there).
+                let baseContext = existing?.context ?? contextFactory(dir)
                 let survivingFile = stream == .mic ? dir.micFinal : dir.systemFinal
+                let context = Self.contextOverridingAudio(
+                    base: baseContext,
+                    paths: [survivingFile.lastPathComponent]
+                )
                 let message = "Session audio is one-sided (only \(stream.rawValue) survived). Per V1 spec the engine requires both microphone and system audio to produce diarized output; the surviving file at \(survivingFile.lastPathComponent) is preserved for manual recovery."
                 do {
                     try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: message)
@@ -78,8 +97,20 @@ public actor SessionSupervisor {
                     Log.engine.error("supervisor: writeFailed (partial audio) failed: \(String(describing: error), privacy: .public)")
                 }
                 continue
+            case .recoveryDeferred(let stream):
+                // At least one `.partial` is still on disk after a failed
+                // rename (immutable flag, permission, transient I/O).
+                // Codex Phase ζ P0.1: don't terminally fail — the bytes
+                // are recoverable on the next scan. Log + continue.
+                Log.engine.warning("supervisor: recovery deferred for session \(dir.url.lastPathComponent, privacy: .public): \(stream.rawValue) rename failed; .partial bytes preserved for next scan")
+                result.recoveryDeferred += 1
+                continue
             case .noAudio:
-                let context = existing?.context ?? contextFactory(dir)
+                // Codex Phase ζ P0.2: same fix — rebuild context with
+                // empty audioRelativePaths so the failed transcript
+                // doesn't promise files that don't exist.
+                let baseContext = existing?.context ?? contextFactory(dir)
+                let context = Self.contextOverridingAudio(base: baseContext, paths: [])
                 do {
                     try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: "Session audio is missing. The capture session may have been interrupted before any audio was written.")
                     result.markedFailed += 1
@@ -109,5 +140,26 @@ public actor SessionSupervisor {
             }
         }
         return result
+    }
+
+    /// Codex Phase ζ P0.2: when writing a failed transcript for a
+    /// session whose audio is one-sided or missing, the existing
+    /// `TranscriptContext.audioRelativePaths` (e.g. `["mic.m4a",
+    /// "system.m4a"]`) lies about what's on disk. Rebuild the context
+    /// with the actually-present paths.
+    private static func contextOverridingAudio(
+        base: TranscriptContext,
+        paths: [String]
+    ) -> TranscriptContext {
+        TranscriptContext(
+            title: base.title,
+            date: base.date,
+            engine: base.engine,
+            audioRelativePaths: paths,
+            startedAt: base.startedAt,
+            endedAt: base.endedAt,
+            attendees: base.attendees,
+            language: base.language
+        )
     }
 }
