@@ -33,6 +33,20 @@ if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
     exit 65
 fi
 
+# Codex rc2-audit RELEASE-1: validate SemVer 2.0 BNF before injecting
+# the value into Swift / YAML / file paths. Rejects shell metacharacters,
+# quotes, and any string that doesn't match the canonical SemVer regex.
+# Pattern: 1*DIGIT.1*DIGIT.1*DIGIT[-PRERELEASE][+BUILD]
+# PRERELEASE = ALPHANUM[.ALPHANUM]*
+# BUILD      = ALPHANUM[.ALPHANUM]*
+SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+if [[ ! "${NEW_VERSION}" =~ ${SEMVER_RE} ]]; then
+    echo "Version '${NEW_VERSION}' is not valid SemVer 2.0." >&2
+    echo "  Required: MAJOR.MINOR.PATCH[-prerelease][+build]" >&2
+    echo "  Examples: 1.0.0, 1.0.0-rc1, 1.0.0+build42, 1.2.3-rc.1+build.42" >&2
+    exit 64
+fi
+
 BUILD_INFO="${PROJECT_DIR}/Sources/TranscriberCore/BuildInfo.swift"
 PROJECT_YML="${PROJECT_DIR}/TranscriberApp/project.yml"
 CHANGELOG="${PROJECT_DIR}/CHANGELOG.md"

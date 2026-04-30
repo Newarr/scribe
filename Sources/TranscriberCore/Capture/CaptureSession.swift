@@ -10,6 +10,19 @@ public actor CaptureSession {
     private nonisolated let micWriter: AudioFileWriter
     private nonisolated let systemWriter: AudioFileWriter
     private nonisolated let collector: PTSCollector
+    /// Codex rc2-audit CAP-3: latched stop task. Concurrent stop()
+    /// callers await the SAME task instead of returning immediately
+    /// when status is `.stopping`. Without this, a Stop-during-Stop
+    /// returned success while the first stop was still finalizing,
+    /// and the caller would tear down session state + start the
+    /// transcription worker against unfinalized .partial files.
+    private var inFlightStop: Task<Void, Error>?
+    /// Codex rc2-audit CAP-5: capture-time claim. CaptureSession
+    /// holds the same SessionClaim a TranscriptionWorker would. While
+    /// the claim is held, `OrphanRecoverer` sees `.activeCapture` and
+    /// skips moving the `.partial` files out from under
+    /// AVAssetWriter. Released on stop / failure.
+    private var captureClaim: SessionClaim.Token?
 
     public init(
         directory: SessionDirectory,
@@ -31,6 +44,19 @@ public actor CaptureSession {
     public func start() async throws {
         status = .starting
         Log.lifecycle.info("Starting capture, dir=\(self.directory.url.lastPathComponent, privacy: .public)")
+
+        // Codex rc2-audit CAP-5: claim the session BEFORE writers
+        // start. The flock-backed claim signals "live capture" to
+        // OrphanRecoverer; without it, a peer scan could rename our
+        // .partial files mid-capture. Failing to claim is a hard
+        // start failure — the user should never be in a state where
+        // a session has both an active CaptureSession and a worker
+        // writing to the same files.
+        guard let claim = SessionClaim.acquire(at: directory.claim) else {
+            status = .failed
+            throw CaptureError.alreadyClaimed
+        }
+        captureClaim = claim
 
         var startedWriters = false
         var startedMic = false
@@ -63,31 +89,68 @@ public actor CaptureSession {
                 try? await micWriter.finalize()
                 try? await systemWriter.finalize()
             }
+            // Release the capture claim so a future scan can recover.
+            if let claim = captureClaim {
+                SessionClaim.release(claim)
+                captureClaim = nil
+            }
             status = .failed
             throw error
         }
     }
 
+    public enum CaptureError: Error, Equatable {
+        /// Another process / app instance already holds the
+        /// SessionClaim for this directory. Codex rc2-audit CAP-5.
+        case alreadyClaimed
+    }
+
     public func stop() async throws {
-        // Codex extensive-review P2.1 fix: actor reentrance during await means a
-        // double Stop (double-click, keyboard shortcut, Quit-while-stopping)
-        // could re-enter and double-finalize. Guard against any non-recording
-        // state up front; if .stopping is already in progress, return cleanly.
-        // If the session already finalized, return success without re-running.
-        switch status {
-        case .stopping, .finalized:
-            Log.lifecycle.info("Stop ignored: already \(self.status.rawValue, privacy: .public)")
+        // Codex rc2-audit CAP-3: concurrent stop callers await the
+        // SAME inFlightStop task. v0 returned success on the second
+        // call (status == .stopping branch) while the first stop was
+        // still finalizing — the caller would then tear down session
+        // state and start the worker against unfinalized .partial
+        // files. With the latch, every stop call observes the same
+        // success/failure outcome.
+        if let inFlightStop {
+            try await inFlightStop.value
             return
-        case .failed:
+        }
+        switch status {
+        case .finalized, .failed:
             return
         case .idle, .starting:
-            // Stop called before start completed — odd but recoverable. Skip.
+            // CAP-3: stop during .starting is no longer a silent
+            // no-op. The caller wanted to stop; we honor that even
+            // if start hasn't finished its racing setup. The status
+            // transitions to .failed so a subsequent re-start is
+            // explicit (and the AppDelegate's catch-path session
+            // cleanup fires per STATE-3).
+            status = .failed
             return
         case .recording:
             break
+        case .stopping:
+            // status==.stopping but inFlightStop == nil shouldn't
+            // happen with the latch above; treat as a no-op.
+            return
         }
 
         status = .stopping
+        let task = Task<Void, Error> { [weak self] in
+            try await self?.performStop()
+        }
+        inFlightStop = task
+        defer { inFlightStop = nil }
+        try await task.value
+    }
+
+    /// Body of the stop sequence, called once per stop generation.
+    /// Codex rc2-audit CAP-3: extracted from `stop()` so the latched
+    /// `inFlightStop` task can run it without re-entering the
+    /// guard-and-set logic.
+    private func performStop() async throws {
         Log.lifecycle.info("Stopping capture")
 
         // Phase β.4 transactional stop. Explicit happens-before chain:
@@ -126,6 +189,13 @@ public actor CaptureSession {
         do { try collector.writeSidecar(to: directory.ptsSidecar) } catch { firstError = firstError ?? error }
         do { try directory.finalize() } catch { firstError = firstError ?? error }
         do { try writeTranscriptStub() } catch { firstError = firstError ?? error }
+        // Codex rc2-audit CAP-5: release the capture claim regardless
+        // of whether the stop chain succeeded — leaving it held would
+        // block future supervisor recovery on this directory.
+        if let claim = captureClaim {
+            SessionClaim.release(claim)
+            captureClaim = nil
+        }
         if let firstError {
             // Status stays at .stopping so the next stop attempt can
             // try again. Don't claim .finalized when something failed
@@ -172,6 +242,16 @@ public actor CaptureSession {
             // Drive the full stop chain (release SCK + finalize + rename)
             // instead of just flipping status — leaving SCK running while
             // the UI thinks recording is done would orphan a live capture.
+            Task { await self.failAndCleanup() }
+            return
+        }
+        // Codex rc2-audit CAP-1: backpressure-drop is data loss. v0
+        // returned silently and the session ended in `.complete` with
+        // missing audio — the user has no way to know their recording
+        // is gap-ridden. Treat as terminal: drive the same cleanup
+        // path as a writer-level append failure.
+        if outcome == .droppedBackpressure {
+            Log.capture.error("Audio writer dropped a buffer under backpressure — terminating session to surface data loss")
             Task { await self.failAndCleanup() }
             return
         }

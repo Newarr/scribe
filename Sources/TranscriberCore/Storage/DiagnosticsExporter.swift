@@ -200,23 +200,24 @@ public enum DiagnosticsCollector {
                 continue
             }
 
-            // The frontmatter reader returns just status + context +
-            // attempts. We pluck `status` and `attempts` ONLY — the
-            // context (which has attendees) is intentionally not
-            // surfaced into the diagnostics output.
-            guard let frontmatter = TranscriptFrontmatterReader.read(at: dir.transcript) else {
+            // Codex rc2-audit PRIVACY-1: use the streaming reader
+            // that stops at the second `---` line so we never load
+            // transcript bodies into memory. The diagnostics surface
+            // needs status + attempts; everything else is body or
+            // PII-bearing context.
+            guard let result = TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: dir.transcript) else {
                 unknown += 1
                 totalSessions += 1
                 continue
             }
             totalSessions += 1
-            switch frontmatter.status {
+            switch result.status {
             case .pending: pending += 1
             case .retrying: retrying += 1
             case .complete: complete += 1
             case .failed: failed += 1
             }
-            totalRetries += frontmatter.attempts
+            totalRetries += result.attempts
         }
 
         return DiagnosticsSnapshot.SessionSummary(
@@ -307,29 +308,86 @@ public enum DiagnosticsCollector {
 /// HMAC key for `hashPath`. Generated lazily on first read so a fresh
 /// install starts with a unique correlation value but multiple exports
 /// from the same install share the same hash.
+///
+/// Codex rc2-audit PRIVACY-2: the v0 path used `try?` around both the
+/// keychain read and write, which collapsed "not yet generated" with
+/// "keychain locked / unreadable" into the same code path AND silently
+/// fell back to an ephemeral secret if write failed — defeating the
+/// cross-export correlation invariant. New flow distinguishes the
+/// three states (configured / missing / unreadable) and surfaces a
+/// `.unreadable` value when the secret can't be persisted, so the
+/// diagnostics blob can record `outputRootHash: "unreadable"` instead
+/// of producing a non-correlatable hash.
 public actor DiagnosticsInstanceID {
+    public enum State: Sendable, Equatable {
+        case configured(String)  // hex-encoded secret
+        case unreadable          // keychain can't be read OR written
+    }
+
     private let keychain: KeychainStore
-    private var cached: String?
+    private var cached: State?
 
     public init(service: String, account: String) {
         self.keychain = KeychainStore(service: service, account: account)
     }
 
-    public func current() -> String {
+    /// Returns the per-install secret if Keychain access succeeded;
+    /// `.unreadable` otherwise. Callers in the diagnostics flow MUST
+    /// handle the `.unreadable` case rather than coercing to a
+    /// throwaway secret — the whole point of HMAC-keying is stable
+    /// across-export correlation.
+    public func currentState() -> State {
         if let cached { return cached }
-        if let stored = (try? keychain.read()) ?? nil, !stored.isEmpty {
-            self.cached = stored
-            return stored
+        // Try read first. KeychainStore.read returns nil for "not
+        // present" (errSecItemNotFound) and throws for everything
+        // else (locked, denied, transient I/O).
+        let readResult: Result<String?, Error>
+        do { readResult = .success(try keychain.read()) }
+        catch { readResult = .failure(error) }
+
+        switch readResult {
+        case .success(let stored?) where !stored.isEmpty:
+            cached = .configured(stored)
+            return .configured(stored)
+        case .success:
+            // Not yet generated — try to create + persist. RNG status
+            // is checked: errSecSuccess is the only non-failure case.
+            var bytes = [UInt8](repeating: 0, count: 32)
+            let rng = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+            guard rng == errSecSuccess else {
+                Log.engine.error("DiagnosticsInstanceID: SecRandomCopyBytes failed with status \(rng, privacy: .public)")
+                cached = .unreadable
+                return .unreadable
+            }
+            let secret = bytes.map { String(format: "%02x", $0) }.joined()
+            do {
+                try keychain.write(secret)
+                cached = .configured(secret)
+                return .configured(secret)
+            } catch {
+                // Persistence failed — caching the ephemeral secret
+                // would let one export succeed but the next run would
+                // generate a different one, breaking correlation. Mark
+                // unreadable so callers know.
+                Log.engine.error("DiagnosticsInstanceID: Keychain write failed: \(String(describing: error), privacy: .public)")
+                cached = .unreadable
+                return .unreadable
+            }
+        case .failure(let error):
+            Log.engine.error("DiagnosticsInstanceID: Keychain read failed: \(String(describing: error), privacy: .public)")
+            cached = .unreadable
+            return .unreadable
         }
-        // Generate 32 random bytes (256-bit secret), hex-encode, and
-        // persist in Keychain. If write fails (sandbox-revoked), use
-        // an ephemeral value so diagnostics keep working — at the cost
-        // of correlation across exports.
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        let secret = bytes.map { String(format: "%02x", $0) }.joined()
-        try? keychain.write(secret)
-        self.cached = secret
-        return secret
+    }
+
+    /// Backwards-compatible accessor for callers that only need the
+    /// hex string. Returns `"unreadable"` when the state is unreadable
+    /// — that string is then visible in the export's `outputRootHash`,
+    /// surfacing the failure to support without crashing the export.
+    public func current() -> String {
+        switch currentState() {
+        case .configured(let s): return s
+        case .unreadable: return "unreadable"
+        }
     }
 }

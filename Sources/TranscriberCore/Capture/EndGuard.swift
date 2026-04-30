@@ -172,6 +172,12 @@ public actor EndGuard {
                 return
             }
             if now.timeIntervalSince(since) >= config.silenceWindow {
+                // Codex rc2-audit STATE-4: bump generation BEFORE
+                // firing the async onPrompt callback. The UI handler
+                // captures the current generation and feeds it back
+                // to keepRecording / stopNow so a late click against
+                // a stale prompt is ignored.
+                promptGeneration += 1
                 state = .prompted(at: now)
                 await onPrompt(.bidirectionalSilence)
             }
@@ -206,18 +212,56 @@ public actor EndGuard {
         }
     }
 
-    /// User clicked "Keep Recording". Spec line 180: snooze 15 minutes.
-    public func keepRecording(now: Date) {
-        let until = now.addingTimeInterval(config.snoozeDuration)
-        state = .snoozed(until: until)
-        // Reset levels so we're not stuck in quiet at the moment of snooze.
-        lastMicLevel = 1.0
-        lastSystemLevel = 1.0
+    /// Codex rc2-audit STATE-4: prompts run async; the user's click
+    /// arrives some time after the prompt fired. Between the fire and
+    /// the click, the state machine may have transitioned (audio
+    /// resumed → .watching, countdown elapsed → .stopped, snooze
+    /// expired → .quiet). A late "Keep Recording" click against a
+    /// terminal state would silently mutate it.
+    ///
+    /// The generation counter increments every time the state machine
+    /// enters `.prompted`. UI handlers receive the generation along
+    /// with the prompt; their click callback passes it back to
+    /// keepRecording / stopNow. A mismatch is a no-op.
+    private(set) var promptGeneration: Int = 0
+
+    /// User clicked "Keep Recording". Spec line 180: snooze 15
+    /// minutes. Codex rc2-audit STATE-4: the `generation` parameter
+    /// must match the prompt that produced this click; otherwise the
+    /// click is stale (audio resumed, countdown elapsed, snooze
+    /// expired since the prompt).
+    public func keepRecording(now: Date, generation: Int? = nil) {
+        if let generation, generation != promptGeneration {
+            // Stale click — log and ignore.
+            return
+        }
+        // Only honor keepRecording when we're actually showing a
+        // prompt or counting down. Otherwise the click is for a
+        // prompt the state machine has moved past.
+        switch state {
+        case .prompted, .counting:
+            let until = now.addingTimeInterval(config.snoozeDuration)
+            state = .snoozed(until: until)
+            // Reset levels so we're not stuck in quiet at the moment of snooze.
+            lastMicLevel = 1.0
+            lastSystemLevel = 1.0
+        default:
+            return
+        }
     }
 
     /// User clicked "Stop Now". The actual stop is driven by the parent
     /// (CaptureSession.stop); the guard just records the terminal state.
-    public func stopNow() {
-        state = .stopped(reason: .bidirectionalSilence)
+    /// Codex rc2-audit STATE-4: same generation gate as keepRecording.
+    public func stopNow(generation: Int? = nil) {
+        if let generation, generation != promptGeneration {
+            return
+        }
+        switch state {
+        case .prompted, .counting:
+            state = .stopped(reason: .bidirectionalSilence)
+        default:
+            return
+        }
     }
 }

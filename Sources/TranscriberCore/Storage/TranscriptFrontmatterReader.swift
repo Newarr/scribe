@@ -23,6 +23,70 @@ public enum TranscriptFrontmatterReader {
         return readFromString(content)
     }
 
+    /// Codex rc2-audit PRIVACY-1: streaming reader that opens the file
+    /// and reads byte-by-byte until the second `---` line. Stops the
+    /// stream there — never loads transcript bodies, attendees, or
+    /// titles into memory. Returns ONLY (status, attempts) for the
+    /// diagnostics aggregate-counts surface; the full Frontmatter
+    /// reader stays available for the supervisor's resume path.
+    public static func readStatusAndAttemptsStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int)? {
+        guard let stream = InputStream(url: url) else { return nil }
+        stream.open()
+        defer { stream.close() }
+
+        var lineBuffer = Data()
+        var lineCount = 0
+        var sawOpener = false
+        var status: TranscriptStatus?
+        var attempts = 0
+
+        let chunkSize = 256
+        var byte: UInt8 = 0
+        while stream.hasBytesAvailable {
+            let n = stream.read(&byte, maxLength: 1)
+            if n <= 0 { break }
+            if byte == 0x0A {  // newline
+                lineCount += 1
+                let line = String(data: lineBuffer, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespaces) ?? ""
+                lineBuffer.removeAll(keepingCapacity: true)
+
+                if !sawOpener {
+                    if line == "---" { sawOpener = true; continue }
+                    // Anything before the opening "---" is malformed.
+                    return nil
+                }
+                if line == "---" {
+                    // Closing delimiter — return whatever we found.
+                    guard let s = status else { return nil }
+                    return (s, attempts)
+                }
+                if line.hasPrefix("status:") {
+                    let v = String(line.dropFirst("status:".count))
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    status = TranscriptStatus(rawValue: v)
+                }
+                if line.hasPrefix("attempts:") {
+                    let v = String(line.dropFirst("attempts:".count))
+                        .trimmingCharacters(in: .whitespaces)
+                    attempts = Int(v) ?? 0
+                }
+            } else {
+                lineBuffer.append(byte)
+                // Per-line cap: a frontmatter line should be at most a
+                // couple hundred bytes. If we're not seeing newlines,
+                // bail rather than loading half the file.
+                if lineBuffer.count > chunkSize * 4 { return nil }
+            }
+            // Hard cap on number of lines read: spec frontmatters are
+            // ~10-15 lines; 100 is generous and stops us walking the
+            // body in the no-closing-delimiter case.
+            if lineCount > 100 { return nil }
+        }
+        return nil
+    }
+
     static func readFromString(_ content: String) -> Frontmatter? {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }

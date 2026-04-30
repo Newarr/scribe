@@ -2,7 +2,7 @@
 
 Menu-bar macOS app that captures meeting audio (mic + system) and produces high-fidelity markdown transcripts via ElevenLabs Scribe v2 or Cohere Transcribe (local).
 
-> Spec: `docs/SPEC.md` · Open questions: `docs/QUESTIONS.md` · Implementation roadmap: `docs/superpowers/plans/2026-04-29-MASTER-ROADMAP.md`
+> Spec, decisions, open questions, and QA all live in `docs/SPEC.md`. Implementation roadmap: `docs/superpowers/plans/2026-04-29-MASTER-ROADMAP.md`.
 
 ## Build
 

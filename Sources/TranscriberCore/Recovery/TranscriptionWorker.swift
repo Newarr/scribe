@@ -211,7 +211,18 @@ public actor TranscriptionWorker {
                     writeFailed(reason: reason)
                     return .failed(reason: reason)
                 }
-                writeRetrying(failedAttempts: failedAttempts, lastError: error)
+                // Codex rc2-audit CAP-6: a writeRetrying failure that
+                // gets swallowed leaves the on-disk attempts count
+                // stale. The next launch's supervisor reads stale
+                // frontmatter and grants a fresh retry budget — an
+                // unfixable engine error then loops forever. If the
+                // disk can't persist the retry state, treat that as
+                // terminal: the session can't be retried safely.
+                if !writeRetrying(failedAttempts: failedAttempts, lastError: error) {
+                    let reason = "retry persistence failed; terminating to avoid unbounded relaunch retries (last engine error: \(error))"
+                    writeFailed(reason: reason)
+                    return .failed(reason: reason)
+                }
                 Log.engine.info("Transcription transient failure, attempt=\(failedAttempts, privacy: .public), nextDelay=\(delay, privacy: .public)s")
                 do {
                     try await sleep(delay)
@@ -224,7 +235,13 @@ public actor TranscriptionWorker {
         }
     }
 
-    private func writeRetrying(failedAttempts: Int, lastError: Error) {
+    /// Returns true on successful persist, false on write failure.
+    /// Codex rc2-audit CAP-6: callers must NOT swallow false — a
+    /// stale on-disk attempts count + a fresh retry budget on
+    /// relaunch is a path to unbounded retries against an unfixable
+    /// engine error.
+    @discardableResult
+    private func writeRetrying(failedAttempts: Int, lastError: Error) -> Bool {
         // Build the retrying-status frontmatter inline. Must mirror every field
         // the supervisor's TranscriptFrontmatterReader knows how to restore,
         // including language + attendees, so a relaunch during the backoff
@@ -259,8 +276,10 @@ public actor TranscriptionWorker {
         let body = lines.joined(separator: "\n")
         do {
             try body.write(to: directory.transcript, atomically: true, encoding: .utf8)
+            return true
         } catch {
             Log.engine.error("writeRetrying failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 
@@ -298,11 +317,16 @@ public actor TranscriptionWorker {
     private func prepareCanonicalAudio() async -> String {
         let audioFinalURL = directory.url.appendingPathComponent("audio.m4a")
         do {
+            // Codex rc2-audit CAP-2: pass the PTS streaming log so
+            // AudioFinalizer can align mic/system on the same
+            // session timeline. Missing log → finalizer falls back
+            // to zip-from-frame-zero (legacy behavior).
             try await AudioFinalizer.finalize(
                 mic: directory.micFinal,
                 system: directory.systemFinal,
                 output: audioFinalURL,
-                sampleRate: 48000
+                sampleRate: 48000,
+                ptsLogURL: directory.ptsStreamingLog
             )
             canonicalAudioPath = "audio.m4a"
             return canonicalAudioPath

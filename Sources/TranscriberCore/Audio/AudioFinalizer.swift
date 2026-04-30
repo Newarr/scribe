@@ -64,9 +64,26 @@ public enum AudioFinalizer {
         system: URL,
         output: URL,
         sampleRate: Double = 48000,
+        ptsLogURL: URL? = nil,
         options: Options = .default
     ) async throws {
         let monoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+
+        // Codex rc2-audit CAP-2: when a per-buffer PTS log is
+        // available, compute the per-stream first-PTS offset so the
+        // mix aligns mic and system on the same timeline. Without
+        // this, a stream that started 200ms late would be merged
+        // from frame zero — voices would be misaligned by that gap.
+        // The log is optional (older sessions have no log); when
+        // missing or empty, we fall back to zip-from-frame-zero.
+        var micPrependFrames: Int = 0
+        var systemPrependFrames: Int = 0
+        if let ptsLogURL, FileManager.default.fileExists(atPath: ptsLogURL.path) {
+            if let alignment = try? readFirstPTSAlignment(at: ptsLogURL, sampleRate: sampleRate) {
+                micPrependFrames = alignment.micPrependFrames
+                systemPrependFrames = alignment.systemPrependFrames
+            }
+        }
 
         // Write to a sibling temp path so a mid-stream failure (or an
         // attempted retry after a previous run) cannot wipe an existing
@@ -109,10 +126,40 @@ public enum AudioFinalizer {
         let invSqrt2 = Float(1.0 / 2.0.squareRoot())
         let peakLimit: Float = 0.891  // ~ -1 dBFS true-peak headroom
 
+        // Codex rc2-audit CAP-2: consume the prepend-silence budget
+        // before reading from the file. `remainingMicSilence` /
+        // `remainingSystemSilence` are decremented as we synthesize
+        // zero-filled chunks; once they hit 0 we resume reading from
+        // the source files.
+        var remainingMicSilence = micPrependFrames
+        var remainingSystemSilence = systemPrependFrames
+
         do {
-            while !(micReader.isExhausted && sysReader.isExhausted) {
-                let micFrames = try micReader.produce(into: micChunk, target: options.chunkFrames)
-                let sysFrames = try sysReader.produce(into: sysChunk, target: options.chunkFrames)
+            while !(micReader.isExhausted && sysReader.isExhausted) || remainingMicSilence > 0 || remainingSystemSilence > 0 {
+                let micFrames: AVAudioFrameCount
+                if remainingMicSilence > 0 {
+                    let take = min(Int(options.chunkFrames), remainingMicSilence)
+                    micChunk.frameLength = AVAudioFrameCount(take)
+                    if let ptr = micChunk.floatChannelData?[0] {
+                        memset(ptr, 0, take * MemoryLayout<Float>.size)
+                    }
+                    remainingMicSilence -= take
+                    micFrames = AVAudioFrameCount(take)
+                } else {
+                    micFrames = try micReader.produce(into: micChunk, target: options.chunkFrames)
+                }
+                let sysFrames: AVAudioFrameCount
+                if remainingSystemSilence > 0 {
+                    let take = min(Int(options.chunkFrames), remainingSystemSilence)
+                    sysChunk.frameLength = AVAudioFrameCount(take)
+                    if let ptr = sysChunk.floatChannelData?[0] {
+                        memset(ptr, 0, take * MemoryLayout<Float>.size)
+                    }
+                    remainingSystemSilence -= take
+                    sysFrames = AVAudioFrameCount(take)
+                } else {
+                    sysFrames = try sysReader.produce(into: sysChunk, target: options.chunkFrames)
+                }
 
                 let frames = max(micFrames, sysFrames)
                 if frames == 0 { break }
@@ -169,14 +216,17 @@ public enum AudioFinalizer {
                 throw FinalizeError.writerFailed(writer.error.map { String(describing: $0) })
             }
 
-            // Atomic-ish replace: move the finished temp into place. Only
-            // remove the existing output AFTER the temp is confirmed
-            // written, so an aborted retry leaves the previous good
-            // audio.m4a intact.
+            // Codex rc2-audit AUDIO-2: replaceItem is the atomic
+            // primitive on macOS — under the hood it uses renameat()
+            // with RENAME_SWAP semantics so the existing output is
+            // never visibly absent. The v0 path (remove-then-move)
+            // had a window where a crash between the two ops would
+            // lose the prior good audio.m4a.
             if FileManager.default.fileExists(atPath: output.path) {
-                try FileManager.default.removeItem(at: output)
+                _ = try FileManager.default.replaceItemAt(output, withItemAt: tempOutput)
+            } else {
+                try FileManager.default.moveItem(at: tempOutput, to: output)
             }
-            try FileManager.default.moveItem(at: tempOutput, to: output)
         } catch {
             if writer.status == .writing {
                 writer.cancelWriting()
@@ -205,18 +255,51 @@ public enum AudioFinalizer {
     /// StreamReader instance is owned by a single async call to
     /// `finalize(...)` and never escapes — there is no concurrent access
     /// to its mutable state in practice.
+    ///
+    /// Codex rc2-audit AUDIO-1: the @unchecked Sendable claim relies on
+    /// observed converter behavior. A future converter that invokes the
+    /// callback concurrently OR a future caller that pulls produce()
+    /// from multiple threads against the same instance would race.
+    /// A serial DispatchQueue would deadlock the synchronous callback;
+    /// instead we use an os_unfair_lock + a re-entry guard counter
+    /// that fatalErrors on a real race. This makes the
+    /// single-call-site contract enforceable at runtime without
+    /// holding a lock during the callback.
     private final class StreamReader: @unchecked Sendable {
         let file: AVAudioFile
         let converter: AVAudioConverter?
         let readBuffer: AVAudioPCMBuffer
         private var fileEOF = false
         private var converterEOF = false
+        /// Codex rc2-audit AUDIO-1: re-entry guard. produce() bumps
+        /// this on entry; if it's already > 0, two threads are
+        /// hitting the same reader concurrently — that's a
+        /// programming error, not a recoverable runtime condition.
+        private var inProduce: Int32 = 0
+        private let inProduceLock = NSLock()
 
         var isExhausted: Bool {
             // Passthrough: no internal converter buffer, so file EOF == done.
             // Converter: must drain the converter's tail too — signalled by
             // `.endOfStream` from the most recent convert call.
             converter == nil ? fileEOF : converterEOF
+        }
+
+        private func enterProduce() {
+            inProduceLock.lock()
+            defer { inProduceLock.unlock() }
+            if inProduce > 0 {
+                // Concurrent produce() against the same StreamReader is
+                // a contract violation. Caller must serialize.
+                fatalError("AudioFinalizer.StreamReader: concurrent produce() — single-call-site contract violated")
+            }
+            inProduce += 1
+        }
+
+        private func exitProduce() {
+            inProduceLock.lock()
+            inProduce -= 1
+            inProduceLock.unlock()
         }
 
         init(file: AVAudioFile, target: AVAudioFormat, chunkFrames: AVAudioFrameCount) throws {
@@ -271,6 +354,9 @@ public enum AudioFinalizer {
         }
 
         func produce(into out: AVAudioPCMBuffer, target: AVAudioFrameCount) throws -> AVAudioFrameCount {
+            // Codex rc2-audit AUDIO-1: assert single-thread contract.
+            enterProduce()
+            defer { exitProduce() }
             out.frameLength = 0
             if let converter {
                 return try produceConverted(out: out, target: target, converter: converter)
@@ -341,6 +427,41 @@ public enum AudioFinalizer {
                 throw FinalizeError.readFailed(file.url)
             }
             return out.frameLength
+        }
+    }
+
+    /// Codex rc2-audit CAP-2: parses the per-buffer PTS log to find
+    /// the first PTS of each stream, then returns a frame-count
+    /// offset for whichever stream started later. The mix loop
+    /// prepends that many silence frames to the on-time stream so
+    /// both align at session start.
+    private static func readFirstPTSAlignment(at url: URL, sampleRate: Double) throws -> (micPrependFrames: Int, systemPrependFrames: Int) {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let decoder = JSONDecoder()
+        var micFirst: Double?
+        var sysFirst: Double?
+        for line in content.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let entry = try? decoder.decode(PTSLogEntry.self, from: Data(line.utf8)) else { continue }
+            switch entry.stream {
+            case "mic":
+                if micFirst == nil { micFirst = entry.ptsSeconds }
+            case "system":
+                if sysFirst == nil { sysFirst = entry.ptsSeconds }
+            default: break
+            }
+            if micFirst != nil && sysFirst != nil { break }
+        }
+        guard let micFirst, let sysFirst else { return (0, 0) }
+        // The stream with the EARLIER first-PTS is the reference.
+        // The other stream needs (delta) silence prepended so its
+        // first audible frame lines up at the same output time.
+        let delta = abs(micFirst - sysFirst)
+        let prependFrames = Int((delta * sampleRate).rounded())
+        if micFirst <= sysFirst {
+            // mic started first; system needs prepended silence.
+            return (0, prependFrames)
+        } else {
+            return (prependFrames, 0)
         }
     }
 

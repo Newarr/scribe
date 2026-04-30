@@ -2,13 +2,16 @@ import AppKit
 import EventKit  // .EKEventStoreChanged notification name (codex slice-6 final-review P1)
 import TranscriberCore
 
-// @unchecked Sendable: all mutable state on this class is accessed through
-// @MainActor methods, so it's effectively single-threaded. The @MainActor
-// guard is enforced at compile time on the methods themselves; the Sendable
-// promise here just lets us pass `self` into @Sendable closures (e.g.
-// DetectionEngine.OnCandidate) without the compiler losing track of that
-// MainActor invariant. Required for CI's Xcode 16 strict-concurrency mode.
-final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
+/// Codex rc2-audit STATE-2: was @unchecked Sendable + ad-hoc
+/// @MainActor on individual methods — broader claim than the code
+/// proves. Annotating the WHOLE class with @MainActor makes the
+/// isolation contract explicit: every stored property and every
+/// method is implicitly main-actor-isolated, and Swift's strict
+/// concurrency enforces that. NSApplicationDelegate callbacks fire
+/// on the main thread by AppKit's contract, so this is also runtime-
+/// correct.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var menu: RecordingMenu?
     private var session: CaptureSession?
@@ -30,8 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var processWatcher: ProcessWatcher?
     private let startPromptCoordinator = StartPromptCoordinator()
 
-    private static let keychainService = "com.szymonsypniewicz.transcriber"
-    private static let keychainAccount = "elevenlabs-api-key"
+    // Codex rc2-audit STATE-2: these are immutable constants, so
+    // nonisolated to allow access from `nonisolated static func makeWorker`
+    // even with the class @MainActor-annotated.
+    nonisolated(unsafe) private static let keychainService = "com.szymonsypniewicz.transcriber"
+    nonisolated(unsafe) private static let keychainAccount = "elevenlabs-api-key"
 
     // Phase η: SwiftUI surfaces for first-run privacy ack, Settings,
     // and the Setup Required popover. Initialized in
@@ -470,7 +476,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             menu?.rebuild(for: status)
         } catch {
             Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
+            // Codex rc2-audit STATE-3: a failed start would leave
+            // self.session / currentSessionDirectory / currentSessionStartedAt
+            // populated. A subsequent Stop or Quit would then write a
+            // pending transcript for a never-started session. Clear
+            // ALL session state on the catch path so the app is in a
+            // well-defined idle.
             self.status = .failed
+            self.session = nil
+            self.currentSessionDirectory = nil
+            self.currentSessionStartedAt = nil
             self.currentCalendarEvent = nil
             menu?.rebuild(for: status)
         }
@@ -540,7 +555,18 @@ extension AppDelegate {
         let folderProbe = DefaultOutputFolderProbe()
         let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
         let engineProbe = DefaultEngineReadinessProbe(keychain: keychain)
-        let instanceID = await diagnosticsInstanceID.current()
+        // Codex rc2-audit PRIVACY-2: distinguish keychain-unreadable
+        // from "configured." If unreadable, surface a fixed sentinel
+        // in outputRootHash rather than a phantom-keyed hash that
+        // varies per session.
+        let instanceState = await diagnosticsInstanceID.currentState()
+        let outputRootHash: String
+        switch instanceState {
+        case .configured(let secret):
+            outputRootHash = DiagnosticsCollector.hashPath(snap.outputRoot, instanceID: secret)
+        case .unreadable:
+            outputRootHash = "unreadable"
+        }
 
         async let permsView = DiagnosticsCollector.permissions(probe: permProbe)
         async let outputWritable = folderProbe.isWritable(snap.outputRoot)
@@ -558,7 +584,7 @@ extension AppDelegate {
                 keepRawStreams: snap.keepRawStreams,
                 aecEnabled: snap.aecEnabled,
                 privacyAcknowledged: snap.privacyAcknowledged,
-                outputRootHash: DiagnosticsCollector.hashPath(snap.outputRoot, instanceID: instanceID),
+                outputRootHash: outputRootHash,
                 outputRootIsWritable: outputWritable
             ),
             permissions: permsView,

@@ -87,6 +87,14 @@ public actor SessionSupervisor {
 
             let recovery = OrphanRecoverer.recover(dir)
             switch recovery {
+            case .activeCapture:
+                // Codex rc2-audit CAP-5: another process / window of
+                // this app holds an active capture claim on this
+                // directory. Skip — moving the .partial files would
+                // corrupt the live capture's AVAssetWriter output.
+                Log.engine.info("supervisor: skipping \(dir.url.lastPathComponent, privacy: .public): active capture claim held")
+                result.skipped += 1
+                continue
             case .alreadyFinalized:
                 break  // both tracks present pre-scan; no rescue counter
             case .rescued:

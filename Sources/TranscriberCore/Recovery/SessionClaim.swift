@@ -7,32 +7,46 @@ import Foundation
 /// run would race file writes and could clobber the first one's transcript
 /// or metadata.
 ///
-/// The lock file uses POSIX `O_CREAT | O_EXCL` for actual cross-process
-/// atomicity (codex pass 2 P0 #6 — Foundation `.withoutOverwriting` doesn't
-/// give that guarantee on every filesystem). The claim payload stores
-/// `{pid, boot_time, started_at, heartbeat_at}`. A claim is reclaimable if:
-/// - the file is missing entirely (no claim), OR
-/// - `kill(pid, 0)` returns ESRCH (the claiming process is dead), OR
-/// - the recorded `boot_time` differs from the current boot time (the
-///   claiming process belonged to a previous boot; PID may have been
-///   reused), OR
-/// - `heartbeat_at` is older than `staleAfter` seconds (the worker died
-///   without releasing the file).
+/// Codex rc2-audit CAP-4: the v0 design used `O_CREAT|O_EXCL` to create the
+/// claim file, but heartbeat() and release() relied on read-then-write/remove
+/// without atomic ownership. A stale worker could overwrite a newly reclaimed
+/// claim because the time between "read ownership matches" and "write/remove"
+/// was unprotected.
 ///
-/// The worker writes a heartbeat every `heartbeatInterval` so a still-alive
-/// long-running worker on the same boot keeps its claim valid.
+/// New design layers `flock(LOCK_EX | LOCK_NB)` on top of the existing
+/// JSON-payload contract:
+///
+/// - `acquire` opens (or creates) the claim file and takes an exclusive
+///   advisory lock. The OS releases the lock automatically when the
+///   holding process dies, so a process-death-without-release case is
+///   handled by the kernel rather than by staleness heuristics.
+/// - `heartbeat` writes through the same locked file descriptor so
+///   ownership can't change between check and write.
+/// - `release` closes the descriptor (releasing the lock atomically)
+///   and removes the file.
+///
+/// The PID + boot_time + heartbeat-age payload remains as a backstop for
+/// the "process alive, worker hung" case where flock alone wouldn't help
+/// (the live process still holds the lock). Stale-detection runs against
+/// the payload before attempting acquire so a hung-but-alive worker can
+/// be displaced after `staleAfter` seconds.
 public enum SessionClaim {
     public struct Token: Sendable, Equatable {
         public let url: URL
         public let pid: Int32
         public let bootTime: Int64
         public let startedAt: Date
+        /// File descriptor held with `flock(LOCK_EX)`. Closing it releases
+        /// the lock; nil for tokens produced by tests or migration paths
+        /// that need a Token without a real OS lock.
+        public let fd: Int32
 
-        public init(url: URL, pid: Int32, bootTime: Int64, startedAt: Date) {
+        public init(url: URL, pid: Int32, bootTime: Int64, startedAt: Date, fd: Int32 = -1) {
             self.url = url
             self.pid = pid
             self.bootTime = bootTime
             self.startedAt = startedAt
+            self.fd = fd
         }
     }
 
@@ -67,53 +81,89 @@ public enum SessionClaim {
         return Int64(bootTime.tv_sec)
     }
 
-    /// Attempts to atomically create the claim file. Returns nil if the file
-    /// already exists AND the existing claim is still valid; returns a Token
-    /// after a fresh claim or a successful reclaim of a stale one.
+    /// Attempts to atomically create + lock the claim file.
+    ///
+    /// Returns nil if another process holds an active flock OR an existing
+    /// claim is still valid by staleness rules. Returns a Token after a
+    /// fresh claim or a successful reclaim; the Token's `fd` MUST be
+    /// closed via `release(_:)` to free the OS lock.
     public static func acquire(
         at url: URL,
         pid: Int32 = getpid(),
         now: Date = Date(),
         staleAfter: TimeInterval = defaultStaleAfter
     ) -> Token? {
-        // Read whatever's there (if anything). If it's stale, remove it and
-        // fall through to the create path. The remove-then-create has an
-        // intentional race window: two processes may both decide a claim
-        // is stale and both call remove. The O_CREAT|O_EXCL on create is
-        // what serializes them — only one creates successfully.
+        // Check the staleness rules against any existing payload BEFORE
+        // attempting flock. If the file exists with a non-stale payload
+        // and the holder is alive, we lose without disturbing them.
         if let existing = readPayload(at: url) {
-            if isStale(existing, currentBootTime: currentBootTime(), now: now, staleAfter: staleAfter) {
-                try? FileManager.default.removeItem(at: url)
-            } else {
+            if !isStale(existing, currentBootTime: currentBootTime(), now: now, staleAfter: staleAfter) {
                 return nil
             }
+            // Existing claim is stale (process dead, boot mismatch, or
+            // heartbeat lapsed). Open the existing file and try to take
+            // the lock — flock will succeed if the previous holder's
+            // process actually died.
         }
 
+        let path = url.path
+        // O_RDWR so we can write payload + heartbeats through the same
+        // descriptor; O_CREAT so we don't have to do a separate "exists?"
+        // check. mode 0o600 keeps the claim file owner-only.
+        let fd = open(path, O_RDWR | O_CREAT, 0o600)
+        if fd == -1 { return nil }
+
+        // LOCK_EX | LOCK_NB: exclusive lock, non-blocking. Returns -1
+        // with errno=EWOULDBLOCK if another live process holds it.
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            return nil
+        }
+
+        // We hold the lock. Write our payload (truncating any prior
+        // bytes that belonged to a stale claim). Don't close the FD —
+        // the lock survives until either close() or process death.
         let bootTime = currentBootTime()
         let payload = Payload(pid: pid, bootTime: bootTime, startedAt: now, heartbeatAt: now)
-        guard atomicCreate(payload, at: url) else { return nil }
-        return Token(url: url, pid: pid, bootTime: bootTime, startedAt: now)
+        guard writePayload(payload, fd: fd) else {
+            // Couldn't write — release and clean up.
+            close(fd)
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return Token(url: url, pid: pid, bootTime: bootTime, startedAt: now, fd: fd)
     }
 
     /// Updates the heartbeat timestamp on an existing claim. Worker calls
     /// this every `heartbeatInterval` so peer scans see the claim is alive.
+    /// Codex rc2-audit CAP-4: writes through the held FD so the
+    /// read-modify-write sequence can't be interleaved with another
+    /// process's reclaim — the lock blocks anyone else's open+flock.
     public static func heartbeat(_ token: Token, now: Date = Date()) {
-        guard let existing = readPayload(at: token.url) else { return }
-        // Only update if WE own the claim (defensive — protects against
-        // someone else's reclaim having raced past us).
-        guard existing.pid == token.pid && existing.bootTime == token.bootTime else { return }
-        let updated = Payload(pid: existing.pid, bootTime: existing.bootTime, startedAt: existing.startedAt, heartbeatAt: now)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(updated) else { return }
-        try? data.write(to: token.url, options: .atomic)
+        guard token.fd >= 0 else { return }
+        let updated = Payload(
+            pid: token.pid,
+            bootTime: token.bootTime,
+            startedAt: token.startedAt,
+            heartbeatAt: now
+        )
+        _ = writePayload(updated, fd: token.fd)
     }
 
-    /// Removes the claim file. Worker calls this on every exit path.
+    /// Releases the claim. Worker calls this on every exit path.
+    /// Codex rc2-audit CAP-4: closing the held FD releases the OS-level
+    /// flock atomically, so any process waiting on the same file can
+    /// take it as soon as we close. We then remove the file so the
+    /// next acquire doesn't have to flock-then-truncate.
     public static func release(_ token: Token) {
-        // Defensive: only remove if the file still belongs to us. A reclaim
-        // already removed it if heartbeat lapsed; deleting somebody else's
-        // claim would let two workers run concurrently.
+        if token.fd >= 0 {
+            close(token.fd)
+        }
+        // Defensive: only remove if the file still appears to belong to
+        // us by payload. A new claimant might have raced us and taken
+        // the lock in the microsecond between our close() and the
+        // remove, in which case removing would let a third claimant
+        // see "no file" and bypass the existing-claim staleness check.
         guard let existing = readPayload(at: token.url) else { return }
         guard existing.pid == token.pid && existing.bootTime == token.bootTime else { return }
         try? FileManager.default.removeItem(at: token.url)
@@ -148,31 +198,23 @@ public enum SessionClaim {
         return try? decoder.decode(Payload.self, from: data)
     }
 
-    private static func atomicCreate(_ payload: Payload, at url: URL) -> Bool {
+    /// Writes the payload through an already-open FD (truncating the
+    /// existing file content). Used by both acquire (right after flock)
+    /// and heartbeat (regular updates).
+    private static func writePayload(_ payload: Payload, fd: Int32) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(payload) else { return false }
 
-        // O_CREAT | O_EXCL gives cross-process atomicity. If another process
-        // creates the file between our existence-check and this open, the
-        // open returns -1 with errno=EEXIST; we lose the race cleanly.
-        let path = url.path
-        let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
-        if fd == -1 {
-            return false
-        }
-        defer { close(fd) }
-
+        // Reset to start of file + truncate so a smaller payload
+        // (shouldn't happen in practice but be defensive) doesn't
+        // leave trailing bytes from the prior write.
+        if lseek(fd, 0, SEEK_SET) == -1 { return false }
+        if ftruncate(fd, 0) != 0 { return false }
         let written = data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Int in
             guard let base = bytes.baseAddress else { return -1 }
             return Darwin.write(fd, base, data.count)
         }
-        if written != data.count {
-            // Couldn't write payload; clean up the empty/partial file so a
-            // future caller doesn't read garbage.
-            try? FileManager.default.removeItem(at: url)
-            return false
-        }
-        return true
+        return written == data.count
     }
 }

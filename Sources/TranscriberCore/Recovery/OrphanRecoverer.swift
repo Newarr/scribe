@@ -44,10 +44,31 @@ public enum OrphanRecoverer {
         /// No audio whatsoever. Caller must write a failed transcript with
         /// "session audio is missing" body.
         case noAudio
+        /// Codex rc2-audit CAP-5: session has a live capture claim
+        /// (the running app holds an exclusive flock on the claim file).
+        /// Skipping recovery here is critical — moving `.partial` files
+        /// out from under an active AVAssetWriter would corrupt the
+        /// session. The caller (SessionSupervisor) treats this as a
+        /// neutral "skip for now" outcome.
+        case activeCapture
     }
 
     public static func recover(_ dir: SessionDirectory) -> Result {
         let fm = FileManager.default
+
+        // Codex rc2-audit CAP-5: defer to live captures. The capture
+        // session writes a claim file when it starts and releases it
+        // on stop. Trying to acquire the same claim non-blocking
+        // tells us whether anyone else holds it. We don't keep the
+        // claim — we only check, then release if we got it.
+        if let probeToken = SessionClaim.acquire(at: dir.claim) {
+            // No live capture; safe to recover. Release our own probe
+            // claim before proceeding so the worker can re-acquire it
+            // in the normal flow.
+            SessionClaim.release(probeToken)
+        } else {
+            return .activeCapture
+        }
 
         // Capture pre-recovery state so we can detect rename failures
         // (rather than misclassifying them as "system never existed").

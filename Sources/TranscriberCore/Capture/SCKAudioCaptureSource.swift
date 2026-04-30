@@ -114,13 +114,25 @@ public final class SCKDualOutputStream: @unchecked Sendable {
         if let pendingStart {
             _ = try? await pendingStart.value
         }
-        let toStop: SCStream? = queue.sync {
-            let s = self.stream
-            self.stream = nil
-            return s
-        }
+        // Codex rc2-audit CAP-7: the v0 path nil'd `stream` BEFORE
+        // calling stopCapture(). If stopCapture threw, capture
+        // continued running with no way to retry the stop or report
+        // it. New flow: keep `stream` populated while attempting stop;
+        // only nil it after a successful stopCapture. On failure, log
+        // and leave `stream` intact so a later stop attempt has
+        // something to operate on.
+        let toStop: SCStream? = queue.sync { self.stream }
         if let toStop {
-            try? await toStop.stopCapture()
+            do {
+                try await toStop.stopCapture()
+                queue.sync { self.stream = nil }
+            } catch {
+                Log.capture.error("SCStream stopCapture failed: \(String(describing: error), privacy: .public). Stream retained for next stop attempt.")
+                // Don't clear stopRequested in this branch — leave
+                // the coordinator in a "stop pending" state so a
+                // subsequent stopIfRunning() can try again.
+                return
+            }
         }
         // Clear so the NEXT start isn't poisoned by this stop's flag.
         queue.sync { stopRequested = false }
