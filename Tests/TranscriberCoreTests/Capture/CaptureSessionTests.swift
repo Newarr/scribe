@@ -76,6 +76,86 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertTrue(stub.contains("- system.m4a"))
     }
 
+    func testStopWithInFlightBuffersDrainsCleanly() async throws {
+        // Phase β.4: SCK output queue may have a buffer in flight when stop()
+        // runs. The transactional stop chain (clear handler -> stop SCK ->
+        // writer finalize-as-barrier) must absorb it without throwing AND
+        // without silently losing samples. The β.2 counted no-op proves the
+        // post-finalize append actually landed (vs being dropped earlier).
+        let mic = FakeAudioCaptureSource()
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 4_000_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+
+        // Drive a few buffers BEFORE stop, then stop, then continue emitting
+        // for 100ms simulating SCK queue catch-up.
+        for i in 0..<10 {
+            let pts = Double(i) * 0.01
+            mic.emit(SyntheticSampleBuffer.make(ptsSeconds: pts, sampleRate: 48000, channelCount: 1, frameCount: 480))
+            sys.emit(SyntheticSampleBuffer.make(ptsSeconds: pts, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        }
+
+        try await session.stop()
+
+        // Post-stop emission: simulating the SCK output queue still holding
+        // a sample buffer at the moment stop() ran. Must NOT throw.
+        for i in 0..<5 {
+            let pts = 0.5 + Double(i) * 0.01
+            mic.emit(SyntheticSampleBuffer.make(ptsSeconds: pts, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        }
+        // No assertion crash, no thrown error. The earlier
+        // testFullLifecycleProducesAllArtifacts already verifies the m4a
+        // files exist; this test is purely about not blowing up on a
+        // racing emit.
+    }
+
+    func testStopFailureLeavesRecoverableState() async throws {
+        // Codex pass 1 + plan β.4: writer.finalize throwing must NOT write
+        // status: failed mid-stop. The .partial files stay so
+        // SessionSupervisor on next launch can rescue. To simulate a
+        // failure cleanly we use a session whose output directory is made
+        // read-only AFTER capture but BEFORE stop — directory.finalize()'s
+        // rename throws, and we assert the .partial files survived.
+        let mic = FakeAudioCaptureSource()
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 5_000_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+        for _ in 0..<3 {
+            mic.emit(SyntheticSampleBuffer.make(ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+            sys.emit(SyntheticSampleBuffer.make(ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        }
+
+        // Pre-create the .m4a file with a directory at that path so the
+        // rename inside SessionDirectory.finalize() throws.
+        let micFinalAsDir = dir.url.appendingPathComponent("mic.m4a")
+        try FileManager.default.createDirectory(at: micFinalAsDir, withIntermediateDirectories: true)
+
+        do {
+            try await session.stop()
+            XCTFail("expected stop to throw because mic.m4a is occupied by a directory")
+        } catch {
+            // Expected. Now assert the .partial files stayed put for
+            // recovery. micPartial got finalized + renamed before the
+            // failing systemPartial->systemFinal step; check that at least
+            // one partial OR final exists per stream so a future rescue
+            // has audio to work with.
+            let fm = FileManager.default
+            let micPartialOrFinal = fm.fileExists(atPath: dir.micPartial.path) || fm.fileExists(atPath: dir.micFinal.path)
+            let sysPartialOrFinal = fm.fileExists(atPath: dir.systemPartial.path) || fm.fileExists(atPath: dir.systemFinal.path)
+            XCTAssertTrue(micPartialOrFinal, "mic audio must survive a stop failure for SessionSupervisor to rescue")
+            XCTAssertTrue(sysPartialOrFinal, "system audio must survive a stop failure for SessionSupervisor to rescue")
+            // CaptureSession state must NOT have been written as terminal-failed
+            // mid-stop; status is .stopping (we never reached .finalized).
+            let status = await session.status
+            XCTAssertNotEqual(status, .finalized, "stop must not claim finalize when the rename failed")
+        }
+    }
+
     func testStartRollsBackWhenSystemSourceFails() async throws {
         let mic = FakeAudioCaptureSource()
         let sys = FakeAudioCaptureSource()

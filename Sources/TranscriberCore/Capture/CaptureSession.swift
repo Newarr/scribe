@@ -89,16 +89,34 @@ public actor CaptureSession {
 
         status = .stopping
         Log.lifecycle.info("Stopping capture")
+
+        // Phase β.4 transactional stop. Explicit happens-before chain:
+        //   (1) source.stop() clears the per-output handler closure on its
+        //       SCK handler queue (synchronous queue.sync barrier inside
+        //       SCKAudioCaptureSource), so any new SCK callback after this
+        //       line sees nil and exits before reaching ingest.
+        //   (2) source.stop() then calls SCKDualOutputStream.stopIfRunning,
+        //       which calls SCStream.stopCapture; the second source's call
+        //       is a cheap no-op (coordinator stops once).
+        //   (3) AudioFileWriter.finalize implicitly drains its serial
+        //       queue: any append() that landed before finalize completes
+        //       first; any append() that lands after is the counted no-op
+        //       from β.2 (writer.postFinalizeAppendCounter > 0 is fine).
+        //   (4) Collector.flushLog blocks on the PTS log queue so the
+        //       JSONL is fully on disk before the snapshot sidecar is
+        //       written.
+        //   (5) directory.finalize atomically renames .partial -> .m4a so
+        //       the transcript stub never references a file that doesn't
+        //       yet exist.
+        // Failures inside this chain leave the .partial files in place so
+        // SessionSupervisor can rescue on next launch (codex pass 1 P1).
+        // We do NOT write status: failed mid-stop here.
         await mic.stop()
         await system.stop()
         try await micWriter.finalize()
         try await systemWriter.finalize()
-        // Flush the per-buffer JSONL log before the snapshot sidecar so
-        // a downstream reader sees both finalized.
         collector.flushLog()
         try collector.writeSidecar(to: directory.ptsSidecar)
-        // Atomic rename .partial -> .m4a MUST happen before the transcript stub,
-        // so the stub never references files that don't exist yet on disk.
         try directory.finalize()
         try writeTranscriptStub()
         status = .finalized
