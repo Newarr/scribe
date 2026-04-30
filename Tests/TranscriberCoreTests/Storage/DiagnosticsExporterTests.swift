@@ -1,0 +1,266 @@
+import XCTest
+@testable import TranscriberCore
+
+/// Phase θ mandatory redaction tests. Spec line 364: diagnostics export
+/// must NOT leak transcript content, attendee names, API key fragments,
+/// or stray session-folder content.
+///
+/// These tests are the critical guardrails — every PII-bearing source
+/// of input is planted with a known sentinel string, the diagnostics
+/// blob is exported, and we assert the sentinel is NOT in the output.
+final class DiagnosticsExporterTests: XCTestCase {
+    var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func makeContext() -> TranscriptContext {
+        TranscriptContext(
+            title: "Innocuous title",
+            date: "2026-04-30",
+            engine: "elevenlabs",
+            audioRelativePaths: ["mic.m4a", "system.m4a"],
+            startedAt: "2026-04-30T14:30:00Z",
+            endedAt: "2026-04-30T15:00:00Z",
+            attendees: [],
+            language: "en"
+        )
+    }
+
+    private func makeSnapshot(sessions: DiagnosticsSnapshot.SessionSummary) -> DiagnosticsSnapshot {
+        DiagnosticsSnapshot(
+            appVersion: "0.0.0-test",
+            exportedAt: "2026-04-30T10:00:00Z",
+            settings: .init(
+                engineMode: "cloud",
+                keepRawStreams: false,
+                aecEnabled: true,
+                privacyAcknowledged: true,
+                outputRootHash: DiagnosticsCollector.hashPath(root),
+                outputRootIsWritable: true
+            ),
+            permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
+            engine: .init(cloudKeyConfigured: true),
+            sessions: sessions,
+            liveLevels: .init(micRMS: 0.42, systemRMS: 0.31)
+        )
+    }
+
+    // MARK: - mandatory redaction guards (spec line 364)
+
+    func testDiagnosticsContainsNoTranscriptContent() throws {
+        // Plant a sentinel inside the transcript BODY (not frontmatter).
+        // Collector must read only frontmatter status + attempts.
+        let dir = SessionDirectory(url: root.appendingPathComponent("session-a", isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try TranscriptWriter.writeComplete(
+            at: dir.transcript,
+            context: makeContext(),
+            utterances: [.init(speaker: "speaker_0", startSeconds: 0, endSeconds: 1, text: "SECRET-PHRASE-XYZ-12345")],
+            speakerMapping: [:]
+        )
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        let data = try DiagnosticsExporter.encode(makeSnapshot(sessions: summary))
+        let json = String(decoding: data, as: UTF8.self)
+
+        XCTAssertEqual(summary.complete, 1, "session must be counted")
+        XCTAssertFalse(json.contains("SECRET-PHRASE-XYZ-12345"), "transcript body must NOT leak into diagnostics export: \(json)")
+    }
+
+    func testDiagnosticsContainsNoAttendeeNames() throws {
+        // Attendees live in the frontmatter context. The collector must
+        // read status only — never project context.attendees into the
+        // diagnostics output.
+        let dir = SessionDirectory(url: root.appendingPathComponent("session-b", isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        var ctx = makeContext()
+        ctx = TranscriptContext(
+            title: "Meeting with [[Faris-Sentinel-Riaz]]",
+            date: ctx.date,
+            engine: ctx.engine,
+            audioRelativePaths: ctx.audioRelativePaths,
+            startedAt: ctx.startedAt,
+            endedAt: ctx.endedAt,
+            attendees: ["[[Faris-Sentinel-Riaz]]", "[[Other-Sentinel-Person]]"],
+            language: ctx.language
+        )
+        try TranscriptWriter.writePending(at: dir.transcript, context: ctx)
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        let data = try DiagnosticsExporter.encode(makeSnapshot(sessions: summary))
+        let json = String(decoding: data, as: UTF8.self)
+
+        XCTAssertEqual(summary.pending, 1)
+        XCTAssertFalse(json.contains("Faris-Sentinel-Riaz"), "attendee name must NOT leak into diagnostics export: \(json)")
+        XCTAssertFalse(json.contains("Other-Sentinel-Person"), "attendee name must NOT leak: \(json)")
+        XCTAssertFalse(json.contains("Meeting with"), "session title must NOT leak: \(json)")
+    }
+
+    func testDiagnosticsContainsNoAPIKey() throws {
+        // The Engine view holds `cloudKeyConfigured: Bool` — never the
+        // value. Even if the AppDelegate accidentally tried to put a
+        // real key into a String field, the schema doesn't have one
+        // for it.
+        let summary = DiagnosticsSnapshot.SessionSummary.zero
+        let snapshot = DiagnosticsSnapshot(
+            appVersion: "0.0.0-test",
+            exportedAt: "2026-04-30T10:00:00Z",
+            settings: .init(
+                engineMode: "cloud",
+                keepRawStreams: false,
+                aecEnabled: true,
+                privacyAcknowledged: true,
+                outputRootHash: DiagnosticsCollector.hashPath(root),
+                outputRootIsWritable: true
+            ),
+            permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
+            engine: .init(cloudKeyConfigured: true),  // schema: bool only
+            sessions: summary,
+            liveLevels: nil
+        )
+        let data = try DiagnosticsExporter.encode(snapshot)
+        let json = String(decoding: data, as: UTF8.self)
+
+        // The user could have a Keychain key like "sk_TEST-API-KEY-XYZ".
+        // Assert known patterns aren't present (stronger than just
+        // checking the sentinel — schema review proves the absence of
+        // any String field that would carry a key value).
+        XCTAssertFalse(json.contains("sk_"), "Keychain-style key prefix must not appear: \(json)")
+        XCTAssertFalse(json.contains("TEST-API-KEY"), "any sentinel key must not appear: \(json)")
+    }
+
+    func testDiagnosticsRedactionWalksWholeSessionFolder() throws {
+        // Plant garbage files INSIDE a session folder (not just the
+        // transcript). The collector must NOT walk the folder reading
+        // unknown files; aggregate counts only.
+        let dir = SessionDirectory(url: root.appendingPathComponent("session-c", isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try TranscriptWriter.writePending(at: dir.transcript, context: makeContext())
+        // Stray files with sentinel content.
+        try Data("STRAY-AUDIO-BYTES-aabbccdd".utf8).write(to: dir.url.appendingPathComponent("debug-notes.txt"))
+        try Data("MIC-RAW-BYTES-eeff0011".utf8).write(to: dir.micFinal)
+        try Data("ATTENDEE-CACHE-22334455".utf8).write(to: dir.url.appendingPathComponent("attendees.json"))
+        try Data("LEAKED-EVENT-TITLE-66778899".utf8).write(to: dir.url.appendingPathComponent("calendar-event.txt"))
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        let data = try DiagnosticsExporter.encode(makeSnapshot(sessions: summary))
+        let json = String(decoding: data, as: UTF8.self)
+
+        XCTAssertEqual(summary.pending, 1)
+        XCTAssertFalse(json.contains("STRAY-AUDIO-BYTES"), "stray file content must NOT leak: \(json)")
+        XCTAssertFalse(json.contains("MIC-RAW-BYTES"), "raw audio bytes must NOT leak: \(json)")
+        XCTAssertFalse(json.contains("ATTENDEE-CACHE"), "side-channel cache files must NOT leak: \(json)")
+        XCTAssertFalse(json.contains("LEAKED-EVENT-TITLE"), "calendar event content must NOT leak: \(json)")
+        // Filenames also must not appear (no listing of folder contents).
+        XCTAssertFalse(json.contains("debug-notes.txt"), "stray filenames must NOT leak: \(json)")
+        XCTAssertFalse(json.contains("attendees.json"), json)
+        XCTAssertFalse(json.contains("calendar-event.txt"), json)
+        // Even the session folder name shouldn't appear (the hash is the
+        // only identifier).
+        XCTAssertFalse(json.contains("session-c"), "session folder names must NOT leak: \(json)")
+    }
+
+    // MARK: - schema correctness
+
+    func testCollectorAggregatesAcrossMixedStatuses() throws {
+        // 1 complete, 2 pending, 1 failed, 1 retrying, with one
+        // attempts=2 retrying session.
+        try writePending("a")
+        try writePending("b")
+        try writeComplete("c")
+        try writeFailed("d")
+        try writeRetrying("e", attempts: 2)
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        XCTAssertEqual(summary.total, 5)
+        XCTAssertEqual(summary.pending, 2)
+        XCTAssertEqual(summary.complete, 1)
+        XCTAssertEqual(summary.failed, 1)
+        XCTAssertEqual(summary.retrying, 1)
+        XCTAssertEqual(summary.totalRetries, 2)
+    }
+
+    func testCollectorClassifiesUnreadableTranscriptAsUnknown() throws {
+        let dir = SessionDirectory(url: root.appendingPathComponent("session-bad", isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        // Garbage transcript: no frontmatter at all.
+        try "no frontmatter here, just body".write(to: dir.transcript, atomically: true, encoding: .utf8)
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        XCTAssertEqual(summary.unknown, 1)
+        XCTAssertEqual(summary.total, 1)
+    }
+
+    func testHashPathIsDeterministicAndDoesNotLeakPath() {
+        let url = URL(fileURLWithPath: "/Users/alice/Documents/Transcriber", isDirectory: true)
+        let h1 = DiagnosticsCollector.hashPath(url)
+        let h2 = DiagnosticsCollector.hashPath(url)
+        XCTAssertEqual(h1, h2)
+        XCTAssertEqual(h1.count, 64, "SHA-256 hex is 64 chars")
+        XCTAssertFalse(h1.contains("alice"), "hash must not contain raw path")
+        XCTAssertFalse(h1.contains("Documents"), h1)
+    }
+
+    func testEncodedJSONHasOnlyAllowlistedTopLevelKeys() throws {
+        let snapshot = makeSnapshot(sessions: .zero)
+        let data = try DiagnosticsExporter.encode(snapshot)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertNotNil(json)
+        let topLevelKeys = Set(json!.keys)
+        let allowed: Set<String> = ["appVersion", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"]
+        XCTAssertEqual(topLevelKeys, allowed, "any new top-level key requires explicit security review")
+    }
+
+    // MARK: - fixtures
+
+    private func writePending(_ name: String) throws {
+        let dir = SessionDirectory(url: root.appendingPathComponent(name, isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try TranscriptWriter.writePending(at: dir.transcript, context: makeContext())
+    }
+
+    private func writeComplete(_ name: String) throws {
+        let dir = SessionDirectory(url: root.appendingPathComponent(name, isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try TranscriptWriter.writeComplete(
+            at: dir.transcript,
+            context: makeContext(),
+            utterances: [.init(speaker: "speaker_0", startSeconds: 0, endSeconds: 1, text: "Hi")],
+            speakerMapping: [:]
+        )
+    }
+
+    private func writeFailed(_ name: String) throws {
+        let dir = SessionDirectory(url: root.appendingPathComponent(name, isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try TranscriptWriter.writeFailed(at: dir.transcript, context: makeContext(), errorMessage: "test error")
+    }
+
+    private func writeRetrying(_ name: String, attempts: Int) throws {
+        // TranscriptionWorker writes the retrying frontmatter inline,
+        // not via TranscriptWriter. Hand-craft just enough YAML for
+        // TranscriptFrontmatterReader to parse status + attempts.
+        let dir = SessionDirectory(url: root.appendingPathComponent(name, isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        let yaml = """
+        ---
+        schema: transcriber/v1
+        status: retrying
+        title: "test"
+        date: 2026-04-30
+        engine: elevenlabs
+        attempts: \(attempts)
+        ---
+
+        # test
+        """
+        try yaml.write(to: dir.transcript, atomically: true, encoding: .utf8)
+    }
+}

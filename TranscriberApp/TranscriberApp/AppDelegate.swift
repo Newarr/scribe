@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var privacyController: PrivacyAcknowledgementController?
     private var settingsWindowController: SettingsWindowController?
     private var setupPopover: PermissionRecoveryPopoverController?
+    private var diagnosticsWindowController: DiagnosticsWindowController?
 
     /// Phase ζ: SettingsStore wires runtime contracts (output folder,
     /// engine selection, raw-stream retention, AEC enable) instead of
@@ -180,6 +181,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             keychainAccount: Self.keychainAccount
         )
         self.setupPopover = PermissionRecoveryPopoverController()
+        self.diagnosticsWindowController = DiagnosticsWindowController(
+            snapshotProvider: { [weak self] in
+                self?.buildDiagnosticsSnapshot() ?? Self.emptyDiagnosticsSnapshot()
+            },
+            exportHandler: { [weak self] in
+                await self?.exportDiagnosticsToFile()
+            }
+        )
 
         presentPrivacyAcknowledgementIfNeeded()
     }
@@ -286,6 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             settingsWindowController?.show()
         case .openSetupRequired:
             await presentSetupRequiredPopover()
+        case .openDiagnostics:
+            diagnosticsWindowController?.show()
         }
     }
 
@@ -492,6 +503,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 }
 
 extension AppDelegate {
+    /// Phase θ: builds a diagnostics snapshot from typed sources only.
+    /// NEVER reads transcript bodies or session-folder file contents
+    /// (the security contract lives in DiagnosticsExporter; this method
+    /// is a thin assembly point).
+    @MainActor
+    func buildDiagnosticsSnapshot() -> DiagnosticsSnapshot {
+        let snap = settings
+        let isoFmt = ISO8601DateFormatter()
+        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+        let cloudKeyConfigured = ((try? keychain.read()) ?? "").isEmpty == false
+        let micStatus = permissionStatusName(permissions.microphoneStatus())
+        let outputWritable = FileManager.default.isWritableFile(atPath: snap.outputRoot.path)
+
+        return DiagnosticsSnapshot(
+            appVersion: BuildInfo.version,
+            exportedAt: isoFmt.string(from: Date()),
+            settings: .init(
+                engineMode: snap.engineMode.rawValue,
+                keepRawStreams: snap.keepRawStreams,
+                aecEnabled: snap.aecEnabled,
+                privacyAcknowledged: snap.privacyAcknowledged,
+                outputRootHash: DiagnosticsCollector.hashPath(snap.outputRoot),
+                outputRootIsWritable: outputWritable
+            ),
+            permissions: .init(
+                microphone: micStatus,
+                // Screen recording + calendar are async probes; the UI
+                // shows last-known-state here. AppDelegate's audit at
+                // record-time is the authoritative version.
+                screenRecording: "unknown",
+                calendar: "unknown"
+            ),
+            engine: .init(
+                cloudKeyConfigured: cloudKeyConfigured,
+                localBinaryPresent: snap.engineMode == .local ? false : nil,
+                localLanguageModelPresent: snap.engineMode == .local ? false : nil
+            ),
+            sessions: DiagnosticsCollector.collectSessions(under: snap.outputRoot),
+            liveLevels: nil  // wired in Phase ξ once AEC pipeline lands
+        )
+    }
+
+    nonisolated static func emptyDiagnosticsSnapshot() -> DiagnosticsSnapshot {
+        DiagnosticsSnapshot(
+            appVersion: BuildInfo.version,
+            exportedAt: ISO8601DateFormatter().string(from: Date()),
+            settings: .init(engineMode: "cloud", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: false, outputRootHash: "", outputRootIsWritable: false),
+            permissions: .init(microphone: "unknown", screenRecording: "unknown", calendar: "unknown"),
+            engine: .init(cloudKeyConfigured: false),
+            sessions: .zero,
+            liveLevels: nil
+        )
+    }
+
+    /// Writes the current diagnostics snapshot to
+    /// `~/Library/Logs/TranscriberApp/diagnostics-<timestamp>.json` and
+    /// returns the URL on success. Logs (and returns nil) on failure.
+    @MainActor
+    func exportDiagnosticsToFile() async -> URL? {
+        let snapshot = buildDiagnosticsSnapshot()
+        do {
+            let data = try DiagnosticsExporter.encode(snapshot)
+            let logsDir = try Self.diagnosticsLogsDirectory()
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyyMMdd-HHmmss"
+            let url = logsDir.appendingPathComponent("diagnostics-\(fmt.string(from: Date())).json")
+            try data.write(to: url, options: [.atomic])
+            Log.lifecycle.info("Diagnostics exported to \(url.path, privacy: .public)")
+            return url
+        } catch {
+            Log.lifecycle.error("Diagnostics export failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    private static func diagnosticsLogsDirectory() throws -> URL {
+        let library = try FileManager.default.url(for: .libraryDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let logs = library.appendingPathComponent("Logs/TranscriberApp", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        return logs
+    }
+
+    @MainActor
+    private func permissionStatusName(_ status: PermissionStatus) -> String {
+        switch status {
+        case .granted: return "granted"
+        case .denied: return "denied"
+        case .notDetermined: return "notDetermined"
+        }
+    }
+
     nonisolated static func makeContext(
         dir: SessionDirectory,
         startedAt: Date,

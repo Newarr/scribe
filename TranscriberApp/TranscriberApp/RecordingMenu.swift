@@ -4,7 +4,7 @@ import TranscriberCore
 @MainActor
 final class RecordingMenu {
     enum Action {
-        case record, stop, quit, openSettings, openSetupRequired
+        case record, stop, quit, openSettings, openSetupRequired, openDiagnostics
     }
 
     private(set) var menu = NSMenu()
@@ -45,6 +45,9 @@ final class RecordingMenu {
         let setup = NSMenuItem(title: "Setup Required…", action: #selector(MenuTarget.openSetupRequired(_:)), keyEquivalent: "")
         setup.target = MenuTarget.shared
         menu.addItem(setup)
+        let diagnostics = NSMenuItem(title: "Diagnostics…", action: #selector(MenuTarget.openDiagnostics(_:)), keyEquivalent: "")
+        diagnostics.target = MenuTarget.shared
+        menu.addItem(diagnostics)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit", action: #selector(MenuTarget.quit(_:)), keyEquivalent: "q")
         quit.target = MenuTarget.shared
@@ -64,4 +67,5 @@ final class MenuTarget: NSObject {
     @objc func quit(_ sender: Any?)   { delegate?.dispatch(.quit) }
     @objc func openSettings(_ sender: Any?) { delegate?.dispatch(.openSettings) }
     @objc func openSetupRequired(_ sender: Any?) { delegate?.dispatch(.openSetupRequired) }
+    @objc func openDiagnostics(_ sender: Any?) { delegate?.dispatch(.openDiagnostics) }
 }
