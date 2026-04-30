@@ -2,5 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Hardened runtime requires this for AVCaptureDevice mic access.
+         Without it, microphoneStatus() returns granted but the actual
+         capture session fails at runtime. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- No JIT code generation. We're a Swift / SwiftUI app; no part of
+         the runtime requires it. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <false/>
+
+    <!-- Only signed-by-same-team libraries can be loaded. Bundled
+         third-party binaries (future Cohere Rust subprocess, future
+         WebRTC AEC) are signed with the same Developer ID before
+         being copied into Resources/. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+
+    <!-- App is sandboxed-ish via hardened runtime; not opting into the
+         strict App Sandbox because we need broad filesystem access for
+         the user's chosen output folder. -->
 </dict>
 </plist>
