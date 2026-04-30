@@ -9,12 +9,12 @@ import TranscriberCore
 /// JSON file.
 @MainActor
 final class DiagnosticsWindowController {
-    private let snapshotProvider: @MainActor () -> DiagnosticsSnapshot
+    private let snapshotProvider: @MainActor () async -> DiagnosticsSnapshot
     private let exportHandler: @MainActor () async -> URL?
     private var window: NSWindow?
 
     init(
-        snapshotProvider: @escaping @MainActor () -> DiagnosticsSnapshot,
+        snapshotProvider: @escaping @MainActor () async -> DiagnosticsSnapshot,
         exportHandler: @escaping @MainActor () async -> URL?
     ) {
         self.snapshotProvider = snapshotProvider
@@ -28,7 +28,9 @@ final class DiagnosticsWindowController {
             return
         }
 
-        let model = DiagnosticsViewModel(initial: snapshotProvider())
+        // Codex Phase θ P1.3: permission probes are async; show window
+        // immediately with a placeholder snapshot, then refresh.
+        let model = DiagnosticsViewModel(initial: AppDelegate.emptyDiagnosticsSnapshot())
         let host = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -42,7 +44,7 @@ final class DiagnosticsWindowController {
             model: model,
             onRefresh: { [weak self] in
                 guard let self else { return }
-                model.snapshot = self.snapshotProvider()
+                model.snapshot = await self.snapshotProvider()
             },
             onExport: { [weak self] in
                 guard let self else { return nil }
@@ -81,9 +83,10 @@ final class DiagnosticsViewModel: ObservableObject {
 
 private struct DiagnosticsView: View {
     @ObservedObject var model: DiagnosticsViewModel
-    let onRefresh: @MainActor () -> Void
+    let onRefresh: @MainActor () async -> Void
     let onExport: @MainActor () async -> URL?
     @State private var exporting = false
+    @State private var refreshing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -104,6 +107,12 @@ private struct DiagnosticsView: View {
             footer
         }
         .frame(minWidth: 540, minHeight: 600)
+        .task {
+            // Codex P1.3: load real async values on first appear.
+            refreshing = true
+            await onRefresh()
+            refreshing = false
+        }
     }
 
     private var headerSection: some View {
@@ -139,7 +148,7 @@ private struct DiagnosticsView: View {
 
     private var engineSection: some View {
         SectionCard(title: "Engine readiness") {
-            row("Cloud API key configured", boolText(model.snapshot.engine.cloudKeyConfigured))
+            row("Cloud API key", model.snapshot.engine.cloudKey)
             if let p = model.snapshot.engine.localBinaryPresent {
                 row("Local engine binary", boolText(p))
             }
@@ -158,6 +167,9 @@ private struct DiagnosticsView: View {
             row("Failed", "\(model.snapshot.sessions.failed)")
             if model.snapshot.sessions.unknown > 0 {
                 row("Unknown / corrupt", "\(model.snapshot.sessions.unknown)")
+            }
+            if model.snapshot.sessions.orphanedWithAudio > 0 {
+                row("Orphaned (audio, no transcript)", "\(model.snapshot.sessions.orphanedWithAudio)")
             }
             row("Total retries", "\(model.snapshot.sessions.totalRetries)")
         }
@@ -189,12 +201,19 @@ private struct DiagnosticsView: View {
                     .font(.system(size: 11))
             }
             Spacer()
-            Button("Refresh", action: onRefresh).disabled(exporting)
+            Button(refreshing ? "Refreshing…" : "Refresh") {
+                Task {
+                    refreshing = true
+                    await onRefresh()
+                    refreshing = false
+                }
+            }
+            .disabled(exporting || refreshing)
             Button(exporting ? "Exporting…" : "Export…") {
                 Task { await runExport() }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(exporting)
+            .disabled(exporting || refreshing)
         }
         .padding(16)
     }

@@ -42,11 +42,11 @@ final class DiagnosticsExporterTests: XCTestCase {
                 keepRawStreams: false,
                 aecEnabled: true,
                 privacyAcknowledged: true,
-                outputRootHash: DiagnosticsCollector.hashPath(root),
+                outputRootHash: DiagnosticsCollector.hashPath(root, instanceID: "test-instance"),
                 outputRootIsWritable: true
             ),
             permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
-            engine: .init(cloudKeyConfigured: true),
+            engine: .init(cloudKey: "configured"),
             sessions: sessions,
             liveLevels: .init(micRMS: 0.42, systemRMS: 0.31)
         )
@@ -104,10 +104,9 @@ final class DiagnosticsExporterTests: XCTestCase {
     }
 
     func testDiagnosticsContainsNoAPIKey() throws {
-        // The Engine view holds `cloudKeyConfigured: Bool` — never the
-        // value. Even if the AppDelegate accidentally tried to put a
-        // real key into a String field, the schema doesn't have one
-        // for it.
+        // The Engine view holds `cloudKey: String` ("configured" |
+        // "missing" | "unreadable") — never the value. Schema review
+        // proves no String field that would carry a key.
         let summary = DiagnosticsSnapshot.SessionSummary.zero
         let snapshot = DiagnosticsSnapshot(
             appVersion: "0.0.0-test",
@@ -117,11 +116,11 @@ final class DiagnosticsExporterTests: XCTestCase {
                 keepRawStreams: false,
                 aecEnabled: true,
                 privacyAcknowledged: true,
-                outputRootHash: DiagnosticsCollector.hashPath(root),
+                outputRootHash: DiagnosticsCollector.hashPath(root, instanceID: "test-instance"),
                 outputRootIsWritable: true
             ),
             permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
-            engine: .init(cloudKeyConfigured: true),  // schema: bool only
+            engine: .init(cloudKey: "configured"),  // schema: enum-string only
             sessions: summary,
             liveLevels: nil
         )
@@ -129,9 +128,6 @@ final class DiagnosticsExporterTests: XCTestCase {
         let json = String(decoding: data, as: UTF8.self)
 
         // The user could have a Keychain key like "sk_TEST-API-KEY-XYZ".
-        // Assert known patterns aren't present (stronger than just
-        // checking the sentinel — schema review proves the absence of
-        // any String field that would carry a key value).
         XCTAssertFalse(json.contains("sk_"), "Keychain-style key prefix must not appear: \(json)")
         XCTAssertFalse(json.contains("TEST-API-KEY"), "any sentinel key must not appear: \(json)")
     }
@@ -154,10 +150,17 @@ final class DiagnosticsExporterTests: XCTestCase {
         let json = String(decoding: data, as: UTF8.self)
 
         XCTAssertEqual(summary.pending, 1)
-        XCTAssertFalse(json.contains("STRAY-AUDIO-BYTES"), "stray file content must NOT leak: \(json)")
-        XCTAssertFalse(json.contains("MIC-RAW-BYTES"), "raw audio bytes must NOT leak: \(json)")
-        XCTAssertFalse(json.contains("ATTENDEE-CACHE"), "side-channel cache files must NOT leak: \(json)")
-        XCTAssertFalse(json.contains("LEAKED-EVENT-TITLE"), "calendar event content must NOT leak: \(json)")
+        // Codex Phase θ P2.1: also check base64 + hex encodings so a
+        // future field accidentally including the bytes via
+        // Data.base64EncodedString or hex would trip the test.
+        for sentinel in ["STRAY-AUDIO-BYTES", "MIC-RAW-BYTES", "ATTENDEE-CACHE", "LEAKED-EVENT-TITLE"] {
+            XCTAssertFalse(json.contains(sentinel), "stray file content must NOT leak: \(sentinel) in \(json)")
+            let bytes = Data(sentinel.utf8)
+            let b64 = bytes.base64EncodedString()
+            XCTAssertFalse(json.contains(b64), "stray file content must NOT leak (base64): \(b64) in \(json)")
+            let hex = bytes.map { String(format: "%02x", $0) }.joined()
+            XCTAssertFalse(json.contains(hex), "stray file content must NOT leak (hex): \(hex) in \(json)")
+        }
         // Filenames also must not appear (no listing of folder contents).
         XCTAssertFalse(json.contains("debug-notes.txt"), "stray filenames must NOT leak: \(json)")
         XCTAssertFalse(json.contains("attendees.json"), json)
@@ -185,6 +188,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertEqual(summary.failed, 1)
         XCTAssertEqual(summary.retrying, 1)
         XCTAssertEqual(summary.totalRetries, 2)
+        XCTAssertEqual(summary.orphanedWithAudio, 0)
     }
 
     func testCollectorClassifiesUnreadableTranscriptAsUnknown() throws {
@@ -200,12 +204,79 @@ final class DiagnosticsExporterTests: XCTestCase {
 
     func testHashPathIsDeterministicAndDoesNotLeakPath() {
         let url = URL(fileURLWithPath: "/Users/alice/Documents/Transcriber", isDirectory: true)
-        let h1 = DiagnosticsCollector.hashPath(url)
-        let h2 = DiagnosticsCollector.hashPath(url)
-        XCTAssertEqual(h1, h2)
-        XCTAssertEqual(h1.count, 64, "SHA-256 hex is 64 chars")
+        let h1 = DiagnosticsCollector.hashPath(url, instanceID: "test-instance")
+        let h2 = DiagnosticsCollector.hashPath(url, instanceID: "test-instance")
+        XCTAssertEqual(h1, h2, "same instanceID + path must produce same hash")
+        XCTAssertEqual(h1.count, 64, "HMAC-SHA256 hex is 64 chars")
         XCTAssertFalse(h1.contains("alice"), "hash must not contain raw path")
         XCTAssertFalse(h1.contains("Documents"), h1)
+    }
+
+    func testHashPathDiffersAcrossInstances() {
+        // Codex Phase θ P1.2: HMAC keyed by per-install secret means
+        // two users with the same path get different hashes. This
+        // defeats the rainbow-attack that plain SHA-256 of a low-entropy
+        // path was vulnerable to.
+        let url = URL(fileURLWithPath: "/Users/alice/Documents/Transcriber", isDirectory: true)
+        let userA = DiagnosticsCollector.hashPath(url, instanceID: "instance-A")
+        let userB = DiagnosticsCollector.hashPath(url, instanceID: "instance-B")
+        XCTAssertNotEqual(userA, userB, "different instance IDs must yield different hashes for the same path")
+    }
+
+    func testRecursiveSchemaShape() throws {
+        // Codex Phase θ P1.1: top-level allowlist test doesn't catch a
+        // PII-bearing field added to a NESTED struct. This test asserts
+        // the EXACT shape of every nested object so a future
+        // SettingsView.rawOutputRoot or EngineView.apiKeyPreview field
+        // would trip the assertion.
+        let snapshot = makeSnapshot(sessions: .zero)
+        let data = try DiagnosticsExporter.encode(snapshot)
+        let any = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try XCTUnwrap(any)
+
+        // Top-level keys.
+        XCTAssertEqual(Set(json.keys), [
+            "appVersion", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"
+        ])
+
+        let settings = try XCTUnwrap(json["settings"] as? [String: Any])
+        XCTAssertEqual(Set(settings.keys), [
+            "engineMode", "keepRawStreams", "aecEnabled", "privacyAcknowledged", "outputRootHash", "outputRootIsWritable"
+        ])
+
+        let permissions = try XCTUnwrap(json["permissions"] as? [String: Any])
+        XCTAssertEqual(Set(permissions.keys), ["microphone", "screenRecording", "calendar"])
+
+        let engine = try XCTUnwrap(json["engine"] as? [String: Any])
+        // localBinaryPresent + localLanguageModelPresent are nil here
+        // (cloud mode); only cloudKey appears.
+        XCTAssertEqual(Set(engine.keys), ["cloudKey"])
+
+        let sessions = try XCTUnwrap(json["sessions"] as? [String: Any])
+        XCTAssertEqual(Set(sessions.keys), [
+            "total", "pending", "retrying", "complete", "failed", "unknown", "orphanedWithAudio", "totalRetries"
+        ])
+
+        let levels = try XCTUnwrap(json["liveLevels"] as? [String: Any])
+        XCTAssertEqual(Set(levels.keys), ["micRMS", "systemRMS"])
+    }
+
+    func testCollectorCountsAudioWithoutTranscriptAsOrphaned() throws {
+        // Codex Phase θ P1.5: a session folder with mic.m4a/system.m4a
+        // (or .partial) but no transcript.md is a recovery-window
+        // orphan. Surface it distinctly in the diagnostic counts so
+        // support sees pending recoverable bytes.
+        let dir = SessionDirectory(url: root.appendingPathComponent("orphan-with-audio", isDirectory: true))
+        try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: dir.micFinal)
+        try Data("audio".utf8).write(to: dir.systemFinal)
+        // No transcript.md.
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        XCTAssertEqual(summary.orphanedWithAudio, 1)
+        XCTAssertEqual(summary.total, 1)
+        XCTAssertEqual(summary.pending, 0)
+        XCTAssertEqual(summary.complete, 0)
     }
 
     func testEncodedJSONHasOnlyAllowlistedTopLevelKeys() throws {

@@ -42,6 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var setupPopover: PermissionRecoveryPopoverController?
     private var diagnosticsWindowController: DiagnosticsWindowController?
 
+    private static let diagnosticsInstanceService = "com.szymonsypniewicz.transcriber"
+    private static let diagnosticsInstanceAccount = "diagnostics-instance-id"
+    private let diagnosticsInstanceID = DiagnosticsInstanceID(
+        service: AppDelegate.diagnosticsInstanceService,
+        account: AppDelegate.diagnosticsInstanceAccount
+    )
+
     /// Phase ζ: SettingsStore wires runtime contracts (output folder,
     /// engine selection, raw-stream retention, AEC enable) instead of
     /// hardcoding them. The actor handles writes (Phase η Settings UI);
@@ -183,7 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         self.setupPopover = PermissionRecoveryPopoverController()
         self.diagnosticsWindowController = DiagnosticsWindowController(
             snapshotProvider: { [weak self] in
-                self?.buildDiagnosticsSnapshot() ?? Self.emptyDiagnosticsSnapshot()
+                guard let self else { return Self.emptyDiagnosticsSnapshot() }
+                return await self.buildDiagnosticsSnapshot()
             },
             exportHandler: { [weak self] in
                 await self?.exportDiagnosticsToFile()
@@ -507,16 +515,35 @@ extension AppDelegate {
     /// NEVER reads transcript bodies or session-folder file contents
     /// (the security contract lives in DiagnosticsExporter; this method
     /// is a thin assembly point).
+    ///
+    /// Codex Phase θ P1.3 / P1.4 / P1.6: real async permission probes,
+    /// tri-state cloud key (configured | missing | unreadable), and
+    /// real write-probe via DefaultOutputFolderProbe instead of the
+    /// metadata-only isWritableFile.
     @MainActor
-    func buildDiagnosticsSnapshot() -> DiagnosticsSnapshot {
+    func buildDiagnosticsSnapshot() async -> DiagnosticsSnapshot {
         let snap = settings
         let isoFmt = ISO8601DateFormatter()
-        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
-        let cloudKeyConfigured = ((try? keychain.read()) ?? "").isEmpty == false
-        let micStatus = permissionStatusName(permissions.microphoneStatus())
-        let outputWritable = FileManager.default.isWritableFile(atPath: snap.outputRoot.path)
 
-        return DiagnosticsSnapshot(
+        // Async probes — these match the preflight audit's source of
+        // truth (DefaultPermissionStatusProbe / DefaultEngineReadinessProbe /
+        // DefaultOutputFolderProbe), so what the user sees in
+        // Diagnostics is what the gate at record-time will see.
+        let permProbe = DefaultPermissionStatusProbe(permissions: permissions)
+        let folderProbe = DefaultOutputFolderProbe()
+        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+        let engineProbe = DefaultEngineReadinessProbe(keychain: keychain)
+        let instanceID = await diagnosticsInstanceID.current()
+
+        async let permsView = DiagnosticsCollector.permissions(probe: permProbe)
+        async let outputWritable = folderProbe.isWritable(snap.outputRoot)
+        async let engineView = DiagnosticsCollector.engine(
+            mode: snap.engineMode,
+            cloudProbe: { Self.probeCloudKey(keychain: keychain) },
+            engineProbe: engineProbe
+        )
+
+        return await DiagnosticsSnapshot(
             appVersion: BuildInfo.version,
             exportedAt: isoFmt.string(from: Date()),
             settings: .init(
@@ -524,25 +551,31 @@ extension AppDelegate {
                 keepRawStreams: snap.keepRawStreams,
                 aecEnabled: snap.aecEnabled,
                 privacyAcknowledged: snap.privacyAcknowledged,
-                outputRootHash: DiagnosticsCollector.hashPath(snap.outputRoot),
+                outputRootHash: DiagnosticsCollector.hashPath(snap.outputRoot, instanceID: instanceID),
                 outputRootIsWritable: outputWritable
             ),
-            permissions: .init(
-                microphone: micStatus,
-                // Screen recording + calendar are async probes; the UI
-                // shows last-known-state here. AppDelegate's audit at
-                // record-time is the authoritative version.
-                screenRecording: "unknown",
-                calendar: "unknown"
-            ),
-            engine: .init(
-                cloudKeyConfigured: cloudKeyConfigured,
-                localBinaryPresent: snap.engineMode == .local ? false : nil,
-                localLanguageModelPresent: snap.engineMode == .local ? false : nil
-            ),
+            permissions: permsView,
+            engine: engineView,
             sessions: DiagnosticsCollector.collectSessions(under: snap.outputRoot),
             liveLevels: nil  // wired in Phase ξ once AEC pipeline lands
         )
+    }
+
+    /// Codex Phase θ P1.4: probe the keychain and surface
+    /// configured / missing / unreadable distinctly. KeychainStore.read
+    /// throws KeychainError.notFound for the missing case and other
+    /// errors for locked / denied / transient I/O.
+    nonisolated static func probeCloudKey(keychain: KeychainStore) -> DiagnosticsCollector.CloudKeyState {
+        do {
+            let value = try keychain.read()
+            if let value, !value.isEmpty { return .configured }
+            return .missing
+        } catch {
+            // Distinguish "no item" from "read failed for some other
+            // reason". Anything that isn't `notFound` is treated as
+            // unreadable so support sees the difference.
+            return .unreadable
+        }
     }
 
     nonisolated static func emptyDiagnosticsSnapshot() -> DiagnosticsSnapshot {
@@ -551,7 +584,7 @@ extension AppDelegate {
             exportedAt: ISO8601DateFormatter().string(from: Date()),
             settings: .init(engineMode: "cloud", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: false, outputRootHash: "", outputRootIsWritable: false),
             permissions: .init(microphone: "unknown", screenRecording: "unknown", calendar: "unknown"),
-            engine: .init(cloudKeyConfigured: false),
+            engine: .init(cloudKey: "missing"),
             sessions: .zero,
             liveLevels: nil
         )
@@ -562,7 +595,7 @@ extension AppDelegate {
     /// returns the URL on success. Logs (and returns nil) on failure.
     @MainActor
     func exportDiagnosticsToFile() async -> URL? {
-        let snapshot = buildDiagnosticsSnapshot()
+        let snapshot = await buildDiagnosticsSnapshot()
         do {
             let data = try DiagnosticsExporter.encode(snapshot)
             let logsDir = try Self.diagnosticsLogsDirectory()
@@ -570,7 +603,9 @@ extension AppDelegate {
             fmt.dateFormat = "yyyyMMdd-HHmmss"
             let url = logsDir.appendingPathComponent("diagnostics-\(fmt.string(from: Date())).json")
             try data.write(to: url, options: [.atomic])
-            Log.lifecycle.info("Diagnostics exported to \(url.path, privacy: .public)")
+            // Codex Phase θ P2.4: log the path .private so the user's
+            // /Users/<name> doesn't leak into shared logs.
+            Log.lifecycle.info("Diagnostics exported to \(url.path, privacy: .private)")
             return url
         } catch {
             Log.lifecycle.error("Diagnostics export failed: \(String(describing: error), privacy: .public)")
