@@ -9,6 +9,14 @@ final class StartPromptCoordinator {
         case skipForNow
     }
 
+    /// Phase π: spec § Detection. The prompt auto-dismisses after this
+    /// many seconds with .skipForNow if the user doesn't pick anything,
+    /// so a stale prompt left on screen during a real meeting doesn't
+    /// block subsequent detection candidates.
+    static let autoDismissAfter: TimeInterval = 60
+
+    private static let autoDismissModalResponse = NSApplication.ModalResponse(rawValue: 9_999)
+
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
         let alert = NSAlert()
         if let event {
@@ -17,10 +25,10 @@ final class StartPromptCoordinator {
             // is clearly different from a stray Zoom window the user just
             // opened to test something.
             alert.messageText = "Start recording '\(event.title)'?"
-            alert.informativeText = "Transcriber detected \(app.displayName) running during a calendar event. Click Start Recording to capture, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes."
+            alert.informativeText = "Transcriber detected \(app.displayName) running during a calendar event. Click Start Recording to capture, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes. (Auto-dismisses in \(Int(Self.autoDismissAfter))s.)"
         } else {
             alert.messageText = "Start recording \(app.displayName)?"
-            alert.informativeText = "Transcriber detected \(app.displayName) is running. Click Start Recording to capture this call, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes."
+            alert.informativeText = "Transcriber detected \(app.displayName) is running. Click Start Recording to capture this call, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes. (Auto-dismisses in \(Int(Self.autoDismissAfter))s.)"
         }
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Start Recording")
@@ -29,10 +37,24 @@ final class StartPromptCoordinator {
 
         NSApp.activate(ignoringOtherApps: true)
 
+        // Phase π: 60s auto-dismiss timer. NSAlert.runModal() blocks
+        // until the user picks; we stopModal(withCode:) from a
+        // background task to make it return our sentinel response.
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.autoDismissAfter * 1_000_000_000))
+            if !Task.isCancelled {
+                NSApp.stopModal(withCode: Self.autoDismissModalResponse)
+            }
+        }
         let response = alert.runModal()
+        timeoutTask.cancel()
+
         switch response {
         case .alertFirstButtonReturn:  return .start
         case .alertSecondButtonReturn: return .notAMeeting
+        case Self.autoDismissModalResponse:
+            Log.lifecycle.info("Start prompt auto-dismissed after \(Int(Self.autoDismissAfter), privacy: .public)s; treating as skip")
+            return .skipForNow
         default:                       return .skipForNow
         }
     }
