@@ -75,16 +75,70 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
             let speaker_id: String?
             let channel_index: Int?
         }
-        struct Body: Decodable {
+        /// Single-channel diarized shape: `{"language_code": "...",
+        /// "words": [...]}`.
+        struct SingleChannelBody: Decodable {
             let language_code: String?
             let words: [Word]
         }
-        let decoded = try JSONDecoder().decode(Body.self, from: data)
+        /// Multichannel shape: `{"transcripts": [{"channel_index": N,
+        /// "language_code": "...", "words": [...]}, ...]}`. Codex
+        /// Phase μ P1.12 — v0 parser only handled single-channel and
+        /// returned `malformedResponse` for any multichannel call,
+        /// which spec line 117 mandates as the AEC-clean V1 path.
+        struct ChannelTranscript: Decodable {
+            let channel_index: Int?
+            let language_code: String?
+            let words: [Word]
+        }
+        struct MultichannelBody: Decodable {
+            let transcripts: [ChannelTranscript]
+        }
+
+        let decoder = JSONDecoder()
+        let words: [Word]
+        let detectedLanguage: String?
+
+        if let multi = try? decoder.decode(MultichannelBody.self, from: data),
+           !multi.transcripts.isEmpty {
+            // Flatten + tag each word with the channel-derived speaker
+            // index. Sort by start time so the utterance grouping below
+            // produces a chronological transcript.
+            var flattened: [Word] = []
+            for transcript in multi.transcripts {
+                let cidx = transcript.channel_index
+                for w in transcript.words {
+                    // Stamp channel_index from the parent if the word
+                    // didn't already carry one (defensive — some
+                    // backends inline it, others put it on the parent).
+                    let stamped = Word(
+                        text: w.text,
+                        type: w.type,
+                        start: w.start,
+                        end: w.end,
+                        speaker_id: w.speaker_id,
+                        channel_index: w.channel_index ?? cidx
+                    )
+                    flattened.append(stamped)
+                }
+            }
+            flattened.sort { $0.start < $1.start }
+            words = flattened
+            // Detected language: prefer the first transcript that has
+            // one (channels usually agree on language; if not, the
+            // first non-nil is a reasonable default).
+            detectedLanguage = multi.transcripts.compactMap { $0.language_code }.first
+        } else {
+            // Fallback: single-channel diarized shape.
+            let single = try decoder.decode(SingleChannelBody.self, from: data)
+            words = single.words
+            detectedLanguage = single.language_code
+        }
 
         var utterances: [EngineResponse.Utterance] = []
         var current: (speaker: String, start: Double, end: Double, text: String)?
 
-        for w in decoded.words {
+        for w in words {
             let speaker: String
             if let cidx = w.channel_index { speaker = "speaker_\(cidx)" }
             else if let sid = w.speaker_id { speaker = sid }
@@ -106,6 +160,6 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
             utterances.append(.init(speaker: c.speaker, startSeconds: c.start, endSeconds: c.end, text: c.text))
         }
 
-        return EngineResponse(utterances: utterances, detectedLanguage: decoded.language_code, modelID: "scribe_v2")
+        return EngineResponse(utterances: utterances, detectedLanguage: detectedLanguage, modelID: "scribe_v2")
     }
 }

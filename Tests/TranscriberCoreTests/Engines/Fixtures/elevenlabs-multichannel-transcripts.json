@@ -1,0 +1,35 @@
+{
+  "transcripts": [
+    {
+      "channel_index": 0,
+      "language_code": "en",
+      "language_probability": 0.99,
+      "text": "Hi Faris, can you hear me?",
+      "words": [
+        {"text": "Hi", "type": "word", "start": 0.10, "end": 0.30},
+        {"text": "Faris", "type": "word", "start": 0.31, "end": 0.65},
+        {"text": ",", "type": "spacing", "start": 0.65, "end": 0.66},
+        {"text": "can", "type": "word", "start": 0.80, "end": 0.95},
+        {"text": "you", "type": "word", "start": 0.96, "end": 1.05},
+        {"text": "hear", "type": "word", "start": 1.06, "end": 1.25},
+        {"text": "me", "type": "word", "start": 1.26, "end": 1.40},
+        {"text": "?", "type": "spacing", "start": 1.40, "end": 1.41}
+      ]
+    },
+    {
+      "channel_index": 1,
+      "language_code": "en",
+      "language_probability": 0.97,
+      "text": "Yes, I can hear you.",
+      "words": [
+        {"text": "Yes", "type": "word", "start": 1.60, "end": 1.85},
+        {"text": ",", "type": "spacing", "start": 1.85, "end": 1.86},
+        {"text": "I", "type": "word", "start": 1.95, "end": 2.05},
+        {"text": "can", "type": "word", "start": 2.06, "end": 2.20},
+        {"text": "hear", "type": "word", "start": 2.21, "end": 2.40},
+        {"text": "you", "type": "word", "start": 2.41, "end": 2.55},
+        {"text": ".", "type": "spacing", "start": 2.55, "end": 2.56}
+      ]
+    }
+  ]
+}
