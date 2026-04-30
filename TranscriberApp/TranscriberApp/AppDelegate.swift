@@ -38,6 +38,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         return docs.appendingPathComponent("Transcriber", isDirectory: true)
     }
 
+    /// Phase α preflight. Cloud mode is the only V1 engine until Phase ο
+    /// ships the local Cohere binary; this stays cloud-pinned for now and
+    /// gets driven from `SettingsStore` once Phase ζ wires it.
+    private var preflightDoctor: PermissionDoctor {
+        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+        return PermissionDoctor(
+            permissions: DefaultPermissionStatusProbe(permissions: permissions),
+            engine: DefaultEngineReadinessProbe(keychain: keychain)
+        )
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
         try? FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
@@ -255,10 +266,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         self.status = .starting
         menu?.rebuild(for: status)
 
-        if permissions.microphoneStatus() != .granted {
+        // First-launch prompt: if mic is undecided, fire the system prompt
+        // so the user can grant before we re-audit. Calendar is optional, so
+        // we never wait on it here.
+        if permissions.microphoneStatus() == .notDetermined {
             _ = await permissions.requestMicrophone()
         }
-        _ = await permissions.screenRecordingStatus()
+
+        // Phase α preflight gate. Any blocker → abort with logged reasons.
+        // Phase η will hang the Setup Required popover off this denial; for
+        // now we log + return to idle so the user can fix the underlying
+        // permission and try again.
+        let report = await preflightDoctor.audit(outputRoot: outputRoot, engineMode: .cloud)
+        switch RecordRequestGate().verdict(from: report) {
+        case .deny(let reasons):
+            Log.lifecycle.error("startRecording denied by preflight: \(String(describing: reasons), privacy: .public)")
+            self.status = .idle
+            menu?.rebuild(for: status)
+            return
+        case .allowWithWarnings(let reasons):
+            Log.lifecycle.info("startRecording proceeding with warnings: \(String(describing: reasons), privacy: .public)")
+        case .allow:
+            break
+        }
 
         let id = SessionID(from: Date())
         do {

@@ -15,12 +15,12 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0D7E08A9841F1B22E13797E3 /* transcriber-slice-6 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "transcriber-slice-6"; path = ..; sourceTree = SOURCE_ROOT; };
 		1B8AD4810831F8F27ABEC71D /* RecordingMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMenu.swift; sourceTree = "<group>"; };
 		1BB2243F5E3EF874F39788C4 /* TranscriberApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TranscriberApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4F417E429B2D0B94C7FCC303 /* TranscriberApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriberApp.swift; sourceTree = "<group>"; };
 		6231D1634E71B6EB11AED4EB /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		648C7F4AE87B13EDE4CF4902 /* StartPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptCoordinator.swift; sourceTree = "<group>"; };
+		9CA168AE9FF42ED092E7F6BE /* transcriber */ = {isa = PBXFileReference; lastKnownFileType = folder; name = transcriber; path = ..; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,7 +66,7 @@
 		9E96B7886CC5431986BAC4CB /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				0D7E08A9841F1B22E13797E3 /* transcriber-slice-6 */,
+				9CA168AE9FF42ED092E7F6BE /* transcriber */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
