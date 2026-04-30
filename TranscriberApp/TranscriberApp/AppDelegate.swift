@@ -293,8 +293,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         let id = SessionID(from: Date())
         do {
             let dir = try SessionDirectory.create(under: outputRoot, id: id)
-            let mic = SCKAudioCaptureSource(kind: .microphone)
-            let sys = SCKAudioCaptureSource(kind: .system)
+            // Phase β: one SCStream with both .audio + .microphone outputs
+            // so mic and system share a sync clock. AEC (Phase ξ) and
+            // streaming finalize (Phase ε) both depend on this.
+            let stream = SCKDualOutputStream(sampleRate: 48000, channelCount: 1)
+            let mic = SCKAudioCaptureSource(kind: .microphone, stream: stream)
+            let sys = SCKAudioCaptureSource(kind: .system, stream: stream)
             let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
             self.session = session
             self.currentSessionDirectory = dir
