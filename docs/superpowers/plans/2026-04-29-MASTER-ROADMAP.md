@@ -126,12 +126,26 @@ Never start a slice with the previous slice's bugs unfixed. Never start a slice 
 | 1 | ✅ `2026-04-29-slice-01-manual-record.md` | `transcriber-slice-1` | shipped 2026-04-29 (TCC grant deferred to user first-launch) |
 | 2 | ✅ `2026-04-29-slice-02-single-channel-cloud.md` | `transcriber-slice-2` | shipped 2026-04-29 (TCC grant + ElevenLabs API key deferred to user setup) |
 | 3 | ✅ `2026-04-29-slice-03-multichannel-calendar.md` | `transcriber-slice-3` | shipped 2026-04-29 (TCC + calendar permission + headphones for clean multichannel until slice 4 AEC) |
-| 4 | ⏳ expand when starting (depends on Spike B) | — | not started |
+| 4 | ✅ folded into rc1 Phase ξ (research-gated) | — | code-complete via Phase ξ; AEC backend body deferred to Spike B |
 | 5 | ✅ `2026-04-29-slice-05-detection-light.md` | `transcriber-slice-5` | shipped 2026-04-29 (light: process allowlist + dwell + skip; mic-active + bidirectional audio deferred to slice 5b) |
+| 5b | ✅ folded into rc1 Phase π | — | 60s prompt auto-dismiss + AudioActivityProbe seam; real per-PID detection research-gated |
 | 6 | ✅ `2026-04-29-slice-06-calendar-full.md` | `transcriber-slice-6` | shipped 2026-04-29 (watcher + cache + wake + EKEventStoreChanged refresh + prompt enrichment) |
 | 7 | ✅ `2026-04-29-slice-07-recovery-retry.md` | `transcriber-slice-7` | shipped 2026-04-29 (jumped slice 4-6 because slice 4 needs Spike B) |
-| 8 | ⏳ expand when starting (depends on Spike A) | — | not started |
+| 8 | ✅ folded into rc1 Phase ο (research-gated) | — | EngineSelector + CohereRustBackend protocol; binary integration deferred to Spike A |
 | 9a | ✅ `2026-04-29-slice-09a-output-contract.md` | `transcriber-slice-9a` | shipped 2026-04-29 (audio.m4a + metadata.json on every terminal state; signing/notarize/Homebrew defer to slice 9b) |
-| 9b | ⏳ expand when ready (signing certs + notarize + Homebrew + LUFS normalization + keep_raw_streams setting) | — | not started |
+| 9b | ✅ folded into rc1 Phases σ/τ/υ + κ | — | hardened entitlements + scripts/release.sh + Casks/transcriber.rb.template + scripts/bump-version.sh + RMS-with-deferral. Signed/notarized artifact still requires user's Developer ID cert. |
+
+### V1.0-rc1 (Phases α–υ, 2026-04-30)
+
+Phases α through υ landed end-to-end as 22 commits over a single
+autonomous run. Codex-driven hardening passes (α, β, ε, ζ, η, θ)
+addressed every P0/P1 finding before moving on. 221 swift-test
+green at rc1 cut. Four mandatory diagnostics-redaction guards
+enforce the spec-line-364 contract.
+
+**Pending user validation per `docs/TESTING.md`** before tagging
+`v1.0.0`. TESTING.md captures every `q_*_validation` question and
+Done-state checkbox with reproduction commands. Until every box
+passes, the build stays at `v1.0.0-rc1`.
 
 Update this table as plans are written and slices ship.

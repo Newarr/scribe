@@ -1,4 +1,4 @@
 public enum BuildInfo {
     public static let appName = "Transcriber"
-    public static let version = "0.0.1"
+    public static let version = "1.0.0-rc1"
 }
