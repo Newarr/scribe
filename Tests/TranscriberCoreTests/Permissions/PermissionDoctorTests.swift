@@ -87,9 +87,12 @@ final class PermissionDoctorTests: XCTestCase {
         let outputRoot = makeWritableTempDir()
         defer { try? FileManager.default.removeItem(at: outputRoot) }
 
+        // Bundle path configured but the file doesn't exist on disk:
+        // emits the URL-bearing reason so the popover can show the user
+        // exactly which file the build expected.
         let probe = StubEngine(
             cloudKey: false,
-            localBinary: nil,
+            localBinary: URL(fileURLWithPath: "/tmp/cohere-not-installed"),
             localModel: URL(fileURLWithPath: "/tmp/model"),
             binaryReady: false,
             modelReady: true
@@ -138,7 +141,9 @@ final class PermissionDoctorTests: XCTestCase {
         }))
     }
 
-    func testSyncedStorageOutputBlocksRecording() async {
+    func testSyncedStorageOutputSurfacesWarningPerSpec() async {
+        // Spec line 231 says "Warn" not "block" for synced storage — codex
+        // Phase α review P1.1.
         let outputRoot = URL(fileURLWithPath: "/Users/example/Library/Mobile Documents/com~apple~CloudDocs/Transcriber")
         let doctor = PermissionDoctor(
             permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
@@ -146,10 +151,52 @@ final class PermissionDoctorTests: XCTestCase {
             folder: HeuristicOnlyFolderProbe()
         )
         let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
-        XCTAssertTrue(report.blockers.contains(where: {
+        XCTAssertEqual(report.blockers, [],
+                       "synced storage must NOT block per spec line 231")
+        XCTAssertTrue(report.warnings.contains(where: {
             if case .outputFolderInSyncedStorage(_, let hint) = $0 { return hint == "iCloud Drive" }
             return false
-        }), "synced storage parents must block recording (silent file conflicts mid-call would be worse than aborting)")
+        }), "synced storage surfaces a warning so the user knows about possible file conflicts")
+    }
+
+    func testCloudStorageHeuristicCoversModernMacOSPaths() {
+        // macOS 12+ uses ~/Library/CloudStorage/ for File Provider mirrored
+        // folders. Codex Phase α review P1.2 caught that the original
+        // heuristic missed every modern Drive/OneDrive/Dropbox install.
+        let probe = DefaultOutputFolderProbe()
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/Transcriber")),
+                       "Google Drive")
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/OneDrive-Personal/Transcriber")),
+                       "OneDrive")
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Dropbox/Transcriber")),
+                       "Dropbox")
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Box/Transcriber")),
+                       "Box")
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Dropbox (Personal)/Transcriber")),
+                       "Dropbox")
+        XCTAssertNil(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Documents/Transcriber")),
+                     "ordinary Documents folder must not false-positive")
+    }
+
+    func testLocalEngineNotConfiguredYieldsTypedReasonNotFakePath() async {
+        // Codex Phase α review P2.2: V1 cloud-only builds without a Cohere
+        // binary URL must emit `localEngineNotConfigured`, not a fake
+        // "Resources/cohere_transcribe_rs" URL that the popover would
+        // display literally.
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+
+        let probe = StubEngine(cloudKey: false, localBinary: nil, localModel: nil)
+        let doctor = PermissionDoctor(
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
+            engine: probe
+        )
+        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
+        XCTAssertTrue(report.blockers.contains(.localEngineNotConfigured))
+        XCTAssertTrue(report.blockers.contains(.localLanguageModelNotConfigured))
+        XCTAssertFalse(report.blockers.contains(where: {
+            if case .missingLocalEngineBinary = $0 { return true } else { return false }
+        }), "must NOT emit a fake URL when no binary path is configured")
     }
 
     // MARK: warnings

@@ -19,7 +19,13 @@ public enum PreflightReason: Sendable, Equatable, Hashable {
     case outputFolderUnwritable(URL)
     case outputFolderInSyncedStorage(URL, providerHint: String)
     case missingCloudAPIKey
+    /// Local engine selected but no binary path configured (Phase ο not
+    /// shipped yet, or settings out of sync). Distinct from
+    /// `missingLocalEngineBinary` so the popover can render a "local engine
+    /// not bundled in this build" message instead of a fake file path.
+    case localEngineNotConfigured
     case missingLocalEngineBinary(URL)
+    case localLanguageModelNotConfigured
     case missingLocalLanguageModel(URL)
     case calendarDeniedOptional
     case calendarNotDetermined
@@ -163,18 +169,30 @@ public struct DefaultOutputFolderProbe: OutputFolderProbing {
         // NSURLUbiquitousItemDownloadingStatusKey / Mobile Documents container,
         // but path matching catches the user-visible disasters (saving into
         // a Drive/Dropbox/iCloud folder) without needing entitlements.
+        //
+        // Covers both legacy paths and the modern `~/Library/CloudStorage/`
+        // tree macOS uses since 12.0 for File Provider mirrored folders
+        // (codex Phase α review P1.2): GoogleDrive-, OneDrive-, Dropbox,
+        // Box, etc. all live under that directory.
         let path = url.path.lowercased()
         if path.contains("/library/mobile documents/") || path.contains("/icloud") {
             return "iCloud Drive"
         }
-        if path.contains("/dropbox/") || path.hasSuffix("/dropbox") {
-            return "Dropbox"
-        }
-        if path.contains("/google drive/") || path.contains("/googledrive/") {
+        if path.contains("/library/cloudstorage/googledrive") || path.contains("/google drive/") || path.contains("/googledrive/") {
             return "Google Drive"
         }
-        if path.contains("/onedrive/") {
+        if path.contains("/library/cloudstorage/onedrive") || path.contains("/onedrive/") || path.contains("/onedrive-") {
             return "OneDrive"
+        }
+        if path.contains("/library/cloudstorage/dropbox") || path.contains("/dropbox/") || path.contains("/dropbox (") || path.hasSuffix("/dropbox") {
+            return "Dropbox"
+        }
+        if path.contains("/library/cloudstorage/box") || path.contains("/box sync/") {
+            return "Box"
+        }
+        // Generic CloudStorage subfolder (e.g. third-party File Providers).
+        if path.contains("/library/cloudstorage/") {
+            return "synced storage"
         }
         return nil
     }
@@ -220,10 +238,13 @@ public actor PermissionDoctor {
         if await folder.isWritable(outputRoot) == false {
             blockers.append(.outputFolderUnwritable(outputRoot))
         } else if let hint = folder.syncedStorageHint(outputRoot) {
-            // Synced-storage parents are a blocker, not a warning: silent
-            // file conflicts during a 60-min recording would be far more
-            // destructive than aborting the start request.
-            blockers.append(.outputFolderInSyncedStorage(outputRoot, providerHint: hint))
+            // Spec line 231: "Warn if output folder is in iCloud Drive,
+            // Dropbox, Google Drive, or another synced location." Codex
+            // Phase α review P1.1 caught that v0 of this code blocked, not
+            // warned — fixed here. Synced-storage hint surfaces as a
+            // warning so the user can proceed but knows file conflicts are
+            // possible. Phase η renders the prompt UI.
+            warnings.append(.outputFolderInSyncedStorage(outputRoot, providerHint: hint))
         }
 
         // Engine readiness — required, mode-dependent.
@@ -233,22 +254,24 @@ public actor PermissionDoctor {
                 blockers.append(.missingCloudAPIKey)
             }
         case .local:
+            // Codex Phase α review P2.2: emit a typed sentinel reason when
+            // the build has no local-binary path configured at all (e.g. V1
+            // cloud-only builds where Phase ο hasn't shipped). Avoids
+            // showing the user a fake "Resources/cohere_transcribe_rs"
+            // path that doesn't exist on their disk.
             if let bin = engine.localEngineBinaryURL() {
                 if await engine.localBinaryReady(bin) == false {
                     blockers.append(.missingLocalEngineBinary(bin))
                 }
             } else {
-                // Local mode selected but no binary path configured at all —
-                // V1 cloud-only builds hit this if the user flips engine to
-                // local before Phase ο ships.
-                blockers.append(.missingLocalEngineBinary(URL(fileURLWithPath: "Resources/cohere_transcribe_rs")))
+                blockers.append(.localEngineNotConfigured)
             }
             if let model = engine.localLanguageModelURL() {
                 if await engine.localModelReady(model) == false {
                     blockers.append(.missingLocalLanguageModel(model))
                 }
             } else {
-                blockers.append(.missingLocalLanguageModel(URL(fileURLWithPath: "Resources/whisper-tiny")))
+                blockers.append(.localLanguageModelNotConfigured)
             }
         }
 
