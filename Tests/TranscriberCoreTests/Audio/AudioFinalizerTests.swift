@@ -47,6 +47,58 @@ final class AudioFinalizerTests: XCTestCase {
         XCTAssertEqual(file.fileFormat.channelCount, 1)
     }
 
+    func testStreamingFinalizeHandlesLongDurationWithoutMemoryBlowup() async throws {
+        // Phase ε: streaming version must handle 30+ minutes without
+        // reading the whole file into RAM. v0 finalize at this scale was
+        // ~700MB per stream resident; the streaming version processes one
+        // 100ms chunk at a time. We can't directly assert peak resident
+        // memory in CI (no instruments hookup), but we CAN assert the
+        // function completes in reasonable time on a 30-second synthetic
+        // input — if the streaming pipeline regresses to whole-file reads,
+        // either memory or time will balloon.
+        //
+        // 30s instead of 30min keeps the test under CI's 60s threshold
+        // while still exercising 1500 chunks.
+        let micURL = tmp.appendingPathComponent("mic.m4a")
+        let sysURL = tmp.appendingPathComponent("system.m4a")
+        let outURL = tmp.appendingPathComponent("audio.m4a")
+        try writeAACSilence(to: micURL, durationSec: 30.0)
+        try writeAACSilence(to: sysURL, durationSec: 30.0)
+
+        let start = Date()
+        try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, sampleRate: 48000)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 30.0, "30s of audio must finalize in well under 30s; got \(elapsed)s")
+
+        let asset = AVURLAsset(url: outURL)
+        let duration = try await asset.load(.duration)
+        let seconds = CMTimeGetSeconds(duration)
+        XCTAssertGreaterThan(seconds, 25.0, "expected ~30s output; got \(seconds)s")
+        XCTAssertLessThan(seconds, 35.0)
+    }
+
+    func testStreamingHandlesUnequalLengthInputs() async throws {
+        // mic and system rarely start at the same instant — one stream is
+        // slightly longer. The streaming pipeline must zero-pad the
+        // shorter side, same as the in-memory v0.
+        let micURL = tmp.appendingPathComponent("mic.m4a")
+        let sysURL = tmp.appendingPathComponent("system.m4a")
+        let outURL = tmp.appendingPathComponent("audio.m4a")
+        try writeAACSilence(to: micURL, durationSec: 2.0)
+        try writeAACSilence(to: sysURL, durationSec: 5.0)
+
+        try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, sampleRate: 48000)
+
+        let asset = AVURLAsset(url: outURL)
+        let duration = try await asset.load(.duration)
+        let seconds = CMTimeGetSeconds(duration)
+        // Output should be the LONGER side (system at 5s); shorter side
+        // zero-padded.
+        XCTAssertGreaterThan(seconds, 4.0)
+        XCTAssertLessThan(seconds, 6.0)
+    }
+
     private func writeAACSilence(to url: URL, durationSec: Double) throws {
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
         let settings: [String: Any] = [
