@@ -104,16 +104,28 @@ public final class PTSCollector: @unchecked Sendable {
         try data.write(to: url, options: .atomic)
     }
 
-    /// Blocks until every queued log entry has hit disk. Callers in the
-    /// finalize path call this so a downstream reader sees a complete log.
+    /// Blocks until every queued log entry has hit disk and closes the
+    /// underlying file handle. Closing on flush (rather than waiting for
+    /// deinit) means a kill mid-recording still leaves the on-disk JSONL
+    /// in a readable state — codex Phase β review P1.6.
     public func flushLog() {
         logQueue.sync {
-            try? self.logHandle?.synchronize()
+            do {
+                try self.logHandle?.synchronize()
+                try self.logHandle?.close()
+            } catch {
+                Log.capture.error("PTS log close failed: \(String(describing: error), privacy: .public)")
+            }
+            self.logHandle = nil
+            self.logOpenAttempted = true  // Closed; don't reopen.
         }
     }
 
     /// Returns the entries written so far. Walks the on-disk log to keep the
     /// API independent of whatever in-memory buffering grows later.
+    /// Tolerates a malformed trailing line (process kill mid-write left a
+    /// partial JSONL line) — codex Phase β review P1.6: the recovery path
+    /// must not throw on the survivable case.
     public func loggedEntries() throws -> [PTSLogEntry] {
         guard let url = streamingLogURL else { return [] }
         flushLog()
@@ -121,9 +133,24 @@ public final class PTSCollector: @unchecked Sendable {
         let data = try Data(contentsOf: url)
         guard let text = String(data: data, encoding: .utf8) else { return [] }
         let decoder = JSONDecoder()
-        return try text.split(separator: "\n", omittingEmptySubsequences: true).map { line in
-            try decoder.decode(PTSLogEntry.self, from: Data(line.utf8))
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        var entries: [PTSLogEntry] = []
+        entries.reserveCapacity(lines.count)
+        for (index, line) in lines.enumerated() {
+            do {
+                entries.append(try decoder.decode(PTSLogEntry.self, from: Data(line.utf8)))
+            } catch {
+                // Tolerate ONLY a malformed trailing line (the kill-during-
+                // write case). A malformed line in the middle is real
+                // corruption and should still throw.
+                if index == lines.count - 1 {
+                    Log.capture.info("PTS log: discarding malformed trailing line (likely crash mid-write)")
+                    break
+                }
+                throw error
+            }
         }
+        return entries
     }
 
     // MARK: - private

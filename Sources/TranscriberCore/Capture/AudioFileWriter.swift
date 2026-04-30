@@ -28,6 +28,13 @@ public final class AudioFileWriter: @unchecked Sendable {
     /// non-zero to prove that "no errors after finalize" came from the
     /// drain barrier and not from silent buffer loss.
     private var postFinalizeAppendCount: Int = 0
+    /// Counts of buffers dropped because `input.isReadyForMoreMediaData`
+    /// was false. Codex Phase β review P1.5: a silent drop here would let
+    /// `pts.jsonl` claim audio exists that never made it to the m4a.
+    /// Surfacing the count means CaptureSession.ingest can skip the PTS
+    /// observe for backpressured buffers and tests can assert the gap is
+    /// recorded.
+    private var backpressureDropCount: Int = 0
 
     public init(url: URL, sampleRate: Int, channelCount: Int) throws {
         try? FileManager.default.removeItem(at: url)
@@ -58,8 +65,21 @@ public final class AudioFileWriter: @unchecked Sendable {
         if let error = thrown { throw error }
     }
 
-    public func append(_ buffer: CMSampleBuffer) throws {
+    /// Result of a single append. Callers (CaptureSession.ingest) use this
+    /// to skip side effects (PTS observation, frame counters) when the
+    /// buffer didn't actually land in the m4a — codex Phase β review P1.4
+    /// + P1.5 caught that v0 silently dropped backpressured buffers AND
+    /// recorded their PTS, making the JSONL claim audio that didn't exist.
+    public enum AppendOutcome: Sendable, Equatable {
+        case appended
+        case droppedBackpressure
+        case droppedPostFinalize
+    }
+
+    @discardableResult
+    public func append(_ buffer: CMSampleBuffer) throws -> AppendOutcome {
         var thrown: WriterError?
+        var outcome: AppendOutcome = .appended
         queue.sync {
             // Post-finalize append must not throw — the SCK output queue may
             // hold a sample buffer in flight when stop() runs, and a thrown
@@ -68,6 +88,7 @@ public final class AudioFileWriter: @unchecked Sendable {
             // path actually fired.
             if finalized {
                 postFinalizeAppendCount &+= 1
+                outcome = .droppedPostFinalize
                 return
             }
             guard started else { thrown = .notStarted; return }
@@ -76,12 +97,17 @@ public final class AudioFileWriter: @unchecked Sendable {
                 writer.startSession(atSourceTime: pts)
                 sessionStarted = true
             }
-            guard input.isReadyForMoreMediaData else { return }
+            guard input.isReadyForMoreMediaData else {
+                backpressureDropCount &+= 1
+                outcome = .droppedBackpressure
+                return
+            }
             if !input.append(buffer) {
                 thrown = .writerFailed(writer.error)
             }
         }
         if let error = thrown { throw error }
+        return outcome
     }
 
     public func finalize() async throws {
@@ -107,5 +133,11 @@ public final class AudioFileWriter: @unchecked Sendable {
     /// Internal access; package tests reach in via @testable import.
     var postFinalizeAppendCounter: Int {
         queue.sync { postFinalizeAppendCount }
+    }
+
+    /// Test-only: how many append() calls were dropped because the
+    /// AVAssetWriter input was applying backpressure.
+    var backpressureDropCounter: Int {
+        queue.sync { backpressureDropCount }
     }
 }

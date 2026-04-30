@@ -114,4 +114,42 @@ final class PTSCollectorTests: XCTestCase {
         XCTAssertEqual(try collector.loggedEntries(), [],
                        "tests that don't care about the JSONL must opt out cleanly")
     }
+
+    func testTruncatedTrailingLineToleratedOnRead() throws {
+        // Codex Phase β review P1.6: a kill mid-write can leave a partial
+        // trailing JSONL line. The recovery path must not throw on that
+        // (otherwise SessionSupervisor can't read what little PTS data
+        // survived).
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        // Write two valid lines + one truncated trailing line.
+        let validA = #"{"ptsSeconds":0.0,"sampleCount":480,"sampleRate":48000,"stream":"mic"}"# + "\n"
+        let validB = #"{"ptsSeconds":0.01,"sampleCount":480,"sampleRate":48000,"stream":"mic"}"# + "\n"
+        let truncated = #"{"ptsSeconds":0.02,"sampleCo"#  // No newline, no closing brace.
+        try (validA + validB + truncated).write(to: log, atomically: true, encoding: .utf8)
+
+        let collector = PTSCollector(streamingLogURL: log)
+        let entries = try collector.loggedEntries()
+        XCTAssertEqual(entries.count, 2,
+                       "valid lines must be readable; trailing truncation tolerated")
+        XCTAssertEqual(entries[0].ptsSeconds, 0.0, accuracy: 1e-6)
+    }
+
+    func testMidLineCorruptionStillThrows() throws {
+        // Codex Phase β review P1.6: only the TRAILING line can be
+        // truncated. Bad data in the middle of the log is real corruption
+        // and recovery should refuse to silently skip it.
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        let validA = #"{"ptsSeconds":0.0,"sampleCount":480,"sampleRate":48000,"stream":"mic"}"# + "\n"
+        let mid = "{not-json}\n"
+        let validB = #"{"ptsSeconds":0.01,"sampleCount":480,"sampleRate":48000,"stream":"mic"}"# + "\n"
+        try (validA + mid + validB).write(to: log, atomically: true, encoding: .utf8)
+
+        let collector = PTSCollector(streamingLogURL: log)
+        XCTAssertThrowsError(try collector.loggedEntries(),
+                             "mid-line corruption is real, not a kill artifact; must surface")
+    }
 }

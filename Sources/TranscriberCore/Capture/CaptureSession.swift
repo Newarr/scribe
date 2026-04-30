@@ -144,16 +144,45 @@ public actor CaptureSession {
     }
 
     private nonisolated func ingest(stream: PTSCollector.StreamID, buffer: CMSampleBuffer) {
-        collector.observe(stream, buffer: buffer)
+        // Codex Phase β review P1.4 + P1.5: observe AFTER the writer
+        // commits the buffer. Otherwise the JSONL records audio that
+        // didn't make it to the m4a (post-finalize + backpressure drops).
+        let outcome: AudioFileWriter.AppendOutcome
         do {
             switch stream {
-            case .mic:    try micWriter.append(buffer)
-            case .system: try systemWriter.append(buffer)
+            case .mic:    outcome = try micWriter.append(buffer)
+            case .system: outcome = try systemWriter.append(buffer)
             }
         } catch {
             Log.capture.error("Append failed: \(String(describing: error), privacy: .public)")
-            Task { await self.markFailed() }
+            // P1.3: a writer-level append failure means the m4a is wedged.
+            // Drive the full stop chain (release SCK + finalize + rename)
+            // instead of just flipping status — leaving SCK running while
+            // the UI thinks recording is done would orphan a live capture.
+            Task { await self.failAndCleanup() }
+            return
         }
+        guard outcome == .appended else { return }
+        collector.observe(stream, buffer: buffer)
+    }
+
+    private func failAndCleanup() async {
+        // Codex Phase β review P1.3: a writer-level append failure is
+        // terminal. Stop sources, finalize writers (idempotent if already
+        // finalized), flush PTS log, attempt directory rename. Any step
+        // that throws is logged but doesn't escape — we're already in a
+        // failure path and SessionSupervisor will rescue any unrenamed
+        // .partial files on next launch.
+        guard status == .recording else { return }
+        status = .failed
+        Log.lifecycle.error("Capture failure: tearing down sources + writers")
+        await mic.stop()
+        await system.stop()
+        try? await micWriter.finalize()
+        try? await systemWriter.finalize()
+        collector.flushLog()
+        try? collector.writeSidecar(to: directory.ptsSidecar)
+        try? directory.finalize()
     }
 
     private func markFailed() {

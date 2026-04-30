@@ -31,6 +31,20 @@ final class SCKDualOutputStreamTests: XCTestCase {
         // No crash, no exception. Real SCK isn't touched because no stream
         // was created.
     }
+
+    func testParallelStopsCompleteWithoutCrash() async {
+        // Codex Phase β review P2.8: real concurrency hits both
+        // stop callers at the same time. The serial DispatchQueue +
+        // single-stop-extracts-stream pattern must absorb the race.
+        let coordinator = SCKDualOutputStream()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { await coordinator.stopIfRunning() }
+            }
+        }
+        // No crash, no exception. The first stop sees a nil stream and
+        // returns; subsequent stops see the same nil and also return.
+    }
 }
 
 private final class DummySCStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable {

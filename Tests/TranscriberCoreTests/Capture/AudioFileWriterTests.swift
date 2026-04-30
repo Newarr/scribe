@@ -60,6 +60,19 @@ final class AudioFileWriterTests: XCTestCase {
                        "post-finalize append must increment the counter so the drain barrier proves itself")
     }
 
+    func testAppendOutcomeReportsDroppedPostFinalize() async throws {
+        // Codex Phase β review P1.4 + P1.5: callers must see whether the
+        // buffer actually landed so they can skip downstream side effects
+        // (PTS observation in particular).
+        let writer = try AudioFileWriter(url: tmpURL, sampleRate: 48000, channelCount: 1)
+        try writer.start()
+        let buf = SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480)
+        XCTAssertEqual(try writer.append(buf), .appended)
+        try await writer.finalize()
+        XCTAssertEqual(try writer.append(buf), .droppedPostFinalize,
+                       "post-finalize append must report droppedPostFinalize so PTS log doesn't claim audio that didn't land")
+    }
+
     func testFinalizeIsIdempotent() async throws {
         // Codex pass 2 P1 #4: explicit happens-before chain. finalize()
         // running twice must not double-finish-writing the AVAssetWriter

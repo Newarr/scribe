@@ -39,6 +39,18 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     private let queue = DispatchQueue(label: "sck.dual-output-stream")
     private var registrations: [Registration] = []
     private var stream: SCStream?
+    /// Single in-flight start task. Codex Phase β review P0.1 + P1.2:
+    /// without this, parallel mic.start() + system.start() each see
+    /// `stream == nil`, both build a new SCStream, and the loser leaks (or
+    /// races with stop). Sharing the Task means both callers await the
+    /// same start, and stopIfRunning() can wait for it to finish before
+    /// tearing the stream down.
+    private var inFlightStart: Task<Void, Error>?
+    /// Latched when stopIfRunning runs while a start is still in flight.
+    /// The start task checks this after startCapture and skips storing
+    /// the stream if a stop is pending — closing codex P0.1's
+    /// "stop-during-start orphans the SCStream" hole.
+    private var stopRequested: Bool = false
     private var sampleRate: Int
     private var channelCount: Int
 
@@ -57,54 +69,40 @@ public final class SCKDualOutputStream: @unchecked Sendable {
 
     /// Builds the `SCStream`, adds every registered output, and starts capture.
     /// Idempotent: a second call after the stream is already running returns
-    /// without creating a new stream.
+    /// without creating a new stream. Concurrent calls share the same start
+    /// Task so only one SCStream is ever built per coordinator.
     public func startIfNeeded() async throws {
-        // Snapshot under the queue; SCK calls run outside it so async
-        // startCapture doesn't block the next register/stop.
-        let result: (existing: SCStream?, snapshot: [Registration]) = queue.sync {
-            (self.stream, self.registrations)
+        let task: Task<Void, Error> = queue.sync {
+            if let existing = inFlightStart { return existing }
+            if stream != nil {
+                // Already running — return a no-op task so callers wait on
+                // a value rather than branching.
+                return Task<Void, Error> { }
+            }
+            let snapshot = registrations
+            let sr = sampleRate
+            let cc = channelCount
+            let newTask = Task<Void, Error> { [weak self] in
+                try await self?.performStart(snapshot: snapshot, sampleRate: sr, channelCount: cc)
+            }
+            inFlightStart = newTask
+            return newTask
         }
-        if result.existing != nil { return }
-
-        let content = try await SCShareableContent.current
-        guard let display = content.displays.first else { throw SCKError.noDisplay }
-
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let config = SCStreamConfiguration()
-        config.capturesAudio = result.snapshot.contains(where: { $0.kind == .system })
-        config.captureMicrophone = result.snapshot.contains(where: { $0.kind == .microphone })
-        config.excludesCurrentProcessAudio = true
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.sampleRate = sampleRate
-        config.channelCount = channelCount
-
-        let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
-        for reg in result.snapshot {
-            let outputType: SCStreamOutputType = (reg.kind == .microphone) ? .microphone : .audio
-            try newStream.addStreamOutput(reg.output, type: outputType, sampleHandlerQueue: reg.queue)
-        }
-
-        do {
-            try await newStream.startCapture()
-        } catch {
-            throw SCKError.streamFailedToStart(error)
-        }
-
-        // A concurrent caller may have populated `stream` while we awaited;
-        // if so, stop the one we just created to avoid leaking a stream.
-        let shouldRollBack: Bool = queue.sync {
-            if self.stream != nil { return true }
-            self.stream = newStream
-            return false
-        }
-        if shouldRollBack {
-            try? await newStream.stopCapture()
-        }
+        try await task.value
     }
 
-    /// Stops the shared stream once. The second caller (the other source's
-    /// stop()) is a no-op.
+    /// Stops the shared stream once. Waits for any in-flight start so the
+    /// stop never races a stream that hasn't been stored yet.
     public func stopIfRunning() async {
+        let pendingStart: Task<Void, Error>? = queue.sync {
+            stopRequested = true
+            return inFlightStart
+        }
+        // Drain the in-flight start so performStart sees stopRequested and
+        // self-cleans up the stream it created.
+        if let pendingStart {
+            _ = try? await pendingStart.value
+        }
         let toStop: SCStream? = queue.sync {
             let s = self.stream
             self.stream = nil
@@ -112,6 +110,51 @@ public final class SCKDualOutputStream: @unchecked Sendable {
         }
         if let toStop {
             try? await toStop.stopCapture()
+        }
+    }
+
+    private func performStart(snapshot: [Registration], sampleRate: Int, channelCount: Int) async throws {
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first else {
+            queue.sync { inFlightStart = nil }
+            throw SCKError.noDisplay
+        }
+
+        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        config.capturesAudio = snapshot.contains(where: { $0.kind == .system })
+        config.captureMicrophone = snapshot.contains(where: { $0.kind == .microphone })
+        config.excludesCurrentProcessAudio = true
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.sampleRate = sampleRate
+        config.channelCount = channelCount
+
+        let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
+        do {
+            for reg in snapshot {
+                let outputType: SCStreamOutputType = (reg.kind == .microphone) ? .microphone : .audio
+                try newStream.addStreamOutput(reg.output, type: outputType, sampleHandlerQueue: reg.queue)
+            }
+            try await newStream.startCapture()
+        } catch {
+            queue.sync { inFlightStart = nil }
+            throw SCKError.streamFailedToStart(error)
+        }
+
+        // Codex Phase β review P0.1: stop arrived during start. Don't
+        // store the stream — clean up immediately and let stopIfRunning
+        // see stream == nil so it can return.
+        let shouldStop: Bool = queue.sync {
+            inFlightStart = nil
+            if stopRequested {
+                stopRequested = false
+                return true
+            }
+            self.stream = newStream
+            return false
+        }
+        if shouldStop {
+            try? await newStream.stopCapture()
         }
     }
 }
