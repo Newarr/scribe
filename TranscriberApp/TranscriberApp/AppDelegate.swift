@@ -33,14 +33,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private static let keychainService = "com.szymonsypniewicz.transcriber"
     private static let keychainAccount = "elevenlabs-api-key"
 
-    private var outputRoot: URL {
+    /// Phase ζ: SettingsStore wires runtime contracts (output folder,
+    /// engine selection, raw-stream retention, AEC enable) instead of
+    /// hardcoding them. Synchronous accessors below read UserDefaults
+    /// directly (UserDefaults is thread-safe by Apple's contract); the
+    /// actor exists for the Phase η Settings UI which will need
+    /// snapshot semantics on multi-key writes.
+    private let settingsStore: SettingsStore = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return docs.appendingPathComponent("Transcriber", isDirectory: true)
+        let defaultRoot = docs.appendingPathComponent("Transcriber", isDirectory: true)
+        return SettingsStore(
+            defaults: .standard,
+            fallback: .init(
+                outputRoot: defaultRoot,
+                engineMode: .cloud,         // rc1: cloud is the only working engine
+                keepRawStreams: false,      // spec line 102
+                aecEnabled: true            // D2
+            )
+        )
+    }()
+
+    /// Synchronous current settings (a fast read from UserDefaults; no
+    /// actor hop). Use this from MainActor-bound code that needs the
+    /// output folder or engine choice without an `await`.
+    private var settings: SessionSettings {
+        let defaults = UserDefaults.standard
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let fallbackRoot = docs.appendingPathComponent("Transcriber", isDirectory: true)
+
+        let outputRoot: URL = {
+            if let path = defaults.string(forKey: SettingsStore.Key.outputRoot.rawValue), !path.isEmpty {
+                return URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return fallbackRoot
+        }()
+        let engineMode: EngineMode = {
+            if let raw = defaults.string(forKey: SettingsStore.Key.engineMode.rawValue),
+               let mode = EngineMode(rawValue: raw) {
+                return mode
+            }
+            return .cloud
+        }()
+        let keepRaw: Bool = {
+            if defaults.object(forKey: SettingsStore.Key.keepRawStreams.rawValue) != nil {
+                return defaults.bool(forKey: SettingsStore.Key.keepRawStreams.rawValue)
+            }
+            return false
+        }()
+        let aec: Bool = {
+            if defaults.object(forKey: SettingsStore.Key.aecEnabled.rawValue) != nil {
+                return defaults.bool(forKey: SettingsStore.Key.aecEnabled.rawValue)
+            }
+            return true
+        }()
+        return SessionSettings(
+            outputRoot: outputRoot,
+            engineMode: engineMode,
+            keepRawStreams: keepRaw,
+            aecEnabled: aec
+        )
     }
 
-    /// Phase α preflight. Cloud mode is the only V1 engine until Phase ο
-    /// ships the local Cohere binary; this stays cloud-pinned for now and
-    /// gets driven from `SettingsStore` once Phase ζ wires it.
+    private var outputRoot: URL { settings.outputRoot }
+
+    /// Phase α preflight. Engine mode is now read from settings (so a
+    /// later flip to local-mode lands the local-binary readiness check
+    /// without touching this property).
     private var preflightDoctor: PermissionDoctor {
         let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
         return PermissionDoctor(
@@ -277,7 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         // Phase η will hang the Setup Required popover off this denial; for
         // now we log + return to idle so the user can fix the underlying
         // permission and try again.
-        let report = await preflightDoctor.audit(outputRoot: outputRoot, engineMode: .cloud)
+        let snapshot = settings
+        let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
         switch RecordRequestGate().verdict(from: report) {
         case .deny(let reasons):
             Log.lifecycle.error("startRecording denied by preflight: \(String(describing: reasons), privacy: .public)")
