@@ -68,8 +68,12 @@ final class TranscriptWriterTests: XCTestCase {
 
         let content = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(content.contains("status: failed"))
+        // Codex PM-review UX-29: error string is present (for support
+        // copy) but no longer leads the body. The user-facing
+        // headline is "transcription failed" + "what you can do".
         XCTAssertTrue(content.contains("Rate limited after 3 retries"))
-        XCTAssertTrue(content.contains("Audio was captured and saved as `audio.m4a`."))
+        XCTAssertTrue(content.contains("audio is saved as `audio.m4a`"))
+        XCTAssertTrue(content.contains("What you can do"))
     }
 
     /// CDX-S2.1: when capture produces multiple source tracks (mic + system),
@@ -92,6 +96,6 @@ final class TranscriptWriterTests: XCTestCase {
 
         try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "boom")
         let failed = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(failed.contains("Audio was captured and saved as `mic.m4a` and `system.m4a`."))
+        XCTAssertTrue(failed.contains("audio is saved as `mic.m4a` and `system.m4a`"))
     }
 }

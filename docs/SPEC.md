@@ -84,6 +84,26 @@ Rules:
 - **Queue-then-fire on stop.** When the current recording ends (auto-stop, manual `Stop Now`, or finalize), if the queued event is still active and process-detection is still positive, fire its prompt immediately. If the queued event has expired, drop it.
 - **No automatic context switching.** The user always confirms each new recording explicitly. There is no "stop A and start B" hotkey or single-button transition.
 
+## Recovery
+
+The app must survive crashes, force-quits, and power loss without losing audio. On launch, the `SessionSupervisor` scans the output root and dispatches a `TranscriptionWorker` for any session whose `transcript.md` is in a non-terminal status.
+
+Supervisor scan behavior:
+
+- Runs on app launch, gated by privacy acknowledgement (the cloud engine cannot run before the user has acknowledged what leaves the device).
+- For each session directory under `outputRoot/`:
+  - If `transcript.md` shows `status: pending` or `status: retrying`, dispatch a worker to resume.
+  - If `mic.m4a.partial` or `system.m4a.partial` exists from a crashed `CaptureSession.stop()`, the `OrphanRecoverer` atomically renames `.partial` → `.m4a` and dispatches a worker.
+  - If only one of `mic.m4a` or `system.m4a` survives (one-sided audio), the supervisor writes a `failed` transcript referencing the surviving stream and does NOT call the engine. One-sided audio is not transcribable per the no-mic-only-fallback rule.
+  - If a `.partial` rename fails this scan (immutable flag, permission denied, transient I/O), the session stays in its current state; the next scan retries. This case is reported separately as `recoveryDeferred` so it doesn't get conflated with terminal failures.
+  - Sessions with no audio at all are stamped `failed` so they don't loop forever.
+- After a successful resume to `complete`, raw `mic.m4a` / `system.m4a` are deleted unless `keepRawStreams` is on.
+
+Session claim:
+
+- Each running session holds an exclusive `flock`-backed claim file (`session.claim`) in its directory. A second app instance, a relaunched supervisor, or a debugger-attached worker cannot race the live capture or finalize.
+- Claims are released on clean shutdown. Stale claims left by a crash are detected by missing process / file-handle checks before being overridden.
+
 ## Default Settings
 
 - Mode: `Transcribe + save audio`.
@@ -96,6 +116,16 @@ Rules:
 - `Keep Recording` snooze: escalates 3 / 9 / 27 minutes per session click count. Audio activity resets the silence detector and renders the snooze inert until the next silence stretch. Hard ceiling: regardless of snooze count, force-prompt at scheduled-end + 4 hours.
 - Audio retention: keep until manually deleted. No background auto-delete in v1.
 - Notifications: `UNUserNotificationCenter` permission requested during onboarding. Without it the redundant-channel pattern collapses; the menu-bar `Setup Required` state fires.
+
+Settings JSON shape (persisted as a single blob under UserDefaults key `transcriber.settings.v1` for atomic write):
+
+- `outputRoot` (URL): per Output and Storage.
+- `engineMode` (`cloud` | `local`): which transcription engine drives new sessions.
+- `keepRawStreams` (Bool, default `false`): when off, raw `mic.m4a` + `system.m4a` are deleted after `audio.m4a` is mixed and `metadata.json` is committed. Debug knob; enable to inspect per-channel originals.
+- `aecEnabled` (Bool, default `true`): when on, the worker runs the AEC pre-pass before upload (see Audio Capture). When off, force single-channel diarized over the raw mix.
+- `privacyAcknowledged` (Bool, one-way): tracks first-launch privacy acknowledgement. Once `true`, never written back to `false` by the app. Recording AND supervisor recovery are gated until this is `true`.
+
+Settings snapshot is taken at session start. The supervisor, capture session, and transcription worker do NOT poll back into the store mid-session; settings changes take effect on the next session.
 
 ## Calendar Watcher
 
@@ -130,7 +160,11 @@ Before meeting:
 
 At meeting start:
 
-- Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app (Zoom/Meet/Teams) that has been running for the dwell window fires the prompt; the title is enriched with the overlapping calendar event. The pure calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
+- Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app that has been running for **30 seconds** without quitting fires a candidate; the prompt title is enriched with the overlapping calendar event if one is in cache. Per-bundle suppression via `Stop detecting [App] for 30 minutes` ticks an in-memory map cleared on app restart; suppression is NOT persisted across launches.
+- Allowlist (12 bundle IDs in v1; one source of truth in `MeetingApps.allowlist`):
+  - Native: `us.zoom.xos`, `com.microsoft.teams2`, `com.microsoft.teams` (legacy), `org.whispersystems.signal-desktop`.
+  - Browsers (any tab triggers; per-URL detection deferred): `com.google.Chrome`, `com.apple.Safari`, `company.thebrowser.Browser` (Arc), `com.microsoft.Edge`, `org.mozilla.firefox`, `com.brave.Browser`, `im.helium.helium`.
+- The pure calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
 - Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start dominates the politeness cost of the interruption.
 - Two buttons only: `Start Recording` (primary) and `Not now` (secondary). Both standard and late-join prompts use the same two-button shape so the cognitive surface is constant.
 - Below the buttons: a small `More options ▾` disclosure that hides the rare suppression flows. Closed by default. When opened, exposes:
@@ -290,6 +324,15 @@ For future `Transcribe only` mode:
 - Temporary audio may exist until transcript succeeds.
 - Delete temporary audio after successful transcription.
 
+### AEC pre-pass and engine mode
+
+Before upload, the transcription worker runs an acoustic-echo-cancellation pre-pass on the mic stream using the system audio as the reference signal. This produces `mic.cleaned.wav`. The AEC outcome decides the engine mode:
+
+- **AEC succeeds** → engine runs in **multichannel** mode. The worker uploads two channels: cleaned mic on channel 0, raw system on channel 1. ElevenLabs is told `use_multi_channel=true, diarize=false`; the speaker mapping builder labels `speaker_0` as local and `speaker_1` as remote in 1:1 calls. This is the high-quality path.
+- **AEC fails or is disabled** → fall back to **single-channel diarized**. The worker uploads the mixed `audio.m4a` (mono AAC) with `diarize=true`; speaker labels remain generic `Speaker 0 / Speaker 1 / ...`. This is the no-silent-fallback path: the engine pointer never silently swaps; the engine MODE swaps based on AEC.
+- v1.0-rc1 ships a disabled AEC backend (`DisabledAECPrePass`), so all rc1 sessions take the single-channel-diarized fallback. The protocol surface is in place; a real WebRTC-rs or `AUVoiceProcessing` backend lands in a post-rc1 spike.
+- The `metadata.json` `aec_status` field records which path ran (`succeeded` / `failed`) for triage.
+
 ### Audio normalization
 
 The mixed `audio.m4a` should be loudness-normalized so playback levels are consistent across sessions and devices.
@@ -329,13 +372,27 @@ False-stop guard:
 
 ## Transcription
 
-Primary engine: ElevenLabs.
+Primary engine: ElevenLabs (model pinned to `scribe_v2`).
 
 Recognition context:
 
 - Use bounded keyterms by default.
 - Include title terms, attendee display names, company/domain terms, and acronyms.
-- Do not send full calendar description, meeting URLs, attendee emails, dial-in codes, or passwords. Whether a "full context" opt-in setting ships in v1 is open (see `q_full_context_setting`).
+- Do not send full calendar description, meeting URLs, attendee emails, dial-in codes, or passwords. The keyterm-only path is the canonical boundary; no opt-in "full context" setting ships in v1. URLs in particular are not useful as recognition hints.
+
+Keyterm sanitization (`KeytermSanitizer`):
+
+- Conservative-by-design: when in doubt, drop the token. Keyterm hints are a quality nudge, not load-bearing.
+- Pre-tokenization scrubber runs first on the raw event title to catch space-separated digit groups that would otherwise tokenize past the per-token rules.
+- Drop tokens matching: URLs (`https://`, `www.`, common TLDs), emails, phone numbers (E.164-ish, US-style, generic with `+`/separator/digit groups), or 4+ consecutive digits (PINs, conference IDs, postal codes).
+- Drop secret-label tokens and the 1-2 tokens following them: `passcode, password, pin, code, id, meeting-id, meetingid, join-code, joincode, access-code, accesscode, kennwort`.
+
+Retry policy (cloud transcription):
+
+- 3 retries with backoff after the initial attempt: 60s, 5min, 30min. 4 total attempts before terminal failure.
+- Transient errors (retry): rate-limited responses, HTTP 5xx, network timeout, DNS / connection failure.
+- Terminal errors (no retry): unauthorized, missing API key, malformed response.
+- Backoff state is persisted via `status: retrying` on disk so a relaunched supervisor resumes mid-loop.
 
 Local mode (Cohere):
 
@@ -416,17 +473,18 @@ Required for every session (success or failure):
 - `scheduled_end`
 - `actual_start`
 - `actual_end`
-- `attendees` (list of display names)
-- `organizer`
+- `attendees` (list of `{name, email}` objects). Emails are stored because the artifact is for agent consumption; display names alone are ambiguous (multiple "John Smith"; renamed across calendars). Agents use email to dedupe across meetings, link to CRM records, and route follow-ups. **Important:** emails are stored LOCALLY only — they are scrubbed by `KeytermSanitizer` before any keyterm payload leaves the device, and the `decision_keyterms_default` rule prevents full calendar context from being sent to ElevenLabs.
+- `organizer` (`{name, email}` object — same rationale as `attendees`).
 - `location`
-- `meeting_url_redacted`
 - `calendar_event_id`
 - `engine` (e.g. `elevenlabs`, `cohere`)
 - `audio` (relative path to the audio file)
 
+Meeting URLs are NOT stored. The Zoom/Meet/Teams join link has no value to a downstream agent (the meeting is already over) and storing it expands the leak surface for nothing. The calendar-event mapping layer drops URLs before they reach `TranscriptContext`, frontmatter, or the markdown body. `KeytermSanitizer` enforces the same rule for any keyterm payload.
+
 Conditional:
 
-- `status` is OMITTED when the session completed successfully. It is required when the session is `partial` or `failed`. A file with no `status` field is `complete` by convention.
+- `status` (when present) is one of `pending | retrying | complete | failed`. It is OMITTED when the session is `complete` (a file with no `status` field is complete by convention) and required for the other three states. `pending` and `retrying` are intermediate states emitted by the supervisor / transcription worker so a relaunch can resume mid-flow. `partial` is reserved for future use (see `q_partial_transcript`).
 - `joined_late: true` and `elapsed_at_start_seconds` are written only when the session was a late-join. `scheduled_start` and `actual_start` are the canonical timestamps; no `scheduled_start_at` / `recording_started_at` aliases.
 
 Failure-only fields (in addition to the above):
@@ -443,7 +501,7 @@ Schema versioning is YAGNI in v1 — no `schema` field. Add when v2 actually bre
 
 ### Body
 
-Order: H1 title → metadata blockquote → attendees list → calendar notes (if any) → `## Transcript`. Calendar notes are NEVER intermixed with the transcript.
+Order: H1 title → metadata blockquote → attendees list → calendar notes → `## Transcript`. Always include calendar notes as a `## Notes from calendar` section when the calendar event has a description; sanitize to plain text first (drop URLs, scrub digit runs and secret labels per `KeytermSanitizer` rules). When there is no description, omit the section entirely. Calendar notes are NEVER intermixed with the transcript.
 
 ```markdown
 ---
@@ -454,11 +512,14 @@ scheduled_end: 2026-04-30T15:00:00+02:00
 actual_start: 2026-04-30T14:30:12+02:00
 actual_end: 2026-04-30T15:25:03+02:00
 attendees:
-  - "Szymon Sypniewicz"
-  - "Jane Doe"
-organizer: "Szymon Sypniewicz"
+  - name: "Szymon Sypniewicz"
+    email: "szymon@ramp.network"
+  - name: "Jane Doe"
+    email: "jane.doe@acme.com"
+organizer:
+  name: "Szymon Sypniewicz"
+  email: "szymon@ramp.network"
 location: ""
-meeting_url_redacted: "[redacted zoom.us URL]"
 calendar_event_id: "abc123..."
 engine: "elevenlabs"
 audio: "audio.m4a"
@@ -469,12 +530,12 @@ audio: "audio.m4a"
 > 14:30-15:25 (Apple Calendar) · Mic + System Audio · ElevenLabs
 
 ## Attendees
-- Szymon Sypniewicz (organizer)
-- Jane Doe
+- Szymon Sypniewicz <szymon@ramp.network> (organizer)
+- Jane Doe <jane.doe@acme.com>
 
 ## Notes from calendar
 
-{sanitized calendar description, if any}
+{sanitized calendar description — URLs dropped, digit runs and secret labels scrubbed; section omitted entirely if the event has no description}
 
 ## Transcript
 
@@ -510,11 +571,14 @@ scheduled_end: 2026-04-30T15:00:00+02:00
 actual_start: 2026-04-30T14:30:12+02:00
 actual_end: 2026-04-30T15:25:03+02:00
 attendees:
-  - "Szymon Sypniewicz"
-  - "Jane Doe"
-organizer: "Szymon Sypniewicz"
+  - name: "Szymon Sypniewicz"
+    email: "szymon@ramp.network"
+  - name: "Jane Doe"
+    email: "jane.doe@acme.com"
+organizer:
+  name: "Szymon Sypniewicz"
+  email: "szymon@ramp.network"
 location: ""
-meeting_url_redacted: "[redacted zoom.us URL]"
 calendar_event_id: "abc123..."
 engine: "elevenlabs"
 audio: "audio.m4a"
@@ -540,6 +604,20 @@ ElevenLabs returned a timeout after 2 retries.
 
 Retry must be one-click from the menu-bar Recents popover for any failed session within the last 24 hours, not just the most recent.
 
+### metadata.json sidecar
+
+Each session folder ships a machine-readable `metadata.json` next to `transcript.md`. Body utterances are NOT duplicated here; the JSON is a metadata mirror of the frontmatter so downstream agent pipelines can pick whichever surface they prefer (markdown for humans, JSON for agents).
+
+Required fields:
+
+- `schema` (string, e.g. `"transcriber/v1"`) — the JSON sidecar IS versioned, unlike the `transcript.md` frontmatter. Bump on incompatible field changes.
+- `status` (`pending | retrying | complete | failed`)
+- `title`, `date`, `engine`, `language`, `audio`
+- `started_at`, `ended_at`, `attendees` (list of `{name, email}` objects, mirroring the markdown frontmatter)
+- `aec_status` (`succeeded | failed | null`) — records which transcription mode ran (multichannel vs single-channel diarized fallback) per Audio Capture.
+
+Written atomically (`.partial` → rename) on every state transition so a crash mid-write leaves the previous good blob intact.
+
 ## Security and Privacy
 
 Sensitive data:
@@ -560,7 +638,7 @@ Requirements:
 - Logs contain lifecycle only: prompted, started, stopped, failed, provider used.
 - Escape YAML and Markdown correctly.
 - Redact meeting URLs by default.
-- Attendees default to display names only; emails require explicit setting.
+- Attendees and organizer are stored as structured `{name, email}` objects in `transcript.md` frontmatter and `metadata.json` (local artifacts are for agent consumption — emails enable CRM linkage, dedupe, follow-up routing). The third-party-leak boundary is at the upload path, not the local-storage path: `KeytermSanitizer` scrubs emails (and URLs, phone numbers, digit runs, secret labels) from any keyterm payload before it leaves the device.
 - Confidential UI: every Transcriber-owned window sets `NSWindow.sharingType = .none` (start prompt modal, stop prompt HUD, active-recording popover, settings, setup-required popover, diagnostics, privacy acknowledgement sheet). Prompts and popovers must not appear in shared screen video, regardless of which display they render on.
 
 ## Diagnostics
@@ -583,6 +661,8 @@ Export diagnostics:
 - Redact secrets.
 - Redact calendar text.
 - Do not include transcript or audio content.
+- Replace the output-folder path with its SHA-256 hex hash, so the user can correlate exports across time without leaking their folder hierarchy.
+- The exported `DiagnosticsSnapshot` is a typed, fixed-shape struct: every exportable field is enumerated in code, and the test suite has a redaction guard that fails CI if a new field bypasses the contract. New PII-bearing fields require explicit review.
 
 ---
 
@@ -600,22 +680,15 @@ Each question has a stable unique ID for future agent work.
 
 ### End Guard
 
-- `q_end_audio_threshold`: What audio-level threshold counts as low mic plus low system audio?
 - `q_end_grace_seconds`: Should end-detection grace be fixed at 30 seconds or configurable?
 - `q_calendar_end_plus_audio`: Should auto-stop only arm after scheduled calendar end, or also after long silence before scheduled end?
 
 ### Calendar Metadata
 
-- `q_calendar_description_markdown`: Should full calendar notes/description always be included in local Markdown?
-- `q_calendar_url_retention`: Should meeting URLs be fully redacted by default, or domain plus redacted URL stored?
-- `q_attendee_email_retention`: Should attendee emails ever be stored, or display names only?
-- `q_full_context_setting`: Should "full calendar context to ElevenLabs" exist in v1 or be deferred?
+(no open questions — see Resolved trail)
 
 ### Transcription
 
-- `q_elevenlabs_model`: Which ElevenLabs model/version should be pinned for v1?
-- `q_context_keyterm_limit`: What max number of recognition keyterms should be sent to ElevenLabs?
-- `q_transcription_retry_policy`: How many automatic retries should failed ElevenLabs jobs get?
 - `q_partial_transcript`: If transcription partially succeeds, should `transcript.md` include partial text plus failure metadata?
 - `q_word_level_timestamps_sidecar`: Should ElevenLabs's word-level timestamps be persisted to a sibling `transcript.json` for downstream tooling?
 
@@ -642,9 +715,27 @@ These IDs are kept as a stable trail; the resolution lives in the relevant secti
 
 - `q_skip_semantics` — resolved by the two-button + `More options ▾` model in [Start Prompt](#start-prompt).
 - `q_late_join_prompt` — resolved by [Calendar Watcher → Late-join](#calendar-watcher) and the same Start Prompt model.
-- `q_keep_recording_snooze_minutes` — resolved by 3 / 9 / 27 escalation in [End Guard](#end-guard).
+- `q_keep_recording_snooze_minutes` — resolved by 3 / 9 / 27 escalation in [End Guard](#end-guard) (note: code currently ships flat 15 min; see Known Code-vs-Spec Drift).
 - `q_synced_folder_warning` — resolved by per-provider-class detection in [Output and Storage](#output-and-storage).
 - `q_audio_retention` — resolved by keep-until-deleted + Settings → Storage panel in [Output and Storage](#output-and-storage).
+- `q_transcription_retry_policy` — resolved by 60s / 5min / 30min, 4 total attempts, with persisted `status: retrying` for cross-launch resume. See [Transcription](#transcription).
+- `q_elevenlabs_model` — resolved: `scribe_v2` pinned in `EngineRequest` default and backend response.
+- `q_end_audio_threshold` — resolved: 0.01 RMS (~ -40 dBFS) per `EndGuard.Config.silenceThreshold` default.
+- `q_attendee_email_retention` — resolved: emails ARE stored locally as structured `{name, email}` objects in `transcript.md` frontmatter and `metadata.json`. Local artifacts are designed for agent consumption (CRM linkage, dedupe, follow-up routing); display names alone are ambiguous. The third-party-leak boundary is enforced separately: `KeytermSanitizer` scrubs emails from keyterm payloads before any upload to ElevenLabs, and `decision_keyterms_default` prevents full calendar context from being sent.
+
+---
+
+## Known Code-vs-Spec Drift
+
+These items are unresolved drift between SPEC.md and the rc1 implementation. They are NOT spec changes — the spec captures the intended behavior and the code needs to align.
+
+- **Output root drift.** Spec says default is `~/Transcriber/`. Code (`AppDelegate.defaultSettingsFallback`) defaults to `~/Documents/Transcriber/`. The spec's choice is deliberate (avoids iCloud Desktop & Documents sync collisions). **Code action:** change default to `~/Transcriber/`.
+- **`Keep Recording` snooze drift.** Spec says 3 / 9 / 27 escalating per session click count. Code (`EndGuard.Config.snoozeDuration`) ships a flat 15 min. **Code action:** add a per-session click counter and switch to 3/9/27 logic.
+- **Frontmatter richness drift.** Spec defines an 11-field frontmatter (`scheduled_start`, `scheduled_end`, `actual_end`, `organizer`, `location`, `calendar_event_id`, `joined_late`, `elapsed_at_start_seconds`) and forbids the `schema` field. Code (`TranscriptWriter` + `TranscriptContext`) emits a subset and ships `schema: transcriber/v1`. **Code action:** expand `TranscriptContext` to carry the full set; remove `schema` from `transcript.md` (the sidecar `metadata.json` keeps its `schema` field). Meeting URLs are explicitly NOT stored — the calendar-event mapping must drop them before they reach `TranscriptContext`.
+- **Attendee shape drift.** Spec stores attendees and organizer as structured `{name, email}` objects. Code (`CalendarEvent.Attendee`) only carries `name` + `isCurrentUser`; `TranscriptContext.attendees` is a flat `[String]` of wikilink-formatted names; `MetadataJSONWriter.Metadata.attendees` is a flat `[String]`. **Code action:** add `email: String?` to `CalendarEvent.Attendee`; source from EventKit's `EKParticipant.url` (mailto-prefixed); thread email through `TranscriptContext` and both writers as `{name, email}` objects in YAML and JSON.
+- **Transcript body shape drift.** Spec says each speaker block renders as `### [HH:MM:SS] Speaker A` (H3 + full timestamp). Code emits `**Name** [MM:SS]: text` (bold name + minutes-only timestamp). **Code action:** switch the body writer to H3 headings with HH:MM:SS.
+
+When any of the above lands in code, delete the corresponding bullet here.
 
 ---
 

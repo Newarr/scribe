@@ -48,6 +48,8 @@ final class SettingsWindowController {
         host.title = "Transcriber Settings"
         host.center()
         host.isReleasedWhenClosed = false
+        // Codex PM-review UX-4: confidential UI.
+        host.sharingType = .none
         host.contentView = NSHostingView(rootView: SettingsForm(
             model: model,
             onSave: { [weak self, weak host] settings in
@@ -150,7 +152,11 @@ final class SettingsFormModel: ObservableObject {
     var currentSettings: SessionSettings {
         SessionSettings(
             outputRoot: outputRoot,
-            engineMode: engineMode,
+            // Codex PM-review UX-10: pin to cloud while local is
+            // disabled in UI. Local mode shipped only as protocol +
+            // EngineSelector dispatch; saving it would create a
+            // dead-end recording failure.
+            engineMode: .cloud,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
             // Privacy ack is one-way; if the user already acked it,
@@ -177,11 +183,19 @@ final class SettingsFormModel: ObservableObject {
         }
     }
 
+    var outputRootIsInICloudDrive: Bool {
+        let path = outputRoot.path
+        return path.contains("/Library/Mobile Documents/")
+    }
+
     var outputRootIsInSyncedStorage: Bool {
         let path = outputRoot.path
+        // Third-party cloud providers — sync conflicts can corrupt
+        // audio mid-write. iCloud Drive is broken out separately
+        // because Apple's syncer handles it more gracefully and the
+        // user typically wants their sessions backed up.
         let markers = [
-            "/Library/Mobile Documents/",        // iCloud Drive
-            "/Library/CloudStorage/",            // Provider-agnostic CloudStorage
+            "/Library/CloudStorage/",
             "Dropbox",
             "Google Drive",
             "OneDrive",
@@ -254,32 +268,34 @@ private struct EngineSection: View {
     @ObservedObject var model: SettingsFormModel
 
     var body: some View {
-        SectionHeader("Engine") {
-            Picker("Mode", selection: $model.engineMode) {
-                Text("Cloud (ElevenLabs)").tag(EngineMode.cloud)
-                Text("Local (Cohere)").tag(EngineMode.local)
+        // Codex PM-review UX-10/UX-11/UX-12: don't let users pick a
+        // configuration that can't record. Cloud is the only option
+        // until local transcription ships; the disabled-but-visible
+        // row signals "this is coming" without offering a dead-end.
+        SectionHeader("Transcription") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ElevenLabs (Cloud)").bold()
+                Text("Recordings are sent to ElevenLabs for transcription.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-
-            if model.engineMode == .cloud {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("ElevenLabs API key").font(.system(size: 12))
-                    SecureField("sk_…", text: $model.apiKey)
-                        .textFieldStyle(.roundedBorder)
-                    Text("Stored in your macOS Keychain (service: \(keychainServiceLabel))")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("ElevenLabs key").font(.system(size: 12))
+                SecureField("Paste your ElevenLabs API key", text: $model.apiKey)
+                    .textFieldStyle(.roundedBorder)
+                Text("Saved securely in Keychain.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Divider().padding(.vertical, 4)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "clock.badge")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local transcription — coming later").bold()
+                    Text("Future versions will run transcription on your Mac without sending audio anywhere.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                }
-            } else {
-                Label {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Local engine pending").bold()
-                        Text("The Cohere binary ships in a later release. For rc1, recording in local mode is gated; the readiness check at session start surfaces the missing binary.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(systemName: "info.circle")
                 }
             }
         }
@@ -296,28 +312,46 @@ private struct OutputSection: View {
     @ObservedObject var model: SettingsFormModel
 
     var body: some View {
-        SectionHeader("Output folder") {
+        SectionHeader("Where transcripts are saved") {
             HStack {
                 Text(model.outputRoot.path)
                     .font(.system(.body, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Choose…") { pickFolder() }
+                Button("Choose folder…") { pickFolder() }
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.open(model.outputRoot)
+                }
+                .controlSize(.small)
             }
-            if model.outputRootIsInSyncedStorage {
+            // Codex PM-review UX-15: differentiated warning copy for
+            // iCloud (passive, sync is fine) vs third-party cloud
+            // providers (sync conflicts can corrupt audio). Both are
+            // optional — recording works either way.
+            if model.outputRootIsInICloudDrive {
                 Label {
-                    Text("This folder looks like it's synced to a cloud provider. Recording here can race the sync and corrupt audio mid-write.")
+                    Text("Saved sessions sync with iCloud Drive.")
+                        .font(.system(size: 11))
+                } icon: {
+                    Image(systemName: "icloud")
+                        .foregroundStyle(.secondary)
+                }
+            } else if model.outputRootIsInSyncedStorage {
+                Label {
+                    Text("Heads up: recordings will upload to your cloud provider as they save. Sync conflicts can create duplicate or incomplete files.")
                         .font(.system(size: 11))
                 } icon: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow)
                 }
             }
+            // Codex PM-review UX-16: rename + plain-language helper.
+            // The user doesn't know what "raw streams" mean.
             Toggle(isOn: $model.keepRawStreams) {
                 VStack(alignment: .leading) {
-                    Text("Keep raw mic / system streams after mix")
-                    Text("Default OFF: raw mic.m4a + system.m4a are deleted once audio.m4a is produced. Spec line 102.")
+                    Text("Keep separate mic and call audio files")
+                    Text("Use this if support asks, or if you want to reprocess speaker separation later. Uses more disk space.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -342,16 +376,12 @@ private struct AdvancedSection: View {
     @ObservedObject var model: SettingsFormModel
 
     var body: some View {
-        SectionHeader("Advanced (debugging)") {
-            Toggle(isOn: $model.aecEnabled) {
-                VStack(alignment: .leading) {
-                    Text("Attempt acoustic echo cancellation")
-                    Text("Default ON. Disable only if AEC is causing transcription issues. Spec D2.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
+        // Codex PM-review UX-17: AEC toggle was a debugging knob for
+        // a feature that doesn't actually ship in rc4 (the backend
+        // is a placeholder). Hide until the real AEC pre-pass lands.
+        // The setting is preserved on disk; the model.aecEnabled
+        // value still threads through the worker.
+        EmptyView()
     }
 }
 
@@ -359,17 +389,28 @@ private struct PrivacyStatusSection: View {
     @ObservedObject var model: SettingsFormModel
 
     var body: some View {
+        // Codex PM-review UX-32: re-readable privacy details from
+        // Settings. The first-launch modal acknowledgement is
+        // one-way; this section gives the user the link without
+        // pretending they can revoke (which would require disabling
+        // cloud-mode recording — a separate feature).
         SectionHeader("Privacy") {
             HStack {
                 Image(systemName: model.initialSnapshot.privacyAcknowledged ? "checkmark.seal.fill" : "questionmark.seal.fill")
                     .foregroundStyle(model.initialSnapshot.privacyAcknowledged ? .green : .orange)
                 Text(model.initialSnapshot.privacyAcknowledged
-                     ? "Privacy acknowledgement received"
-                     : "Privacy acknowledgement pending")
+                     ? "Privacy notice acknowledged"
+                     : "Privacy notice not yet acknowledged")
             }
-            Text("Cloud mode uploads audio to ElevenLabs for transcription. Calendar access is optional. Local mode (when available) keeps audio on-device.")
+            Text("Recordings are sent to ElevenLabs for transcription. Calendar event titles and attendees may be sent as transcription hints if Calendar is granted.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            Button("Read full privacy details") {
+                if let url = URL(string: "https://github.com/Newarr/transcriber/blob/main/docs/PRIVACY.md") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(.link)
         }
     }
 }

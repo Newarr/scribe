@@ -9,6 +9,11 @@ final class RecordingMenu {
 
     private(set) var menu = NSMenu()
     private let onAction: (Action) -> Void
+    /// Codex PM-review UX-7: setup label varies based on whether
+    /// preflight is currently green. Defaults to "Check setup…"
+    /// (neutral); flips to "Setup Required…" when the AppDelegate
+    /// observes a deny-state.
+    var setupNeedsAttention: Bool = false
 
     init(onAction: @escaping (Action) -> Void) {
         self.onAction = onAction
@@ -22,27 +27,31 @@ final class RecordingMenu {
 
         switch status {
         case .idle, .finalized, .failed:
-            let item = NSMenuItem(title: "Record Now", action: #selector(MenuTarget.record(_:)), keyEquivalent: "r")
+            let item = NSMenuItem(title: "Record now", action: #selector(MenuTarget.record(_:)), keyEquivalent: "r")
             item.target = MenuTarget.shared
             MenuTarget.shared.delegate = self
             menu.addItem(item)
         case .recording:
-            let item = NSMenuItem(title: "Stop", action: #selector(MenuTarget.stop(_:)), keyEquivalent: "s")
+            // Codex PM-review UX-19: "Stop" is too thin — does it
+            // save? Be explicit.
+            let item = NSMenuItem(title: "Stop and save", action: #selector(MenuTarget.stop(_:)), keyEquivalent: "s")
             item.target = MenuTarget.shared
             MenuTarget.shared.delegate = self
             menu.addItem(item)
         case .starting, .stopping:
-            menu.addItem(NSMenuItem(title: status == .starting ? "Starting…" : "Stopping…", action: nil, keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: status == .starting ? "Starting recording…" : "Saving recording…", action: nil, keyEquivalent: ""))
         }
 
         menu.addItem(.separator())
-        // Phase η: surfaces for the Settings window and the Setup Required
-        // popover (which the user can open even outside a record-attempt
-        // flow, e.g. after fixing a permission and wanting to recheck).
         let settings = NSMenuItem(title: "Settings…", action: #selector(MenuTarget.openSettings(_:)), keyEquivalent: ",")
         settings.target = MenuTarget.shared
         menu.addItem(settings)
-        let setup = NSMenuItem(title: "Setup Required…", action: #selector(MenuTarget.openSetupRequired(_:)), keyEquivalent: "")
+        // Codex PM-review UX-7: only call out "Setup Required…"
+        // when there's actually something the user needs to fix.
+        // Otherwise use the neutral "Check setup…" label so the
+        // menu doesn't constantly imply the app is broken.
+        let setupLabel = setupNeedsAttention ? "Setup Required…" : "Check setup…"
+        let setup = NSMenuItem(title: setupLabel, action: #selector(MenuTarget.openSetupRequired(_:)), keyEquivalent: "")
         setup.target = MenuTarget.shared
         menu.addItem(setup)
         let diagnostics = NSMenuItem(title: "Diagnostics…", action: #selector(MenuTarget.openDiagnostics(_:)), keyEquivalent: "")

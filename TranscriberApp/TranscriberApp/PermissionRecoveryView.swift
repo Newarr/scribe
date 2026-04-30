@@ -242,6 +242,10 @@ final class PermissionRecoveryPopoverController {
             })
         )
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        // Codex PM-review UX-4: NSPopover hosts a backing window; set
+        // its sharingType so the popover content (permission state +
+        // deep-links) doesn't appear in screen-shared video.
+        popover.contentViewController?.view.window?.sharingType = .none
     }
 
     func close() {

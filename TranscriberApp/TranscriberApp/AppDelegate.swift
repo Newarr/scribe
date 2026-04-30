@@ -61,8 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// MainActor-bound reads go through `settings` below, which decodes
     /// the same single JSON blob via `SettingsSnapshotReader`.
     private static func defaultSettingsFallback() -> SettingsStore.Defaults {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let defaultRoot = docs.appendingPathComponent("Transcriber", isDirectory: true)
+        // Codex PM-review UX-14: default to ~/Transcriber/ instead of
+        // ~/Documents/Transcriber/. Documents is iCloud-Drive-synced
+        // by default on macOS 13+; recording into a synced folder
+        // races the cloud sync (truncated audio mid-write, conflict
+        // copies, deleted-by-Drive). The home folder is local-only.
+        // Existing users keep whatever folder they configured (this
+        // is the FALLBACK for new installs).
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let defaultRoot = home.appendingPathComponent("Transcriber", isDirectory: true)
         return SettingsStore.Defaults(
             outputRoot: defaultRoot,
             engineMode: .cloud,         // rc1: only working engine until Phase ο
@@ -109,11 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task {
-            _ = await self.calendar.requestAccess()
-            // Kick the watcher after permission resolves so its first refresh
-            // hits a permission-granted EKEventStore. If permission was
-            // denied, the watcher still runs but every refresh sees an empty
-            // event list — by spec calendar never blocks recording.
+            // Codex PM-review UX-1: do NOT request Calendar at launch
+            // before the user has any product context. The watcher
+            // still runs (sees empty event list until permission is
+            // granted); the request happens lazily on first record
+            // attempt where the user has the context to understand
+            // why we'd want their calendar.
             await self.calendarWatcher.start()
         }
 
@@ -241,10 +249,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = snap.engineMode
         let resumeId = UUID()
         let resumeTask = Task { [weak self] in
-            await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw, engineMode: mode)
+            let result = await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw, engineMode: mode)
+            // Codex PM-review UX-31: surface a recovery notice so the
+            // user knows a previously-interrupted session is being
+            // re-transcribed. Silent recovery feels like the app is
+            // ignoring their data.
+            await self?.showRecoveryNoticeIfNeeded(result: result)
             await self?.removeTask(id: resumeId)
         }
         inflightTasks[resumeId] = resumeTask
+    }
+
+    @MainActor
+    private func showRecoveryNoticeIfNeeded(result: SessionSupervisor.ScanResult) {
+        // Only notify when there's actual recovery action — not on
+        // every launch.
+        let recovered = result.resumed + result.rescued
+        guard recovered > 0 else { return }
+        let alert = NSAlert()
+        if recovered == 1 {
+            alert.messageText = "Recovered 1 recording from before the last quit"
+            alert.informativeText = result.rescued > 0
+                ? "Audio was rescued and is being transcribed now."
+                : "Transcription is resuming now."
+        } else {
+            alert.messageText = "Recovered \(recovered) recordings from before the last quit"
+            alert.informativeText = "They're being transcribed in the background."
+        }
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open Transcriber folder")
+        alert.window.sharingType = .none  // UX-4
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(settings.outputRoot)
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -266,6 +305,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // immediately with the SCStream + AVAssetWriter still live, leaving
         // .partial files and no transcript. Finalize the capture first.
         if !hasLiveCapture && inflight.isEmpty { return .terminateNow }
+
+        // Codex PM-review UX-20: confirm before quitting during
+        // recording. The user might have hit Cmd-Q by accident, or
+        // be unaware a recording is running. Default action is "stop
+        // and quit" (saves their work); secondary keeps recording.
+        if hasLiveCapture {
+            let alert = NSAlert()
+            alert.messageText = "Stop recording before quitting?"
+            alert.informativeText = "Transcriber is recording. Quitting now will save the audio and finalize the transcript before exit."
+            alert.addButton(withTitle: "Stop and quit")
+            alert.addButton(withTitle: "Keep recording")
+            alert.window.sharingType = .none  // UX-4
+            let choice = alert.runModal()
+            if choice == .alertSecondButtonReturn {
+                Log.lifecycle.info("Quit cancelled by user; recording continues")
+                return .terminateCancel
+            }
+        }
 
         Log.lifecycle.info("Quit requested: capture=\(hasLiveCapture, privacy: .public), in-flight tasks=\(inflight.count, privacy: .public); finalizing up to 10s")
         inflight.forEach { $0.cancel() }
@@ -415,6 +472,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.status = .starting
         menu?.rebuild(for: status)
 
+        // Codex PM-review UX-1: lazily request Calendar on first
+        // record attempt. The user is now in context — they know
+        // they're trying to record a meeting — so a calendar prompt
+        // makes sense. We don't BLOCK on the result; calendar denial
+        // is allowed-with-warning per spec line 88.
+        Task { _ = await self.calendar.requestAccess() }
+
         // First-launch prompt: if mic is undecided, fire the system prompt
         // so the user can grant before we re-audit. Calendar is optional, so
         // we never wait on it here.
@@ -435,6 +499,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // accessor for .public; full reasons at .private.
             Log.lifecycle.error("startRecording denied by preflight: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
             self.status = .idle
+            // Codex PM-review UX-7: flag the menu so "Setup Required…"
+            // appears (instead of the neutral "Check setup…") until
+            // the next successful start.
+            menu?.setupNeedsAttention = true
             menu?.rebuild(for: status)
             let steps = PermissionRemediation.steps(from: report)
             if let anchor = statusItem?.button, let popover = setupPopover {
@@ -445,8 +513,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         case .allowWithWarnings(let reasons):
             Log.lifecycle.info("startRecording proceeding with warnings: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
+            // UX-7: warnings don't need to scream "Setup Required";
+            // recording is happening.
+            menu?.setupNeedsAttention = false
         case .allow:
-            break
+            menu?.setupNeedsAttention = false
         }
 
         let id = SessionID(from: Date())
@@ -754,7 +825,8 @@ extension AppDelegate {
         )
     }
 
-    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false, engineMode: EngineMode = .cloud) async {
+    @discardableResult
+    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false, engineMode: EngineMode = .cloud) async -> SessionSupervisor.ScanResult {
         let supervisor = SessionSupervisor()
         let result = await supervisor.scanAndResume(
             under: root,
@@ -782,5 +854,6 @@ extension AppDelegate {
         // recoveryDeferred so launch logs reflect the full ScanResult,
         // not just the v0 fields.
         Log.lifecycle.info("Supervisor scan: resumed=\(result.resumed, privacy: .public), rescued=\(result.rescued, privacy: .public), markedFailed=\(result.markedFailed, privacy: .public), partialAudioMarkedFailed=\(result.partialAudioMarkedFailed, privacy: .public), recoveryDeferred=\(result.recoveryDeferred, privacy: .public), totalFailed=\(result.totalFailed, privacy: .public), skipped=\(result.skipped, privacy: .public)")
+        return result
     }
 }

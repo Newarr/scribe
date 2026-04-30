@@ -136,7 +136,7 @@ Two-speaker call WITHOUT headphones:
 
 - [ ] Run `scripts/release.sh` to substitute `Casks/transcriber.rb.template` and publish to your tap.
 - [ ] On a clean Mac, `brew install --cask transcriber` succeeds.
-- [ ] `brew uninstall --cask transcriber --zap` removes app + Logs + Preferences + Keychain entries (per Casks/transcriber.rb.template's zap block).
+- [ ] `brew uninstall --cask transcriber --zap` removes app + Logs + Preferences. Verify Keychain entries (`elevenlabs-api-key`, `diagnostics-instance-id` under service `com.szymonsypniewicz.transcriber`) are NOT removed automatically — Homebrew Cask's zap stanza only deletes filesystem paths. The user wipes Keychain manually via `security delete-generic-password` per `docs/PRIVACY.md`.
 
 ## Final tag
 

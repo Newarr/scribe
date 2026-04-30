@@ -1,6 +1,6 @@
 import Foundation
 
-/// Scans `~/Documents/Transcriber/` on app launch and dispatches a
+/// Scans the user's output folder (default `~/Transcriber/`) on app launch and dispatches a
 /// `TranscriptionWorker` for any session whose transcript is `pending` or
 /// `retrying` (or any session whose audio was rescued from `.partial` files).
 /// Sessions with no audio at all are stamped `failed` so they don't loop forever.

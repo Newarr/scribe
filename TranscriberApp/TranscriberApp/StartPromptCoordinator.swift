@@ -38,23 +38,33 @@ final class StartPromptCoordinator {
 
     private func runPrompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
         let alert = NSAlert()
+        // Codex PM-review UX-22: ask about the meeting, not the app.
+        // "Start recording 'Acme Weekly'?" reads like the meeting,
+        // not "Start recording Zoom" which sounds like a screen
+        // recording.
         if let event {
-            // Calendar-enriched prompt per spec line 167. Showing the event
-            // title makes the choice obvious — "Start recording 'Acme Weekly'?"
-            // is clearly different from a stray Zoom window the user just
-            // opened to test something.
-            alert.messageText = "Start recording '\(event.title)'?"
-            alert.informativeText = "Transcriber detected \(app.displayName) running during a calendar event. Click Start Recording to capture, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes. (Auto-dismisses in \(Int(Self.autoDismissAfter))s.)"
+            alert.messageText = "Record '\(event.title)'?"
+            alert.informativeText = "\(app.displayName) is running during this calendar event. (Closes in \(Int(Self.autoDismissAfter))s.)"
         } else {
-            alert.messageText = "Start recording \(app.displayName)?"
-            alert.informativeText = "Transcriber detected \(app.displayName) is running. Click Start Recording to capture this call, or Not a meeting to suppress prompts for \(app.displayName) for 30 minutes. (Auto-dismisses in \(Int(Self.autoDismissAfter))s.)"
+            alert.messageText = "Record this \(app.displayName) call?"
+            alert.informativeText = "No matching calendar event. The transcript will be saved as a manual recording. (Closes in \(Int(Self.autoDismissAfter))s.)"
         }
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Start Recording")
-        alert.addButton(withTitle: "Not a meeting")
-        alert.addButton(withTitle: "Skip for now")
+        // Codex PM-review UX-21: two clear primary buttons. "Not a
+        // meeting" reads like "this isn't actually a meeting at
+        // all" which is the wrong mental model — the user is
+        // saying "not now, stop bugging me about this app." Make
+        // that explicit with sentence case + plain language.
+        alert.addButton(withTitle: "Start recording")
+        alert.addButton(withTitle: "Not now")
+        alert.addButton(withTitle: "Stop detecting \(app.displayName) for 30 min")
 
         NSApp.activate(ignoringOtherApps: true)
+        // Codex PM-review UX-4: confidential UI. NSAlert's underlying
+        // window must opt out of screen-share captures so a meeting
+        // detection prompt doesn't appear in the user's own
+        // shared-screen video.
+        alert.window.sharingType = .none
 
         // Phase π: 60s auto-dismiss timer. NSAlert.runModal() blocks
         // until the user picks; we stopModal(withCode:) from a
@@ -70,7 +80,11 @@ final class StartPromptCoordinator {
 
         switch response {
         case .alertFirstButtonReturn:  return .start
-        case .alertSecondButtonReturn: return .notAMeeting
+        // Codex PM-review UX-21: button order swapped. The 30-min
+        // suppress is the rare-power-user choice; "Not now" is the
+        // common "skip this prompt" path.
+        case .alertSecondButtonReturn: return .skipForNow
+        case .alertThirdButtonReturn:  return .notAMeeting
         case Self.autoDismissModalResponse:
             Log.lifecycle.info("Start prompt auto-dismissed after \(Int(Self.autoDismissAfter), privacy: .public)s; treating as skip")
             return .skipForNow

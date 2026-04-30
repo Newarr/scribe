@@ -40,6 +40,8 @@ final class DiagnosticsWindowController {
         host.title = "Diagnostics"
         host.center()
         host.isReleasedWhenClosed = false
+        // Codex PM-review UX-4: confidential UI.
+        host.sharingType = .none
         host.contentView = NSHostingView(rootView: DiagnosticsView(
             model: model,
             onRefresh: { [weak self] in
@@ -127,14 +129,17 @@ private struct DiagnosticsView: View {
         }
     }
 
+    // Codex PM-review UX-27: show the actual output path here, not
+    // the HMAC hash. The hash is for the EXPORTED diagnostics blob;
+    // an in-app diagnostics view should help the user, who knows
+    // where their files live.
     private var settingsSection: some View {
         SectionCard(title: "Settings") {
-            row("Engine", model.snapshot.settings.engineMode)
-            row("Output writable", boolText(model.snapshot.settings.outputRootIsWritable))
-            row("Output root", String(model.snapshot.settings.outputRootHash.prefix(12)) + "…", monospaced: true)
-            row("Privacy acknowledged", boolText(model.snapshot.settings.privacyAcknowledged))
-            row("Keep raw streams", boolText(model.snapshot.settings.keepRawStreams))
-            row("AEC enabled", boolText(model.snapshot.settings.aecEnabled))
+            row("Transcription", model.snapshot.settings.engineMode == "cloud" ? "ElevenLabs (Cloud)" : "Local")
+            row("Output folder writable", boolText(model.snapshot.settings.outputRootIsWritable))
+            row("Folder fingerprint (for export)", String(model.snapshot.settings.outputRootHash.prefix(12)) + "…", monospaced: true)
+            row("Privacy notice acknowledged", boolText(model.snapshot.settings.privacyAcknowledged))
+            row("Keep separate mic and call audio", boolText(model.snapshot.settings.keepRawStreams))
         }
     }
 
@@ -146,11 +151,13 @@ private struct DiagnosticsView: View {
         }
     }
 
+    // Codex PM-review UX-28: user-readable diagnostic labels.
+    // "Engine readiness" was support jargon.
     private var engineSection: some View {
-        SectionCard(title: "Engine readiness") {
-            row("Cloud API key", model.snapshot.engine.cloudKey)
+        SectionCard(title: "Transcription") {
+            row("ElevenLabs key", model.snapshot.engine.cloudKey)
             if let p = model.snapshot.engine.localBinaryPresent {
-                row("Local engine binary", boolText(p))
+                row("Local transcription binary", boolText(p))
             }
             if let p = model.snapshot.engine.localLanguageModelPresent {
                 row("Language detection model", boolText(p))
@@ -175,13 +182,14 @@ private struct DiagnosticsView: View {
         }
     }
 
+    // Codex PM-review UX-28: "Live RMS levels" → "Audio levels".
     private func liveLevelsSection(_ levels: DiagnosticsSnapshot.LiveLevels) -> some View {
-        SectionCard(title: "Live RMS levels") {
+        SectionCard(title: "Audio levels") {
             if let mic = levels.micRMS {
-                LevelBar(label: "Mic", value: mic)
+                LevelBar(label: "Microphone", value: mic)
             }
             if let sys = levels.systemRMS {
-                LevelBar(label: "System", value: sys)
+                LevelBar(label: "Call audio", value: sys)
             }
         }
     }

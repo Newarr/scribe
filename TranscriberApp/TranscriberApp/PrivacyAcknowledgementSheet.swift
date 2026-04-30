@@ -34,6 +34,11 @@ final class PrivacyAcknowledgementController {
         host.title = "Welcome to Transcriber"
         host.center()
         host.isReleasedWhenClosed = false
+        // Codex PM-review UX-4: confidential UI. Spec § Design
+        // Principles: Transcriber-owned windows must not appear in
+        // screen-shared video. .none excludes the window from
+        // ScreenCaptureKit captures + screen-share video frames.
+        host.sharingType = .none
         host.contentView = NSHostingView(rootView: PrivacyAcknowledgementView(
             onAcknowledged: { [weak self] in
                 guard let self else { return }
@@ -60,15 +65,17 @@ private struct PrivacyAcknowledgementView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Privacy and data handling")
+            Text("Welcome to Transcriber")
                 .font(.title2)
                 .fontWeight(.semibold)
+            Text("Before your first recording, here's what to know.")
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Audio leaves your Mac in cloud mode").bold()
-                        Text("Transcriber's default engine sends your microphone and system audio to ElevenLabs for transcription.")
+                        Text("Recordings go to ElevenLabs for transcription").bold()
+                        Text("Each meeting's audio is sent to ElevenLabs to produce the transcript. Audio is deleted from ElevenLabs after processing.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -78,8 +85,8 @@ private struct PrivacyAcknowledgementView: View {
 
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Calendar event names + attendees go alongside the audio").bold()
-                        Text("If you grant Calendar permission, the matching event title and attendee names are sent to the engine as transcription hints (\"keyterms\"). Sessions started outside a meeting send no calendar data.")
+                        Text("Meeting names and attendees may be sent as hints").bold()
+                        Text("Calendar event titles and attendee display names are sent as transcription hints. Notes, links, emails, dial-in codes, and passwords are never sent.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -89,8 +96,8 @@ private struct PrivacyAcknowledgementView: View {
 
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Transcripts and audio are saved locally").bold()
-                        Text("Each session writes a Markdown transcript and the original audio under your output folder. Nothing else leaves your Mac.")
+                        Text("Transcripts stay on your Mac").bold()
+                        Text("Each meeting saves a Markdown transcript and the original audio in your Transcriber folder. Nothing else leaves your Mac.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -100,19 +107,8 @@ private struct PrivacyAcknowledgementView: View {
 
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Local mode keeps audio on-device").bold()
-                        Text("When the local engine ships, switching to local mode in Settings keeps audio entirely on your Mac. Until then, only cloud mode is available.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(systemName: "laptopcomputer")
-                }
-
-                Label {
-                    VStack(alignment: .leading, spacing: 4) {
                         Text("Calendar access is optional").bold()
-                        Text("Denying Calendar permission disables session tagging but never blocks recording.")
+                        Text("Calendar lets Transcriber tag recordings with meeting titles. Denying it never blocks a recording.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -124,15 +120,23 @@ private struct PrivacyAcknowledgementView: View {
             Spacer()
 
             HStack {
+                // Codex PM-review UX-2: link to the full privacy doc
+                // for users who want details.
+                Button("Read full privacy details") {
+                    if let url = URL(string: "https://github.com/Newarr/transcriber/blob/main/docs/PRIVACY.md") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.link)
                 Spacer()
                 Button(action: onAcknowledged) {
-                    Text("I understand").frame(minWidth: 120)
+                    Text("Start using Transcriber").frame(minWidth: 180)
                 }
                 .keyboardShortcut(.return, modifiers: [])
                 .controlSize(.large)
             }
         }
         .padding(24)
-        .frame(width: 540, height: 460)
+        .frame(width: 560, height: 420)
     }
 }
