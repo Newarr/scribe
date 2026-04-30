@@ -141,14 +141,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         self.statusItem = item
         self.menu = m
 
-        // Resume orphaned sessions in the background.
-        let outputRoot = self.outputRoot
-        let resumeId = UUID()
-        let resumeTask = Task { [weak self] in
-            await Self.runSupervisor(under: outputRoot)
-            await self?.removeTask(id: resumeId)
+        // Codex Phase η P0.2: orphaned-session supervisor scan can
+        // dispatch a worker that uploads audio to ElevenLabs (cloud
+        // mode), so it MUST NOT run before the user has acknowledged
+        // the privacy notice. If the flag is already set (returning
+        // user), kick off recovery now; otherwise the ack callback
+        // below schedules it after the user clicks "I understand".
+        if settings.privacyAcknowledged {
+            scheduleSupervisorRecovery()
+        } else {
+            Log.lifecycle.info("Supervisor recovery deferred until privacy ack")
         }
-        inflightTasks[resumeId] = resumeTask
 
         // Detection layer: process allowlist watcher feeds DetectionEngine,
         // engine fires onCandidate after dwell, app shows the start prompt.
@@ -182,8 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     }
 
     /// Spec line 348: first-launch privacy modal. Shown only when
-    /// `privacyAcknowledged == false`; recording stays gated until the
-    /// user dismisses the sheet.
+    /// `privacyAcknowledged == false`; recording AND supervisor
+    /// recovery stay gated until the user dismisses the sheet.
     @MainActor
     private func presentPrivacyAcknowledgementIfNeeded() {
         guard !settings.privacyAcknowledged else { return }
@@ -191,12 +194,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             guard let self else { return }
             Task {
                 await self.settingsStore.setPrivacyAcknowledged(true)
-                Log.lifecycle.info("Privacy acknowledgement recorded")
+                Log.lifecycle.info("Privacy acknowledgement recorded; releasing deferred supervisor scan")
+                await MainActor.run {
+                    self.scheduleSupervisorRecovery()
+                }
             }
             self.privacyController = nil
         }
         self.privacyController = controller
         controller.present()
+    }
+
+    /// Phase η P0.2 helper: kicks the orphan-session supervisor scan in
+    /// the background. Tracked in `inflightTasks` so applicationShouldTerminate's
+    /// drain loop will await it. Must only be called after the user has
+    /// acknowledged the privacy notice (cloud-mode uploads start as soon
+    /// as the supervisor dispatches a worker).
+    @MainActor
+    private func scheduleSupervisorRecovery() {
+        let outputRoot = self.outputRoot
+        let resumeId = UUID()
+        let resumeTask = Task { [weak self] in
+            await Self.runSupervisor(under: outputRoot)
+            await self?.removeTask(id: resumeId)
+        }
+        inflightTasks[resumeId] = resumeTask
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

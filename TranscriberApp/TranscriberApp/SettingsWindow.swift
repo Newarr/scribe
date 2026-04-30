@@ -52,15 +52,32 @@ final class SettingsWindowController {
             model: model,
             onSave: { [weak self, weak host] settings in
                 guard let self else { return }
-                Task { await self.store.commit(settings) }
-                host?.close()
-                self.window = nil
+                // Codex Phase η P1.1 + P1.2: actually await the commit
+                // so encode failures surface to the user. Settings UI
+                // stays open on error; closes only after success.
+                do {
+                    try await self.store.commit(settings)
+                    host?.close()
+                    self.window = nil
+                } catch {
+                    model.saveError = "Failed to save settings: \(error.localizedDescription)"
+                }
             },
             onCancel: { [weak self, weak host] in
                 host?.close()
                 self?.window = nil
             }
         ))
+
+        // Codex Phase η P1.3: a title-bar close should behave like
+        // Cancel (drop the in-flight model + clear the window pointer
+        // so the next open re-reads the on-disk snapshot fresh).
+        let delegate = SettingsWindowDelegate { [weak self] in
+            self?.window = nil
+        }
+        host.delegate = delegate
+        objc_setAssociatedObject(host, &settingsWindowDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
         self.window = host
         host.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -71,6 +88,23 @@ final class SettingsWindowController {
         window = nil
     }
 }
+
+/// Codex Phase η P1.3: NSWindowDelegate that fires when the title-bar
+/// close button is hit. The closure resets the controller's window
+/// pointer so a fresh `show()` re-loads the on-disk snapshot rather
+/// than re-presenting the stale form.
+private final class SettingsWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
+    private let onClose: @MainActor () -> Void
+    init(onClose: @escaping @MainActor () -> Void) { self.onClose = onClose }
+    func windowWillClose(_ notification: Notification) {
+        Task { @MainActor in onClose() }
+    }
+}
+
+/// Associated-object key for retaining the SettingsWindowDelegate
+/// alongside the host window without adding a stored property to
+/// SettingsWindowController (which is constructed lazily).
+nonisolated(unsafe) private var settingsWindowDelegateKey: UInt8 = 0
 
 /// Observable backing store for the Settings form. SwiftUI binds to the
 /// `@Published` fields; on Save the controller plucks `currentSettings`
@@ -159,8 +193,9 @@ final class SettingsFormModel: ObservableObject {
 
 private struct SettingsForm: View {
     @ObservedObject var model: SettingsFormModel
-    let onSave: @MainActor (SessionSettings) -> Void
+    let onSave: @MainActor (SessionSettings) async -> Void
     let onCancel: @MainActor () -> Void
+    @State private var saving: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,14 +224,29 @@ private struct SettingsForm: View {
             Spacer()
             Button("Cancel", action: onCancel)
                 .keyboardShortcut(.cancelAction)
-            Button("Save") {
-                if model.persistAPIKeyIfChanged() {
-                    onSave(model.currentSettings)
-                }
+                .disabled(saving)
+            Button(saving ? "Saving…" : "Save") {
+                Task { await save() }
             }
             .keyboardShortcut(.defaultAction)
+            .disabled(saving)
         }
         .padding(16)
+    }
+
+    @MainActor
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        model.saveError = nil
+        // Codex Phase η P1.2: keychain write THEN settings commit, both
+        // awaited. If keychain fails, surface and abort. If settings
+        // commit fails, the keychain key was already written — log the
+        // partial state but keep the form open so the user can retry
+        // (rolling back the keychain on commit failure could destroy a
+        // good key the user just typed).
+        guard model.persistAPIKeyIfChanged() else { return }
+        await onSave(model.currentSettings)
     }
 }
 

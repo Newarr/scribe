@@ -50,10 +50,13 @@ enum PermissionRemediation {
                 kind: kind
             )
         case .screenRecordingDenied:
+            // Codex P2.4: macOS 15+ labels this pane "Screen & System
+            // Audio Recording" rather than "Screen Recording." Update
+            // the user-facing copy to match what they'll actually see.
             return Step(
                 id: "screen.denied",
-                title: "Screen recording access denied",
-                detail: "Transcriber needs screen recording permission to capture other apps' audio (Zoom, Meet, etc). Open System Settings → Privacy & Security → Screen Recording, enable Transcriber, and restart the app.",
+                title: "Screen & System Audio Recording access denied",
+                detail: "Transcriber needs Screen & System Audio Recording permission to capture other apps' audio (Zoom, Meet, etc). Open System Settings → Privacy & Security → Screen & System Audio Recording, enable Transcriber, and restart the app.",
                 openURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"),
                 kind: kind
             )
@@ -151,15 +154,22 @@ struct PermissionRecoveryView: View {
                 Spacer()
             }
 
+            // Codex Phase η P1.7: wrap steps in a ScrollView so
+            // pathological many-step cases (mic + screen + key +
+            // unwritable output + calendar warning) don't overflow the
+            // popover.
             if steps.isEmpty {
                 Text("Everything looks good. Try Record again.")
                     .foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(steps, id: \.id) { step in
-                        StepRow(step: step)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(steps, id: \.id) { step in
+                            StepRow(step: step)
+                        }
                     }
                 }
+                .frame(maxHeight: 360)
             }
 
             Divider()
@@ -217,8 +227,14 @@ final class PermissionRecoveryPopoverController {
         anchor: NSStatusBarButton,
         onRecheck: @escaping @MainActor () -> Void
     ) {
+        // Codex Phase η P1.8: if a popover from a previous deny path
+        // is still on screen, close it cleanly first so the new content
+        // doesn't fight AppKit's existing presentation.
+        if popover.isShown {
+            popover.performClose(nil)
+        }
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 460, height: 320)
+        popover.contentSize = NSSize(width: 460, height: 460)
         popover.contentViewController = NSHostingController(
             rootView: PermissionRecoveryView(steps: steps, onRecheck: { [weak popover] in
                 popover?.performClose(nil)

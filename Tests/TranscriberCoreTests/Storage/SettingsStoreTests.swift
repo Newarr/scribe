@@ -59,6 +59,38 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(postSnap.privacyAcknowledged, true)
     }
 
+    func testCommitCannotDemotePrivacyAcknowledgement() async throws {
+        // Codex Phase η P0.3: privacyAcknowledged is a one-way flag (spec
+        // line 348). A stale Settings form snapshot must not be able to
+        // unset it after the user has acknowledged in another flow.
+        let suite = try makeSuite()
+        let root = tempDir()
+        let store = SettingsStore(
+            defaults: suite.box,
+            fallback: .init(outputRoot: root)
+        )
+
+        // User acknowledges privacy.
+        await store.setPrivacyAcknowledged(true)
+        let postAck = await store.snapshot()
+        XCTAssertEqual(postAck.privacyAcknowledged, true)
+
+        // Stale Settings form (privacyAcknowledged=false in its frozen
+        // snapshot) tries to commit. Store must preserve the true.
+        let staleSettings = SessionSettings(
+            outputRoot: root,
+            engineMode: .local,
+            keepRawStreams: true,
+            aecEnabled: false,
+            privacyAcknowledged: false  // stale
+        )
+        try await store.commit(staleSettings)
+
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap.privacyAcknowledged, true, "store must NOT demote privacyAcknowledged from true to false")
+        XCTAssertEqual(snap.engineMode, .local, "other fields must still commit normally")
+    }
+
     func testOlderBlobMissingPrivacyAckRollsForwardAsFalse() async throws {
         // Spec line 348: a downgrade or pre-η blob without privacyAcknowledged
         // should re-prompt rather than silently treating the user as having
@@ -120,7 +152,7 @@ final class SettingsStoreTests: XCTestCase {
             aecEnabled: false,
             privacyAcknowledged: true
         )
-        await store.commit(target)
+        try await store.commit(target)
         let snap = await store.snapshot()
         XCTAssertEqual(snap, target, "commit must persist every field")
     }
@@ -223,7 +255,7 @@ final class SettingsStoreTests: XCTestCase {
             aecEnabled: false,
             privacyAcknowledged: true
         )
-        await store.commit(target)
+        try await store.commit(target)
 
         let syncSnap = SettingsSnapshotReader.read(
             from: suite.box,

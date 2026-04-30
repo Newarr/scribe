@@ -3,9 +3,13 @@ import SwiftUI
 import TranscriberCore
 
 /// Spec line 348: the user must acknowledge what data leaves the device
-/// before the first recording. Presented as a modal sheet on top of an
-/// invisible window at app launch when `privacyAcknowledged == false`.
-/// Recording is gated on this flag — see AppDelegate.startRecording.
+/// before the first recording. Presented as a modal-style window at app
+/// launch when `privacyAcknowledged == false`. Recording is gated on
+/// this flag — see AppDelegate.startRecording.
+///
+/// Codex Phase η P1.4: the window is intentionally NOT closable from
+/// the title bar — the user must either click "I understand" or quit
+/// the app via cmd-q. Spec consent UI shouldn't be silently dismissable.
 @MainActor
 final class PrivacyAcknowledgementController {
     private var window: NSWindow?
@@ -20,9 +24,10 @@ final class PrivacyAcknowledgementController {
     func present() {
         // Use a real window so the sheet is keyed and front-of-screen
         // even though the app is menu-bar-only (no main window).
+        // No `.closable` — see class-level note (codex P1.4).
         let host = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 460),
+            styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
@@ -32,14 +37,20 @@ final class PrivacyAcknowledgementController {
         host.contentView = NSHostingView(rootView: PrivacyAcknowledgementView(
             onAcknowledged: { [weak self] in
                 guard let self else { return }
-                host.close()
+                // Codex P2.1: weak capture of the controller through
+                // self avoids the host/contentView/closure retain cycle
+                // that would have leaked the window after dismissal.
+                self.window?.close()
                 self.window = nil
                 self.onAcknowledged()
             }
         ))
-        host.level = .floating
+        // Codex P1.5: use a normal window level (not .floating) so a
+        // launch-time presentation while the user is screen-sharing
+        // doesn't push the consent text above the share. Activate only
+        // if the user is actually focused on the app (no `ignoringOtherApps`).
         host.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         self.window = host
     }
 }
@@ -57,7 +68,7 @@ private struct PrivacyAcknowledgementView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Audio leaves your Mac in cloud mode").bold()
-                        Text("Transcriber's default engine sends your microphone and system audio to ElevenLabs for transcription. Switch to local mode in Settings to keep audio on-device once the local engine ships.")
+                        Text("Transcriber's default engine sends your microphone and system audio to ElevenLabs for transcription.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -67,8 +78,19 @@ private struct PrivacyAcknowledgementView: View {
 
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
+                        Text("Calendar event names + attendees go alongside the audio").bold()
+                        Text("If you grant Calendar permission, the matching event title and attendee names are sent to the engine as transcription hints (\"keyterms\"). Sessions started outside a meeting send no calendar data.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "calendar.badge.clock")
+                }
+
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Transcripts and audio are saved locally").bold()
-                        Text("Each session writes a Markdown transcript and the original audio under your output folder. Nothing is uploaded except the audio sent to the engine.")
+                        Text("Each session writes a Markdown transcript and the original audio under your output folder. Nothing else leaves your Mac.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -78,13 +100,24 @@ private struct PrivacyAcknowledgementView: View {
 
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Calendar access is optional").bold()
-                        Text("If you grant Calendar permission, Transcriber tags sessions with the matching event title and attendees. Denying it never blocks a recording.")
+                        Text("Local mode keeps audio on-device").bold()
+                        Text("When the local engine ships, switching to local mode in Settings keeps audio entirely on your Mac. Until then, only cloud mode is available.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
                 } icon: {
-                    Image(systemName: "calendar")
+                    Image(systemName: "laptopcomputer")
+                }
+
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Calendar access is optional").bold()
+                        Text("Denying Calendar permission disables session tagging but never blocks recording.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "checkmark.circle")
                 }
             }
 
@@ -100,6 +133,6 @@ private struct PrivacyAcknowledgementView: View {
             }
         }
         .padding(24)
-        .frame(width: 520, height: 380)
+        .frame(width: 540, height: 460)
     }
 }

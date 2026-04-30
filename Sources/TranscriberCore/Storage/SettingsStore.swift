@@ -137,42 +137,60 @@ public actor SettingsStore {
     public func setOutputRoot(_ url: URL) {
         var current = snapshot()
         current.outputRoot = url
-        commit(current)
+        try? commit(current)
     }
 
     public func setEngineMode(_ mode: EngineMode) {
         var current = snapshot()
         current.engineMode = mode
-        commit(current)
+        try? commit(current)
     }
 
     public func setKeepRawStreams(_ on: Bool) {
         var current = snapshot()
         current.keepRawStreams = on
-        commit(current)
+        try? commit(current)
     }
 
     public func setAECEnabled(_ on: Bool) {
         var current = snapshot()
         current.aecEnabled = on
-        commit(current)
+        try? commit(current)
     }
 
     public func setPrivacyAcknowledged(_ acked: Bool) {
         var current = snapshot()
         current.privacyAcknowledged = acked
-        commit(current)
+        try? commit(current)
     }
 
     /// Atomic multi-key commit. Phase η Settings UI calls this after
     /// the user clicks Save so the resulting on-disk state never
     /// contains a partial mix of old + new fields.
-    public func commit(_ settings: SessionSettings) {
-        if let data = try? JSONEncoder().encode(settings) {
-            box.defaults.set(data, forKey: Key.storage.rawValue)
-        } else {
-            Log.engine.error("SettingsStore: failed to encode SessionSettings")
+    ///
+    /// Codex Phase η P0.3: privacyAcknowledged is a one-way flag (spec
+    /// line 348). If the on-disk snapshot already has it true, refuse
+    /// to write false back over it — protects against a stale Settings
+    /// form snapshot demoting the flag after the user acked elsewhere.
+    /// Throws CommitError if encoding fails so the caller can surface it.
+    public func commit(_ settings: SessionSettings) throws {
+        var sanitized = settings
+        let current = snapshot()
+        if current.privacyAcknowledged && !sanitized.privacyAcknowledged {
+            Log.engine.warning("SettingsStore: refusing to demote privacyAcknowledged true -> false; preserving acknowledgement")
+            sanitized.privacyAcknowledged = true
         }
+        do {
+            let data = try JSONEncoder().encode(sanitized)
+            box.defaults.set(data, forKey: Key.storage.rawValue)
+        } catch {
+            Log.engine.error("SettingsStore: failed to encode SessionSettings: \(String(describing: error), privacy: .public)")
+            throw CommitError.encodeFailed(error)
+        }
+    }
+
+    public enum CommitError: Error {
+        case encodeFailed(Error)
     }
 }
 
