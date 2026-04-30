@@ -59,6 +59,14 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("pts.jsonl")
     }
 
+    /// Atomic per-session claim file used by SessionClaim to prevent two
+    /// concurrent TranscriptionWorker runs (Phase γ). Stores
+    /// {pid, boot_time, started_at, heartbeat_at} so a relaunched
+    /// SessionSupervisor can detect a dead claimer and reclaim safely.
+    public var claim: URL {
+        url.appendingPathComponent("claim.json")
+    }
+
     public var transcript: URL {
         url.appendingPathComponent("transcript.md")
     }

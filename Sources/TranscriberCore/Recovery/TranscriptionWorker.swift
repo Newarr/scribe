@@ -62,6 +62,28 @@ public actor TranscriptionWorker {
             return existing.status == .complete ? .complete : .failed(reason: "already terminal on disk")
         }
 
+        // Phase γ: atomic per-session claim. Two workers running against the
+        // same directory (running app + relaunched supervisor scan racing on
+        // the same pending session) would clobber each other's writes.
+        // acquire returns nil if a live worker holds the claim — return
+        // cancelled so the caller knows we declined cleanly.
+        guard let claimToken = SessionClaim.acquire(at: directory.claim) else {
+            Log.engine.info("Worker declined: claim held by another process")
+            return .cancelled
+        }
+        // Heartbeat task keeps the claim alive while we work. Cancellation
+        // flows through to the heartbeat loop on every exit path.
+        let heartbeatTask = Task { [claimToken] in
+            while Task.isCancelled == false {
+                SessionClaim.heartbeat(claimToken)
+                try? await Task.sleep(nanoseconds: UInt64(SessionClaim.defaultHeartbeatInterval * 1_000_000_000))
+            }
+        }
+        defer {
+            heartbeatTask.cancel()
+            SessionClaim.release(claimToken)
+        }
+
         // One-shot audio preparation before the retry loop. Failure here is
         // terminal — if we can't even build the upload audio, retry won't fix it.
         do {
