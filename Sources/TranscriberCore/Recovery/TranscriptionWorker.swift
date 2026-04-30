@@ -27,6 +27,11 @@ public actor TranscriptionWorker {
     private let policy: RetryPolicy
     private let sleep: Sleep
     private let prepareAudio: PrepareAudio
+    /// Phase ι: spec line 102. Default OFF means raw mic.m4a +
+    /// system.m4a get DELETED after transcription succeeds AND
+    /// audio.m4a is on disk. NEVER deleted on pending / retrying /
+    /// failed states (they may be needed for retry or recovery).
+    private let keepRawStreams: Bool
     /// The canonical audio file path used in transcript + metadata. Either
     /// "audio.m4a" (after AudioFinalizer succeeded) or "" (use raw streams).
     /// Set once per run() invocation by `prepareCanonicalAudio`.
@@ -40,7 +45,8 @@ public actor TranscriptionWorker {
         speakerMapping: [String: String] = [:],
         policy: RetryPolicy = .cloud,
         sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
-        prepareAudio: @escaping PrepareAudio = { /* no-op: caller handled prep */ }
+        prepareAudio: @escaping PrepareAudio = { /* no-op: caller handled prep */ },
+        keepRawStreams: Bool = false
     ) {
         self.directory = directory
         self.context = context
@@ -50,6 +56,7 @@ public actor TranscriptionWorker {
         self.policy = policy
         self.sleep = sleep
         self.prepareAudio = prepareAudio
+        self.keepRawStreams = keepRawStreams
     }
 
     public func run() async -> FinalState {
@@ -145,6 +152,14 @@ public actor TranscriptionWorker {
                     return .failed(reason: "transcript write failed: \(error)")
                 }
                 writeMetadata(status: .complete, context: completedContext, audioPath: canonicalAudioPath)
+                // Phase ι: spec line 102. Default-OFF keepRawStreams
+                // means raw streams are deleted ONLY after the terminal
+                // success state has been written to disk. We require
+                // BOTH (a) keepRawStreams == false AND (b) the canonical
+                // audio.m4a actually exists on disk — otherwise deleting
+                // the raws would orphan the user's only copy of the
+                // audio. NEVER deletes on pending / retrying / failed.
+                cleanupRawStreamsIfPolicyAllows()
                 return .complete
             } catch is CancellationError {
                 return .cancelled
@@ -265,6 +280,41 @@ public actor TranscriptionWorker {
     /// Writes metadata.json mirroring the transcript frontmatter. Called from
     /// every terminal state (complete, failed) so JSON consumers always have
     /// a current snapshot. Best-effort — failure logs but doesn't escalate.
+    /// Phase ι: spec line 102. Default-OFF deletes raw mic.m4a +
+    /// system.m4a after audio.m4a is on disk and the terminal status
+    /// has been written. The deletion is gated on:
+    ///   1. `keepRawStreams == false` (the spec default)
+    ///   2. `audio.m4a` actually exists at `directory.url/audio.m4a`
+    ///      (otherwise we'd orphan the user's only copy)
+    ///
+    /// NEVER fires on pending / retrying / failed — those states may
+    /// need the raws for retry or recovery. Only invoked from the
+    /// `.complete` happy path.
+    private func cleanupRawStreamsIfPolicyAllows() {
+        guard !keepRawStreams else {
+            Log.engine.info("keepRawStreams=true: preserving mic.m4a + system.m4a")
+            return
+        }
+        let canonicalAudio = directory.url.appendingPathComponent("audio.m4a")
+        guard FileManager.default.fileExists(atPath: canonicalAudio.path) else {
+            Log.engine.warning("Skipping raw-stream cleanup: audio.m4a missing — preserving mic.m4a + system.m4a as fallback")
+            return
+        }
+
+        for url in [directory.micFinal, directory.systemFinal] {
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            } catch {
+                // Best-effort: log but don't fail the worker. The user
+                // has audio.m4a; the raws being slow to delete just
+                // means they'll persist until the next sweep.
+                Log.engine.warning("Failed to delete raw stream \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String) {
         // Metadata.audio is a single string per spec line 251-255; pick the
         // first audio reference. With audio.m4a present, that's "audio.m4a".

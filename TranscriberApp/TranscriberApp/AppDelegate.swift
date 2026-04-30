@@ -229,10 +229,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// as the supervisor dispatches a worker).
     @MainActor
     private func scheduleSupervisorRecovery() {
-        let outputRoot = self.outputRoot
+        let snap = settings
+        let outputRoot = snap.outputRoot
+        let keepRaw = snap.keepRawStreams
         let resumeId = UUID()
         let resumeTask = Task { [weak self] in
-            await Self.runSupervisor(under: outputRoot)
+            await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw)
             await self?.removeTask(id: resumeId)
         }
         inflightTasks[resumeId] = resumeTask
@@ -500,7 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
         }
 
-        let worker = Self.makeWorker(dir: dir, context: context, event: event)
+        let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams)
         let id = UUID()
         let task = Task { [weak self] in
             _ = await worker.run()
@@ -655,7 +657,8 @@ extension AppDelegate {
     nonisolated static func makeWorker(
         dir: SessionDirectory,
         context: TranscriptContext,
-        event: CalendarEvent?
+        event: CalendarEvent?,
+        keepRawStreams: Bool = false
     ) -> TranscriptionWorker {
         // Pre-AEC default: single-channel diarized (slice 2 path).
         //
@@ -699,11 +702,12 @@ extension AppDelegate {
             request: request,
             speakerMapping: mapping,
             policy: .cloud,
-            prepareAudio: prepareAudio
+            prepareAudio: prepareAudio,
+            keepRawStreams: keepRawStreams
         )
     }
 
-    nonisolated static func runSupervisor(under root: URL) async {
+    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false) async {
         let supervisor = SessionSupervisor()
         let result = await supervisor.scanAndResume(
             under: root,
@@ -723,7 +727,7 @@ extension AppDelegate {
                 )
             },
             workerFactory: { dir, ctx in
-                makeWorker(dir: dir, context: ctx, event: nil)
+                makeWorker(dir: dir, context: ctx, event: nil, keepRawStreams: keepRawStreams)
             }
         )
         // Codex Phase ζ P1.2: include partialAudioMarkedFailed +

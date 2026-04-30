@@ -307,9 +307,11 @@ final class TranscriptionWorkerTests: XCTestCase {
 
     private func makeWorker(
         responses: [Result<EngineResponse, Error>],
-        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { _ in /* skip */ }
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { _ in /* skip */ },
+        keepRawStreams: Bool = false,
+        directory: SessionDirectory? = nil
     ) -> TranscriptionWorker {
-        let session = dir()
+        let session = directory ?? dir()
         try? FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
         let engine = FakeEngine(responses: responses)
         let request = EngineRequest(
@@ -325,8 +327,83 @@ final class TranscriptionWorkerTests: XCTestCase {
             request: request,
             speakerMapping: [:],
             policy: RetryPolicy(delays: [0.001, 0.001, 0.001]),
-            sleep: sleep
+            sleep: sleep,
+            keepRawStreams: keepRawStreams
         )
+    }
+
+    // MARK: - Phase ι: keep_raw_streams polarity (spec line 102)
+
+    /// Default keepRawStreams=false + audio.m4a present + complete
+    /// state → raw streams must be deleted.
+    func testRawStreamsDeletedOnSuccessByDefault() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try Data("mic-bytes".utf8).write(to: session.micFinal)
+        try Data("sys-bytes".utf8).write(to: session.systemFinal)
+        try Data("mixed".utf8).write(to: session.url.appendingPathComponent("audio.m4a"))
+
+        let worker = makeWorker(responses: [.success(makeResponse())], keepRawStreams: false, directory: session)
+        let final = await worker.run()
+        XCTAssertEqual(final, .complete)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session.micFinal.path), "spec line 102: raw mic must be deleted on success")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session.systemFinal.path), "spec line 102: raw system must be deleted on success")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.url.appendingPathComponent("audio.m4a").path), "audio.m4a must survive")
+    }
+
+    /// keepRawStreams=true + complete state → raws preserved.
+    func testRawStreamsPreservedWhenKeepRawStreamsTrue() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try Data("mic-bytes".utf8).write(to: session.micFinal)
+        try Data("sys-bytes".utf8).write(to: session.systemFinal)
+        try Data("mixed".utf8).write(to: session.url.appendingPathComponent("audio.m4a"))
+
+        let worker = makeWorker(responses: [.success(makeResponse())], keepRawStreams: true, directory: session)
+        _ = await worker.run()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.micFinal.path), "keepRawStreams=true: raws must survive")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.systemFinal.path))
+    }
+
+    /// audio.m4a missing → raws preserved even on success (don't orphan
+    /// the user's only audio).
+    func testRawStreamsPreservedWhenAudioM4AMissing() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try Data("mic-bytes".utf8).write(to: session.micFinal)
+        try Data("sys-bytes".utf8).write(to: session.systemFinal)
+        // NO audio.m4a — finalizer didn't run or failed.
+
+        let worker = makeWorker(responses: [.success(makeResponse())], keepRawStreams: false, directory: session)
+        _ = await worker.run()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.micFinal.path), "audio.m4a missing: don't orphan the user's only copy")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.systemFinal.path))
+    }
+
+    /// Failed terminal state → raws preserved (might be needed for
+    /// manual recovery / re-upload).
+    func testRawStreamsPreservedOnTerminalFailure() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try Data("mic-bytes".utf8).write(to: session.micFinal)
+        try Data("sys-bytes".utf8).write(to: session.systemFinal)
+        try Data("mixed".utf8).write(to: session.url.appendingPathComponent("audio.m4a"))
+
+        // A fatal (non-transient) engine error → terminal failed state
+        // without delete.
+        struct FatalError: Error {}
+        let worker = makeWorker(responses: [.failure(FatalError())], keepRawStreams: false, directory: session)
+        let final = await worker.run()
+        if case .failed = final {
+            // expected
+        } else {
+            XCTFail("expected failed terminal state, got \(final)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.micFinal.path), "spec line 102: NEVER delete raws on failed terminal state")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.systemFinal.path))
     }
 }
 
