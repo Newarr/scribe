@@ -38,6 +38,40 @@ final class AudioFileWriterTests: XCTestCase {
         XCTAssertThrowsError(try writer?.append(buf))
     }
 
+    func testPostFinalizeAppendIsCountedNoOp() async throws {
+        // Phase β: SCK sample-handler queue can dispatch a buffer AFTER
+        // finalize() has run (in-flight at the moment stop() ran). The
+        // writer must not throw — propagating an error up into the
+        // SCStreamOutput callback would crash the capture path. Instead it
+        // counts the call so the test can prove the no-op fired (vs silent
+        // buffer loss masked as "no error").
+        let writer = try AudioFileWriter(url: tmpURL, sampleRate: 48000, channelCount: 1)
+        try writer.start()
+
+        let buf = SyntheticSampleBuffer.make(ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480)
+        try writer.append(buf)
+        try await writer.finalize()
+
+        XCTAssertEqual(writer.postFinalizeAppendCounter, 0)
+        // Throws nothing; counts the call.
+        try writer.append(buf)
+        try writer.append(buf)
+        XCTAssertEqual(writer.postFinalizeAppendCounter, 2,
+                       "post-finalize append must increment the counter so the drain barrier proves itself")
+    }
+
+    func testFinalizeIsIdempotent() async throws {
+        // Codex pass 2 P1 #4: explicit happens-before chain. finalize()
+        // running twice must not double-finish-writing the AVAssetWriter
+        // (which would crash) — the serial queue + finalized flag block it.
+        let writer = try AudioFileWriter(url: tmpURL, sampleRate: 48000, channelCount: 1)
+        try writer.start()
+        let buf = SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480)
+        try writer.append(buf)
+        try await writer.finalize()
+        try await writer.finalize()  // Must not crash.
+    }
+
     /// CDX-3 regression: writer must defer startSession to the first appended buffer's PTS.
     /// If startSession were pinned to .zero, this 100-second-PTS clip would produce a ~100s
     /// asset (mostly silence). With the fix, asset duration tracks audio content only.
