@@ -13,6 +13,11 @@ public actor SessionSupervisor {
         public var skipped: Int = 0
         public var rescued: Int = 0
         public var markedFailed: Int = 0
+        /// Sessions whose audio was one-sided (only mic OR only system).
+        /// Spec line 339 (no mic-only fallback) means we can't transcribe
+        /// these — supervisor writes a `failed` transcript referencing the
+        /// surviving stream so the user can still recover the audio.
+        public var partialAudioMarkedFailed: Int = 0
     }
 
     public init() {}
@@ -53,9 +58,27 @@ public actor SessionSupervisor {
             }
 
             let recovery = OrphanRecoverer.recover(dir)
-            if recovery == .rescued { result.rescued += 1 }
-
-            if recovery == .noAudio {
+            switch recovery {
+            case .alreadyFinalized:
+                break  // both tracks present pre-scan; no rescue counter
+            case .rescued:
+                result.rescued += 1
+            case .partialAudio(let stream):
+                // Spec line 339 (`decision_no_mic_only_fallback`): one-sided
+                // audio is NOT transcribable. Write a failed transcript
+                // pointing the user at the surviving file so they can
+                // recover the audio manually.
+                let context = existing?.context ?? contextFactory(dir)
+                let survivingFile = stream == .mic ? dir.micFinal : dir.systemFinal
+                let message = "Session audio is one-sided (only \(stream.rawValue) survived). Per V1 spec the engine requires both microphone and system audio to produce diarized output; the surviving file at \(survivingFile.lastPathComponent) is preserved for manual recovery."
+                do {
+                    try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: message)
+                    result.partialAudioMarkedFailed += 1
+                } catch {
+                    Log.engine.error("supervisor: writeFailed (partial audio) failed: \(String(describing: error), privacy: .public)")
+                }
+                continue
+            case .noAudio:
                 let context = existing?.context ?? contextFactory(dir)
                 do {
                     try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: "Session audio is missing. The capture session may have been interrupted before any audio was written.")

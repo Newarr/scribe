@@ -161,6 +161,37 @@ final class SessionSupervisorTests: XCTestCase {
         XCTAssertEqual(calls, 0, "factory should not be invoked when on-disk context is available")
     }
 
+    /// Phase ζ: spec line 339 forbids transcribing one-sided audio.
+    /// Supervisor must write a failed transcript (referencing the
+    /// surviving file) instead of dispatching a worker against a session
+    /// the engine can't actually use.
+    func testOneSidedAudioGetsFailedTranscriptAndDoesNotDispatchWorker() async throws {
+        let dir = makeSessionDir("partial-mic")
+        // Only mic.m4a.partial — system never made it to disk (e.g.,
+        // screen recording permission denied mid-call).
+        try Data("mic-bytes".utf8).write(to: dir.micPartial)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("partial-mic") },
+            workerFactory: { d, _ in
+                XCTFail("worker must not run for one-sided audio sessions per spec line 339")
+                return Self.makeWorker(dir: d, responses: [])
+            }
+        )
+        XCTAssertEqual(r.partialAudioMarkedFailed, 1)
+        XCTAssertEqual(r.resumed, 0)
+        XCTAssertEqual(r.rescued, 0, "rescue counter is only for both-tracks recovery")
+        XCTAssertEqual(TranscriptStatusReader.read(at: dir.transcript), .failed)
+
+        // Surviving file is still on disk — user can recover it manually.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        // Failed transcript body must reference the surviving file.
+        let body = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(body.contains("mic"), "failed transcript body must reference the surviving stream: \(body)")
+    }
+
     func testFailedSessionIsSkipped() async throws {
         let dir = makeSessionDir("e")
         try Data("mic".utf8).write(to: dir.micFinal)
