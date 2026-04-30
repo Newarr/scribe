@@ -48,6 +48,22 @@ If a session is permanently stuck in this state:
 - Check that both `mic.m4a` and `system.m4a` are present (or their `.partial` versions). Spec line 339: one-sided audio is NOT transcribable; the supervisor will write a failed transcript pointing at the surviving file.
 - Check `chflags` (`ls -lO`) for the immutable flag on `.partial` files. If set, `chflags nouchg` releases the file so the supervisor can rename it.
 
+## Re-transcription of completed sessions
+
+Default `keep_raw_streams=false` (spec line 102) deletes `mic.m4a` and
+`system.m4a` once a session reaches `complete`. The session folder
+keeps `audio.m4a` (the mixed playback file), `transcript.md`, and
+`metadata.json` — but the per-channel originals are gone.
+
+If you want the option to re-process per-channel audio later (different
+engine, different speaker mapping, post-hoc AEC), enable Settings →
+Output → "Keep raw mic / system streams after mix" **before** recording.
+The toggle takes effect on the next session, never to a session already
+in progress.
+
+The mixed `audio.m4a` is suitable for cloud single-channel diarized
+re-runs, but per-channel diarization or AEC re-runs require the raws.
+
 ## Audio quality issues
 
 ### Doubled remote speaker

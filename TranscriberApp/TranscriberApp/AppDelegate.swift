@@ -99,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         do {
             try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
         } catch {
-            Log.lifecycle.error("Failed to create outputRoot at \(self.outputRoot.path, privacy: .public): \(String(describing: error), privacy: .public). Recovery scan will skip this scan; please fix the path or grant permission and relaunch.")
+            Log.lifecycle.error("Failed to create outputRoot at \(self.outputRoot.path, privacy: .private): \(String(describing: error), privacy: .public). Recovery scan will skip this scan; please fix the path or grant permission and relaunch.")
         }
 
         Task {
@@ -232,9 +232,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         let snap = settings
         let outputRoot = snap.outputRoot
         let keepRaw = snap.keepRawStreams
+        let mode = snap.engineMode
         let resumeId = UUID()
         let resumeTask = Task { [weak self] in
-            await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw)
+            await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw, engineMode: mode)
             await self?.removeTask(id: resumeId)
         }
         inflightTasks[resumeId] = resumeTask
@@ -502,7 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
         }
 
-        let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams)
+        let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams, engineMode: settings.engineMode)
         let id = UUID()
         let task = Task { [weak self] in
             _ = await worker.run()
@@ -658,7 +659,8 @@ extension AppDelegate {
         dir: SessionDirectory,
         context: TranscriptContext,
         event: CalendarEvent?,
-        keepRawStreams: Bool = false
+        keepRawStreams: Bool = false,
+        engineMode: EngineMode = .cloud
     ) -> TranscriptionWorker {
         // Pre-AEC default: single-channel diarized (slice 2 path).
         //
@@ -667,14 +669,28 @@ extension AppDelegate {
         // explicitly forbids "dirty 2-channel uploads" as a fallback because they
         // reproduce a known failure mode where the remote speaker is decoded
         // twice. Slice 4 ships AEC + flips this back to multichannel with
-        // mic.cleaned.wav. Until then, mix to mono and rely on diarize=true.
-        let mixedURL = dir.url.appendingPathComponent("mixed.wav")
+        // mic.cleaned.wav. Until then, upload audio.m4a (the streaming-mixed
+        // mono output produced by AudioFinalizer) and rely on diarize=true.
+        //
+        // Codex rc1-final P0.1 + P0.2: previously prepareAudio called
+        // AudioMixer.mix to write mixed.wav as a SECOND copy of the mix,
+        // which (a) buffered the whole file in memory (defeats Phase ε
+        // streaming) and (b) was never deleted on .complete. Phase ε
+        // already produces audio.m4a streaming, so use that directly as
+        // the upload artifact.
+        let canonicalAudioURL = dir.url.appendingPathComponent("audio.m4a")
         let keychain = KeychainStore(service: keychainService, account: keychainAccount)
-        let apiKey = (try? keychain.read()) ?? ""
-        let backend = ElevenLabsScribeBackend(apiKey: apiKey)
+        // Codex rc1-final P1.4: dispatch through EngineSelector so a
+        // future flip to local mode lands the Cohere subprocess
+        // backend without touching this site. Cloud mode reads the API
+        // key lazily; local mode ignores it.
+        let backend = EngineSelector.makeEngine(
+            for: engineMode,
+            cloudAPIKey: { (try? keychain.read()) ?? "" }
+        )
         let keyterms = event?.keyterms ?? []
         let request = EngineRequest(
-            audioURL: mixedURL,
+            audioURL: canonicalAudioURL,
             mode: .singleChannelDiarized(numSpeakers: 2),
             languageCode: nil,
             keyterms: keyterms
@@ -684,16 +700,12 @@ extension AppDelegate {
         // channel — speaker_0/_1 don't reliably correspond to mic vs system.
         let mapping = SpeakerMappingBuilder.build(event: event, mode: request.mode)
 
-        let prepareAudio: @Sendable () async throws -> Void = {
-            let fm = FileManager.default
-            if fm.fileExists(atPath: mixedURL.path) { return }
-            try await AudioMixer.mix(
-                mic: dir.micFinal,
-                system: dir.systemFinal,
-                output: mixedURL,
-                sampleRate: 16000
-            )
-        }
+        // prepareAudio is a no-op now: audio.m4a is produced by
+        // TranscriptionWorker.prepareCanonicalAudio (which calls the
+        // streaming AudioFinalizer) BEFORE the retry loop runs. The
+        // worker's prepareAudio hook stays for callers that need
+        // additional pre-upload preparation.
+        let prepareAudio: @Sendable () async throws -> Void = { /* no-op */ }
 
         // Phase ν: WhisperKitLanguageDetector is a placeholder until the
         // spike integrates the model. It returns nil today (engine
@@ -712,10 +724,11 @@ extension AppDelegate {
         )
     }
 
-    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false) async {
+    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false, engineMode: EngineMode = .cloud) async {
         let supervisor = SessionSupervisor()
         let result = await supervisor.scanAndResume(
             under: root,
+            keepRawStreams: keepRawStreams,
             contextFactory: { dir in
                 let isoFmt = ISO8601DateFormatter()
                 let dayFmt = DateFormatter()
@@ -732,7 +745,7 @@ extension AppDelegate {
                 )
             },
             workerFactory: { dir, ctx in
-                makeWorker(dir: dir, context: ctx, event: nil, keepRawStreams: keepRawStreams)
+                makeWorker(dir: dir, context: ctx, event: nil, keepRawStreams: keepRawStreams, engineMode: engineMode)
             }
         )
         // Codex Phase ζ P1.2: include partialAudioMarkedFailed +

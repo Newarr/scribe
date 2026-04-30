@@ -1,44 +1,58 @@
 # Phase τ: Homebrew cask template. scripts/release.sh substitutes
-# {{VERSION}} and {{SHA256}} at release time and emits a concrete
-# `transcriber.rb` ready to publish to the user's tap.
+# {{VERSION}}, {{SHA256}}, and {{DOWNLOAD_URL}} at release time and
+# emits a concrete `transcriber.rb` ready to publish to the user's tap.
 #
 # Usage at release time:
 #   sed -e "s/{{VERSION}}/1.0.0-rc1/g" \\
+#       -e "s|{{DOWNLOAD_URL}}|https://example.com/path/Transcriber-1.0.0-rc1.dmg|" \\
 #       -e "s/{{SHA256}}/$(shasum -a 256 build/Transcriber-1.0.0-rc1.dmg | cut -d' ' -f1)/" \\
 #       Casks/transcriber.rb.template > <tap>/Casks/transcriber.rb
 #
 # The tap repo lives outside this project — typically
-# `<github-user>/homebrew-tap` with a `Casks/` directory.
+# `<github-user>/homebrew-tap` with a `Casks/` directory. The
+# {{DOWNLOAD_URL}} placeholder must be replaced with whatever
+# user-controlled URL serves the DMG (GitHub releases, an S3 bucket,
+# etc.). The cask template ships without a hardcoded URL because the
+# project doesn't own a publication endpoint yet.
 
 cask "transcriber" do
   version "{{VERSION}}"
   sha256  "{{SHA256}}"
 
-  url "https://releases.transcriber.app/v#{version}/Transcriber-#{version}.dmg"
+  url "{{DOWNLOAD_URL}}"
   name "Transcriber"
   desc "Menu-bar meeting transcriber for macOS"
   homepage "https://github.com/szymonsypniewicz/transcriber"
-
-  livecheck do
-    url :url
-    strategy :extract_plist
-  end
 
   depends_on macos: ">= :sequoia"
 
   app "TranscriberApp.app", target: "Transcriber.app"
 
-  # Spec § Privacy: clean up Keychain entries on cask uninstall via
-  # zap. Settings + Logs are preserved unless the user explicitly
-  # uninstalls with `--zap`.
+  # Codex rc1-final P1.8: Homebrew Cask `delete:` accepts ONLY
+  # filesystem paths, not shell commands. Keychain entries can't be
+  # wiped declaratively from a cask manifest — Homebrew's `zap` runs
+  # on uninstall but doesn't execute arbitrary commands. Document the
+  # Keychain wipe in PRIVACY.md / TROUBLESHOOTING.md instead, and use
+  # zap's `trash:` for filesystem cleanup only.
   zap trash: [
     "~/Library/Logs/TranscriberApp",
     "~/Library/Preferences/com.szymonsypniewicz.transcriber.plist",
     "~/Library/Application Support/com.szymonsypniewicz.transcriber",
-  ],
-      delete: [
-        # Keychain wipe — requires the user to confirm via macOS auth.
-        "/usr/bin/security delete-generic-password -a claude -s elevenlabs-api-key",
-        "/usr/bin/security delete-generic-password -a claude -s diagnostics-instance-id",
-      ]
+  ]
+
+  # Manual cleanup (not automatable from cask): remove Keychain entries.
+  #   security delete-generic-password \\
+  #       -s com.szymonsypniewicz.transcriber \\
+  #       -a elevenlabs-api-key
+  #   security delete-generic-password \\
+  #       -s com.szymonsypniewicz.transcriber \\
+  #       -a diagnostics-instance-id
+  # docs/PRIVACY.md "How to wipe everything" tracks the full sequence.
+  caveats <<~EOS
+    Transcriber stores two entries in your macOS Keychain (service
+    com.szymonsypniewicz.transcriber): `elevenlabs-api-key` and
+    `diagnostics-instance-id`. `brew uninstall --zap` removes the app's
+    files but cannot delete Keychain entries — see docs/PRIVACY.md
+    for the manual `security delete-generic-password` invocations.
+  EOS
 end

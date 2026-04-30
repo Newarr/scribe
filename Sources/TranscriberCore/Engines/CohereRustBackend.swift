@@ -15,7 +15,14 @@ import Foundation
 /// fallback if the user bypasses the gate.
 public final class CohereRustBackend: TranscriptionEngine, @unchecked Sendable {
     public enum BackendError: Error, Equatable {
+        /// Binary URL was nil at construction (rc1 default — the
+        /// preflight gate catches this earlier).
         case binaryUnavailable
+        /// Binary URL was non-nil but the subprocess integration
+        /// hasn't been written yet. Distinct from `.binaryUnavailable`
+        /// so a future regression can't accidentally re-route
+        /// "not bundled" errors through this case. Codex rc1-final P2.2.
+        case notImplemented
         case binaryFailed(exitCode: Int)
         case malformedOutput
         case audioReadFailed(URL)
@@ -52,9 +59,12 @@ public final class CohereRustBackend: TranscriptionEngine, @unchecked Sendable {
         //      buffering the full transcript.
         //   4. On exit code != 0, throw .binaryFailed.
         //   5. On JSON parse error, throw .malformedOutput.
+        // Codex rc1-final P2.2: throw `.notImplemented` so the error
+        // distinguishes "binary missing" from "implementation
+        // pending."
         _ = binaryURL
         _ = workingDirectory
-        throw BackendError.binaryUnavailable
+        throw BackendError.notImplemented
     }
 }
 

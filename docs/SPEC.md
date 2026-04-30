@@ -6,6 +6,13 @@ Transcriber is a menu-bar-first macOS app that makes sure every important meetin
 
 The product should feel like a seatbelt, not a dashboard. It stays out of the way until risk appears: missed start, missing permission, active recording, or runaway recording.
 
+## Design Principles
+
+- **Never fail silently.** Any state where the app appears to be working but isn't (mic muted, system audio routing broken, transcription timed out, file not saved, permission revoked while running) must surface immediately on the menu-bar trust surface. The product promise is "never miss the record"; an app that runs but doesn't capture violates it.
+- **Cost-asymmetric prompts.** Missing the start prompt = lose the whole meeting; missing the stop prompt = lose ~10s of post-call audio. Start UX is aggressive (modal + activate-ignoring-other-apps); stop UX is non-focus-stealing (floating HUD).
+- **Confidential UI by default.** Every Scribe-owned window sets `NSWindow.sharingType = .none` so prompts and popovers never appear in screen-shared video, regardless of where they render.
+- **Finder is the database.** No transcript-history UI in v1. The menu-bar `Recents` section is a 5-item shortcut, not a browser.
+
 ## Non-Goals
 
 - No audio import flow.
@@ -26,13 +33,15 @@ The product should feel like a seatbelt, not a dashboard. It stays out of the wa
 ## Default Settings
 
 - Mode: `Transcribe + save audio`.
-- Engine: ElevenLabs.
-- Output: one folder per meeting.
+- Primary engine: ElevenLabs (cloud). Cohere (local) downloads in the background during onboarding regardless of which engine the user picks. A keyless user gets a working app; a keyed user gets a fallback when cloud fails.
+- Output: one folder per meeting under `~/Transcriber/`. Avoid `~/Documents/Transcriber/` because Documents may be inside iCloud Desktop & Documents sync.
 - Calendar context sharing: keyterms only, enabled for ElevenLabs.
 - Auto-stop guard: enabled.
 - End-detection grace period: 30 seconds.
 - Stop prompt timeout: 10 seconds.
-- Audio retention: keep until manually deleted.
+- `Keep Recording` snooze: 3 minutes on first click in a session, 9 on second, 27 on third+. Audio activity resets the silence detector and renders the snooze inert until the next silence stretch. Hard ceiling: regardless of snooze count, force-prompt at scheduled-end + 4 hours.
+- Audio retention: keep until manually deleted. No background auto-delete in v1. Bulk delete from Settings → Storage.
+- Notifications: `UNUserNotificationCenter` permission requested during onboarding. Without it the redundant-channel pattern collapses; the menu-bar `Setup Required` state fires.
 
 ## State Machine
 
@@ -64,6 +73,15 @@ Watcher behavior:
 - Prompt if app launches during an active meeting.
 - De-dupe by calendar event ID plus occurrence start time, not title.
 - Ignore all-day and free events by default.
+- Skip declined and tentative events (respect EventKit participation status).
+- Skip events whose end time is already in the past per EventKit, even if a stale calendar cache shows them as active.
+- After wake-from-sleep, do not re-prompt for an event the user already skipped or marked `Not this event` in this session.
+
+Late-join (app launches into an active event):
+
+- Prompt only if at least 10 minutes remain on the scheduled event, OR a meeting app is currently running and detected as in-call. Otherwise leave the menu bar in `Meeting detected` state and let the user click in.
+- Prompt copy frames the join factually, not apologetically: `Record 'Acme Weekly'? This event started 22 minutes ago. Recording will capture from now onward.`
+- Late-joined sessions write `joined_late: true` and `elapsed_at_start_seconds` plus `scheduled_start_at` and `recording_started_at` to frontmatter.
 
 V1 is calendar-first. Google Calendar works if synced into macOS Calendar. Direct Google/Outlook APIs are deferred.
 
@@ -76,22 +94,37 @@ Before meeting:
 
 At meeting start:
 
-- Show prompt exactly at scheduled start.
-- Primary button: `Start Recording`.
-- Secondary button: `Skip`.
-- No per-call mode choice.
-- Prompt copy should name the meeting, for example: `Start recording "Acme Weekly"?`
-- Show calendar source subtly, for example: `From Apple Calendar`.
+- Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app (Zoom/Meet/Teams) that has been running for the dwell window fires the prompt; the title is enriched with the overlapping calendar event. The calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
+- Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start = losing the entire meeting, which dominates the politeness cost of the interruption.
+- Buttons (three): `Start Recording` (primary), `Not this event` (event-specific suppression for the event ID; replaces the older `Not a meeting` label which suppressed the app for 30 minutes — keep that 30-min app-suppression as a separate `Skip for now` semantic), `Skip for now` (just-this-occurrence dismissal).
+- Footer link: `Don't ask for this meeting →` for users who never want this recurring calendar series prompted again. Suppression keys on the recurrence-series ID.
+- The modal's window must set `NSWindow.sharingType = .none` so it does not appear in shared screen video.
+- Position the modal on the screen containing the active meeting-app window, not the keyWindow's screen.
+- Audible cue is OFF by default; user-configurable in Settings.
+
+Redundant channels (backup for the modal, never replacement):
+
+- Menu-bar icon flips to the `Meeting detected` glyph the moment the prompt fires. Persists until the user acts.
+- A `UNUserNotificationCenter` notification fires in parallel with action buttons matching the modal's three-button choice. The notification persists in Notification Center across DND, screen-share suppression, and fullscreen Zoom — channels the modal can't always reach.
+- If the modal is dismissed (accidental ⌘W or Esc), the notification and menu-bar glyph remain, so the user can recover.
 
 Ignored prompt:
 
 - Keep menu-bar badge active.
-- Re-prompt once after 60 seconds.
+- Re-prompt with a fresh notification after 60 seconds (refresh, not silent badge persistence — pushed-down notifications don't re-elevate without a new fire).
 - After about 3 minutes, stop reminding unless call-like audio is active, then show one final prompt.
+
+Prompt copy:
+
+- Default: `Start recording 'Acme Weekly'?`
+- Calendar source subtly: `From Apple Calendar`.
+- Late-join variant: `Record 'Acme Weekly'? This event started 22 minutes ago. Recording will capture from now onward.` Two buttons only on late-join: `Start Recording` / `Not this event`. Drop `Skip for now` because the late-join intent space is narrower.
 
 ## Menu Bar UI
 
 The menu bar item is the trust surface.
+
+Each state must be distinguishable by shape, not by color alone. Color-only differentiation fails for color-blind users, when Bartender/Ice stows the icon in compressed form, and at small Retina sizes. `Setup required` and `Failed/recoverable` must look different even though both are warnings.
 
 Required states:
 
@@ -113,17 +146,33 @@ Clicking the icon should always answer:
 Active recording popover:
 
 - Meeting title.
-- `Recording 12:34 - Mic + System Audio`.
+- Live audio meters: two thin bars labelled `MIC` and `SYS`. If either bar drops to zero for >5 seconds while recording, the menu-bar icon flips to a warning variant and the popover surfaces the channel that went silent. Silent capture failure is the worst failure mode and must not be invisible.
+- `Recording 12:34 - Mic + System Audio` text.
 - Primary action: `Stop Now`.
 - Secondary actions: `Open Folder`, `Settings`.
 - Show engine as low-priority metadata.
+
+Recents section (in the menu bar's main popover, not active-recording popover):
+
+- Last 5 saved sessions, sourced from `outputRoot/` by mtime.
+- Each item shows: title, duration, time-of-day or relative day (`12:34 today`, `Yesterday`, `Tue`).
+- Inline actions per item: `Open Folder`, `Open Transcript`. Failed sessions also show `Retry`.
+- 5 items only — past that is a history UI, which v1 does not ship.
+- No "delete audio" action here; bulk audio management lives in Settings → Storage.
+
+Saved success signal:
+
+- Transient `UNUserNotificationCenter` notification: title `Acme Weekly · transcript saved`, body `54 min · 47 MB · ElevenLabs`. Auto-dismisses per macOS default. Two action buttons: `Open Folder`, `Open Transcript`.
+- Menu-bar `Saved` glyph for ~3 seconds, then revert to `Idle`.
+- No persistent in-app toast. The Recents popover is the durable record.
 
 ## Permissions
 
 The app is not ready until all required setup is complete:
 
-- Calendar access.
 - Microphone access.
+- Calendar access.
+- `UNUserNotificationCenter` (Notifications) permission.
 - Screen/system audio capture permission.
 - ElevenLabs API key, unless local mode is selected.
 - Output folder write access.
@@ -139,6 +188,35 @@ Permission recovery:
 - Each missing permission gets one `Open System Settings` action.
 - Auto-recheck after returning from System Settings.
 - Menu bar state should show `Setup Required` until fixed.
+
+## Onboarding
+
+One screen per permission, in this order:
+
+1. Welcome.
+2. Microphone (most-explainable; immediately tied to product purpose).
+3. Calendar (`So Transcriber can label your recordings with meeting context.`).
+4. Notifications (`So you don't miss meeting prompts.`).
+5. Screen Recording (the showpiece — see below). Cohere model download starts as a background task here.
+6. ElevenLabs API Key (optional; if skipped, default engine flips to Local once Cohere finishes downloading).
+7. Choose Engine (side-by-side: Cloud ready ✓ if key entered, Local ready when download completes).
+8. Output Folder (default `~/Transcriber/`; pick alternative; warn if user picks a third-party File Provider cloud — see Output).
+9. Test Recording (waits until at least one engine is ready; runs immediately if cloud key was entered).
+10. Done.
+
+Each permission screen includes:
+
+- Headline (what's being asked).
+- One-sentence why, tied to user experience.
+- Visual showing the captured artifact, not the technology. Screen-Recording screen specifically: two-column layout showing what IS captured (audio waveform + speaker labels icon) and what is NOT (greyed-out video frame, screenshots, keystrokes, browser history) with explicit cross-out marks. Tagline: `macOS calls this 'Screen Recording' for technical reasons, but no video or screen content ever leaves your machine.`
+- `Continue` triggers the system permission prompt.
+- After dialog returns, screen updates in place to ✓ granted, ✗ denied (with `Open System Settings` + retry), or ⚠ deferred. Hold the result for ~1 second before advancing so the user sees the ✓ land.
+- `Skip` only on Calendar and Notifications (the optional ones; Mic and Screen Recording cannot be skipped because of fail-closed).
+
+Resumability:
+
+- If the user quits mid-onboarding, the next launch resumes at the first un-granted required permission, not the welcome screen.
+- The same per-permission screens are reused for the Setup-Required popover when permissions get revoked later — same UI, different entry point.
 
 ## Audio Capture
 
@@ -195,13 +273,21 @@ Detection:
 
 Stop prompt:
 
+- Delivery: a floating HUD (`NSPanel` with `.floatingWindowLevel`, non-activating). Visible across spaces and over fullscreen meeting apps. Does NOT steal focus from Zoom/Meet/Teams. The asymmetric-cost reasoning (start matters more than stop) justifies a less aggressive surface here than the start prompt's `NSAlert`.
 - Text: `Call seems over`.
-- Primary action: `Keep Recording`.
-- Secondary action: `Stop Now`.
-- Countdown: `Stopping in 10`.
-- If user does nothing, stop automatically.
-- If audio resumes during grace/countdown, cancel stop flow.
-- If user clicks `Keep Recording`, snooze stop prompts for 15 minutes.
+- Big numeric countdown is primary (`10`, `9`, `8`...). Progress ring secondary in the HUD.
+- Menu-bar icon flips to `Stopping soon` with the countdown digit (`●5`, `●4`, ...) so the user sees the same number even when the HUD is missed.
+- Primary action: `Keep Recording`. Secondary: `Stop Now`.
+- A `UNUserNotificationCenter` notification fires in parallel as a redundant channel for users who walked away from screen.
+- Optional audible cue (off by default, Settings toggle); recommended for users who often present.
+- The HUD's window must set `NSWindow.sharingType = .none`.
+- If user does nothing, stop automatically when countdown reaches 0.
+- If audio resumes during grace or countdown, cancel the stop flow silently and suppress re-prompt for at least 60 seconds.
+- If user clicks `Keep Recording`, escalating snooze: 3 / 9 / 27 minutes per session click count.
+
+False-stop guard:
+
+- Long silences during an active meeting (reading documents, silent screen-share review, breakout transition, waiting room) must NOT silently terminate the session. The HUD + countdown gives the user a 10-second window to catch a false positive. Audible cue is the recommended hedge for users who are routinely in long-silence calls.
 
 ## Transcription
 
@@ -220,11 +306,25 @@ Local mode:
 - Target local model: Cohere Transcribe.
 - Treat as a spike until macOS runtime is proven.
 - Local mode must not send audio or calendar context to any transcription provider.
-- No silent fallback from local to ElevenLabs.
+- No silent fallback in either direction (local → cloud or cloud → local). Engine switches are explicit user actions.
+
+Cohere lifecycle:
+
+- Background download starts during the Screen Recording onboarding step, regardless of which engine the user picks. This guarantees a keyless user has a working app and a keyed user has a fallback when cloud fails.
+- Atomic write (`.partial` → rename) and checksum verification on completion. While unverified, the engine pointer stays on the user's chosen primary; switching to Local is blocked until verification.
+- If the download fails or is cancelled, surface clearly with a Retry action. Do not silently fall back; that would violate the no-silent-fallback rule.
+- User can later trigger redownload from Settings → Engine.
+
+Engine failure:
+
+- A failed cloud transcription (timeout, 401, 429, 5xx after retries) writes a `status: failed` transcript per the Markdown Contract and surfaces a `Retry` affordance on the failed session in the menu-bar Recents popover.
+- The user may switch engines manually (Settings → Engine) and re-trigger transcription on the saved audio. Both engines must be ready for this to be a one-click move; that's the reason Cohere is staged during onboarding rather than on first need.
 
 ## Output
 
 Every session creates one unique folder and always ends with `transcript.md`.
+
+Default output root: `~/Transcriber/`. Avoid `~/Documents/Transcriber/` because Documents may be inside iCloud Desktop & Documents sync. `~/Movies/Transcriber/` is an acceptable alternative if the user prefers a media-themed location.
 
 Example:
 
@@ -252,51 +352,152 @@ Write files atomically:
 Folder permissions:
 
 - Owner-only where possible.
-- Warn if output folder is in iCloud Drive, Dropbox, Google Drive, or another synced location.
+
+Synced-folder detection:
+
+- Detect generically via `~/Library/CloudStorage/*` (catches Dropbox, Google Drive, OneDrive, Box, Proton Drive, Sync.com, Tresorit, Nextcloud, etc. through the macOS File Provider extension), the iCloud path `~/Library/Mobile Documents/com~apple~CloudDocs/`, and legacy paths (`~/Dropbox`, `~/OneDrive*`, `/Volumes/GoogleDrive`, `~/Adobe Creative Cloud Files`).
+- iCloud Drive: NO blocking warning (it's the macOS-default storage; warning iCloud users is friction for the modal case). Surface a passive note in Settings: `Saved sessions sync via iCloud Drive.`
+- Third-party File Provider clouds: warn once per synced root, not per literal path. Soft copy: `Heads up: audio will sync to {provider}. Recordings (~30 MB per hour) will upload to {provider}'s servers as they save. Sync conflicts can produce duplicate files.` Two buttons: `Use this folder anyway`, `Choose a different folder`.
+- Re-warn on root change (different provider account or different sync provider) but not on subdirectory change within a known root.
+- Detection runs at three deterministic moments only: folder selection, app launch, and recording start. No background scanning.
+
+## Storage
+
+Settings → Storage panel (referenced here, not a separate spec section):
+
+- Total Transcriber audio size on disk.
+- `Reveal in Finder` action.
+- `Delete all audio (keep transcripts)` action behind confirmation.
+- Pre-record disk-space warning if free disk is below ~1 GB at recording start.
+- Post-record audio size visible in the saved notification (`54 min · 47 MB · ElevenLabs`) so users see accumulation without surprise.
+- No background auto-delete in v1.
 
 ## Markdown Contract
 
 `transcript.md` must exist for every session.
 
-Frontmatter should include:
+### Frontmatter
 
-- `schema`
-- `status: complete | partial | failed`
+Required for every session (success or failure):
+
 - `title`
-- `date`
-- `scheduled_start`
+- `date` (ISO 8601 day, e.g. `2026-04-30`)
+- `scheduled_start` (ISO 8601 datetime with offset)
 - `scheduled_end`
 - `actual_start`
 - `actual_end`
-- `attendees`
+- `attendees` (list of display names)
 - `organizer`
 - `location`
 - `meeting_url_redacted`
 - `calendar_event_id`
-- `engine`
-- `audio`
+- `engine` (e.g. `elevenlabs`, `cohere`)
+- `audio` (relative path to the audio file)
 
-Body should include:
+Conditional:
 
-- Calendar description/notes, sanitized as plain text.
-- Raw timestamped transcript.
+- `status` is OMITTED when the session completed successfully. It is required when the session is `partial` or `failed`. A file with no `status` field is `complete` by convention. (Same logic as HTTP not requiring a `200 OK` body.)
+- `joined_late: true`, `elapsed_at_start_seconds`, `recording_started_at` are written only when the session was a late-join.
 
-Failure transcript:
+Failure-only fields (in addition to the above):
+
+- `error_code` (e.g. `elevenlabs_timeout`, `elevenlabs_401`, `network_offline`)
+- `error_message` (one-line, no stack traces, no PII)
+- `retry_count`
+- `audio_duration_seconds`
+- `audio_size_bytes`
+
+Schema versioning is YAGNI in v1 — no `schema` field. Add when v2 actually breaks compatibility; agents reading old unmarked files can assume v1.
+
+### Body
+
+Order: H1 title → metadata blockquote → attendees list → calendar notes (if any) → `## Transcript`. Calendar notes are NEVER intermixed with the transcript.
 
 ```markdown
 ---
-schema: transcriber/v1
-status: failed
+title: "Customer Call - Acme Weekly"
+date: 2026-04-30
+scheduled_start: 2026-04-30T14:30:00+02:00
+scheduled_end: 2026-04-30T15:00:00+02:00
+actual_start: 2026-04-30T14:30:12+02:00
+actual_end: 2026-04-30T15:25:03+02:00
+attendees:
+  - "Szymon Sypniewicz"
+  - "Jane Doe"
+organizer: "Szymon Sypniewicz"
+location: ""
+meeting_url_redacted: "[redacted zoom.us URL]"
+calendar_event_id: "abc123..."
+engine: "elevenlabs"
 audio: "audio.m4a"
-engine: "ElevenLabs"
+---
+
+# Customer Call - Acme Weekly
+
+> 14:30-15:25 (Apple Calendar) · Mic + System Audio · ElevenLabs Scribe v2
+
+## Attendees
+- Szymon Sypniewicz (organizer)
+- Jane Doe
+
+## Notes from calendar
+
+{sanitized calendar description, if any}
+
+## Transcript
+
+### [14:30:12] Speaker A
+Thanks for joining. Quick agenda today — we want to walk through the
+Q2 numbers, then talk about the renewal timeline.
+
+### [14:30:38] Speaker B
+Sounds good. Should we start with revenue or churn?
+
+### [14:30:42] Speaker A
+Revenue. Jane has the deck queued up.
+```
+
+Speaker rendering rules:
+
+- Each speaker block is an H3 heading: `### [HH:MM:SS] Speaker A`. H3 lets Obsidian outlines and markdown TOC tools render a navigable speaker timeline for free.
+- One timestamp per speaker block, not per utterance. Word-level timestamps from ElevenLabs (when present) are not rendered in the .md; if needed for downstream tooling they can live in a sibling JSON file.
+- Consecutive same-speaker utterances are grouped into one block. Otter's pattern.
+- Speaker labels stay as `Speaker A / B / C` in v1. No in-app rename. Users sed/find-replace in their editor of choice.
+
+### Failure transcript
+
+Same body shape, with `status: failed` frontmatter, error metadata, and a `## What you can do` section listing concrete recovery actions:
+
+```markdown
+---
+status: failed
+title: "Customer Call - Acme Weekly"
+date: 2026-04-30
+actual_start: 2026-04-30T14:30:12+02:00
+actual_end: 2026-04-30T15:25:03+02:00
+audio: "audio.m4a"
+audio_duration_seconds: 3291
+audio_size_bytes: 52840192
+engine: "elevenlabs"
+error_code: "elevenlabs_timeout"
+error_message: "Job did not complete within 90s"
+retry_count: 2
 ---
 
 # Transcription Failed
 
-Audio was saved as `audio.m4a`.
+Audio is saved at `audio.m4a` (54 MB, 54:51 duration).
 
-Error: ElevenLabs timeout.
+ElevenLabs returned a timeout after 2 retries. The recording itself is intact and complete.
+
+## What you can do
+
+- Retry from the Transcriber menu bar: click the icon, then `Retry` next to this session.
+- Or transcribe locally: Settings → Engine → Cohere (local), then retry.
+- Or transcribe outside Transcriber: open `audio.m4a` in any other tool.
 ```
+
+Retry must be one-click from the menu-bar Recents popover for any failed session within the last 24 hours, not just the most recent.
 
 ## Security And Privacy
 

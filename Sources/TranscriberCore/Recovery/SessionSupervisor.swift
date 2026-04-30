@@ -31,15 +31,23 @@ public actor SessionSupervisor {
         public var totalFailed: Int { markedFailed + partialAudioMarkedFailed }
     }
 
+    /// Codex rc1-final P1.2: needed for the launch-time raw-stream
+    /// sweep. nil here means "preserve everything" (treats every
+    /// terminal-complete session as if keepRawStreams=true was in
+    /// effect when it ran).
+    private var keepRawStreams: Bool = false
+
     public init() {}
 
     /// Walks `root`, recovers orphaned audio, and dispatches workers for any
     /// non-terminal session. Returns once all dispatched workers have finished.
     public func scanAndResume(
         under root: URL,
+        keepRawStreams: Bool = false,
         contextFactory: ContextFactory,
         workerFactory: WorkerFactory
     ) async -> ScanResult {
+        self.keepRawStreams = keepRawStreams
         var result = ScanResult()
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
@@ -65,6 +73,15 @@ public actor SessionSupervisor {
             // transcript body.
             if let existing, existing.status == .complete || existing.status == .failed {
                 result.skipped += 1
+                // Codex rc1-final P1.2: sweep raw streams that survived
+                // a prior cleanup attempt (immutable flag, transient I/O,
+                // half-written metadata gate). Only fires when the
+                // canonical audio.m4a is on disk AND the user opted-in
+                // to default-OFF retention. The session itself is
+                // terminal; we're just catching up on cleanup.
+                if existing.status == .complete && !keepRawStreams {
+                    sweepStrandedRawStreams(in: dir)
+                }
                 continue
             }
 
@@ -140,6 +157,29 @@ public actor SessionSupervisor {
             }
         }
         return result
+    }
+
+    /// Codex rc1-final P1.2: sweep raw streams (mic.m4a / system.m4a)
+    /// from a terminal-complete session that previously failed
+    /// cleanup (immutable flag, transient I/O, half-written metadata
+    /// gate). Same guards as the worker's per-session cleanup:
+    ///   - audio.m4a must exist (don't orphan the user's only copy)
+    ///   - keepRawStreams must be false (handled at the call site)
+    /// NEVER sweeps for failed-status sessions — those raws are the
+    /// user's only path to manual recovery.
+    private func sweepStrandedRawStreams(in dir: SessionDirectory) {
+        let canonicalAudio = dir.url.appendingPathComponent("audio.m4a")
+        guard FileManager.default.fileExists(atPath: canonicalAudio.path) else { return }
+        for url in [dir.micFinal, dir.systemFinal] {
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    Log.engine.info("Supervisor swept stranded raw stream: \(url.lastPathComponent, privacy: .public)")
+                } catch {
+                    Log.engine.warning("Supervisor sweep failed for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
     }
 
     /// Codex Phase ζ P0.2: when writing a failed transcript for a

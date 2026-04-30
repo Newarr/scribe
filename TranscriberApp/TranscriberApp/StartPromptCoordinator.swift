@@ -17,7 +17,26 @@ final class StartPromptCoordinator {
 
     private static let autoDismissModalResponse = NSApplication.ModalResponse(rawValue: 9_999)
 
+    /// Codex rc1-final P1.5: NSApp.stopModal targets WHATEVER modal is
+    /// at the top of the stack when the timer fires. If a second
+    /// detection candidate (or another modal — system permission
+    /// prompt, settings sheet) opens between t=0 and t=60s, the timer
+    /// would close the wrong modal. Gate concurrent prompts so only
+    /// one is ever in flight; subsequent candidates are coalesced into
+    /// .skipForNow without touching the modal stack.
+    private var promptInFlight = false
+
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
+        if promptInFlight {
+            Log.lifecycle.info("Start prompt already in flight; coalescing detection candidate \(app.bundleID, privacy: .public) to .skipForNow")
+            return .skipForNow
+        }
+        promptInFlight = true
+        defer { promptInFlight = false }
+        return await runPrompt(for: app, event: event)
+    }
+
+    private func runPrompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
         let alert = NSAlert()
         if let event {
             // Calendar-enriched prompt per spec line 167. Showing the event

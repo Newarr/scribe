@@ -22,11 +22,12 @@ final class CohereRustBackendTests: XCTestCase {
         }
     }
 
-    /// The placeholder body throws `.binaryUnavailable` for ANY input
-    /// until the spike lands. Pin this so a future regression where
-    /// the body silently consumes the request without raising is
-    /// caught.
-    func testPlaceholderThrowsEvenWithBinaryURL() async throws {
+    /// Codex rc1-final P2.2: with a non-nil binaryURL but no
+    /// implementation yet, the placeholder body throws
+    /// `.notImplemented` (not `.binaryUnavailable`) so the error
+    /// distinguishes "binary missing" from "subprocess integration
+    /// pending."
+    func testPlaceholderThrowsNotImplementedWhenBinaryProvided() async throws {
         let backend = CohereRustBackend(binaryURL: URL(fileURLWithPath: "/usr/local/bin/cohere_transcribe_rs"))
         let req = EngineRequest(
             audioURL: URL(fileURLWithPath: "/tmp/audio.m4a"),
@@ -36,9 +37,9 @@ final class CohereRustBackendTests: XCTestCase {
         )
         do {
             _ = try await backend.transcribe(req)
-            XCTFail("expected binaryUnavailable")
+            XCTFail("expected notImplemented")
         } catch let err as CohereRustBackend.BackendError {
-            XCTAssertEqual(err, .binaryUnavailable)
+            XCTAssertEqual(err, .notImplemented)
         }
     }
 

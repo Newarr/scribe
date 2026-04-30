@@ -119,6 +119,20 @@ public actor TranscriptionWorker {
         // and saved as audio.m4a") requires this.
         let canonicalAudioPath = await prepareCanonicalAudio()
 
+        // Codex rc1-final P0.2: with mixed.wav removed, the engine
+        // request now points at audio.m4a directly. If AudioFinalizer
+        // failed (canonicalAudioPath is empty), there's no upload
+        // artifact at the request URL — short-circuit to terminal
+        // failure rather than letting the engine retry against a
+        // missing file.
+        if canonicalAudioPath.isEmpty
+            && request.audioURL.lastPathComponent == "audio.m4a"
+            && !FileManager.default.fileExists(atPath: request.audioURL.path) {
+            let reason = "AudioFinalizer did not produce audio.m4a; cannot upload (raw streams remain on disk for manual recovery)"
+            writeFailed(reason: reason)
+            return .failed(reason: reason)
+        }
+
         // Phase ν: spec line 129. Run language detection (Whisper-tiny
         // pre-pass) before the engine call, but only if the caller
         // didn't already specify a language. The detector reads the mic
@@ -168,15 +182,20 @@ public actor TranscriptionWorker {
                     Log.engine.error("writeComplete failed: \(String(describing: error), privacy: .public)")
                     return .failed(reason: "transcript write failed: \(error)")
                 }
-                writeMetadata(status: .complete, context: completedContext, audioPath: canonicalAudioPath)
+                let metadataWritten = writeMetadata(status: .complete, context: completedContext, audioPath: canonicalAudioPath)
                 // Phase ι: spec line 102. Default-OFF keepRawStreams
                 // means raw streams are deleted ONLY after the terminal
-                // success state has been written to disk. We require
-                // BOTH (a) keepRawStreams == false AND (b) the canonical
-                // audio.m4a actually exists on disk — otherwise deleting
-                // the raws would orphan the user's only copy of the
-                // audio. NEVER deletes on pending / retrying / failed.
-                cleanupRawStreamsIfPolicyAllows()
+                // success state has been written to disk. We require:
+                //   (a) keepRawStreams == false
+                //   (b) the canonical audio.m4a actually exists on disk
+                //   (c) metadata.json was written successfully (codex
+                //       rc1-final P1.1: don't delete the raws when the
+                //       metadata is half-written, leaving JSON consumers
+                //       with stale state)
+                // NEVER deletes on pending / retrying / failed.
+                if metadataWritten {
+                    cleanupRawStreamsIfPolicyAllows()
+                }
                 return .complete
             } catch is CancellationError {
                 return .cancelled
@@ -362,7 +381,13 @@ public actor TranscriptionWorker {
         }
     }
 
-    private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String) {
+    /// Writes metadata.json mirroring the transcript frontmatter.
+    /// Returns true on success, false on write failure (logged).
+    /// Codex rc1-final P1.1: callers gate raw-stream cleanup on the
+    /// success of this write, so half-written metadata can't leave
+    /// JSON consumers with stale state alongside deleted raws.
+    @discardableResult
+    private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String) -> Bool {
         // Metadata.audio is a single string per spec line 251-255; pick the
         // first audio reference. With audio.m4a present, that's "audio.m4a".
         // With raw-streams fallback, that's mic.m4a (or whatever's first in
@@ -372,16 +397,26 @@ public actor TranscriptionWorker {
         let primaryAudio = audioPath.isEmpty
             ? (context.audioRelativePaths.first ?? "mic.m4a")
             : audioPath
+        // Codex rc1-final P1.3: aec_status is part of the metadata
+        // contract per spec line 117 / 119 even though the AEC backend
+        // ships as a placeholder in rc1. Always write `failed` so the
+        // metadata accurately reflects the runtime state — the worker
+        // would have taken the multichannel path if AEC had succeeded,
+        // and the spec mandates single-channel-diarized as the failure
+        // fallback.
         let metadata = MetadataJSONWriter.Metadata(
             status: status,
             context: context,
-            audio: primaryAudio
+            audio: primaryAudio,
+            aecStatus: .failed
         )
         let metadataURL = directory.url.appendingPathComponent("metadata.json")
         do {
             try MetadataJSONWriter.write(at: metadataURL, metadata: metadata)
+            return true
         } catch {
             Log.engine.error("metadata.json write failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 

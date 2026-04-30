@@ -19,12 +19,24 @@ public final class KeychainStore: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        let attributes: [String: Any] = [kSecValueData as String: data]
+        // Codex rc1-final P1.9: SECURITY.md documents the
+        // `kSecAttrAccessibleAfterFirstUnlock` policy. Set it
+        // explicitly so a fresh keychain entry isn't accidentally
+        // accessible only when the user is logged in (the default
+        // varies across macOS versions). After-first-unlock is the
+        // right balance: the entry is unavailable until the user has
+        // unlocked the device once after boot, then survives screen
+        // locks for the rest of the session.
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
 
         let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = baseQuery
             addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError.osStatus(addStatus) }
         } else if updateStatus != errSecSuccess {

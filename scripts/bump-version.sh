@@ -25,6 +25,14 @@ fi
 NEW_VERSION="$1"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Codex rc1-final P1.6: refuse to bump from a dirty worktree so a
+# half-finished bump can't be tagged + released against a phantom
+# state.
+if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
+    echo "Worktree has uncommitted changes. Commit or stash before bumping." >&2
+    exit 65
+fi
+
 BUILD_INFO="${PROJECT_DIR}/Sources/TranscriberCore/BuildInfo.swift"
 PROJECT_YML="${PROJECT_DIR}/TranscriberApp/project.yml"
 CHANGELOG="${PROJECT_DIR}/CHANGELOG.md"

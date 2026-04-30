@@ -32,6 +32,20 @@ ARCHIVE_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.xcarchive"
 EXPORT_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.export"
 DMG_PATH="${PROJECT_DIR}/build/Transcriber-${VERSION}.dmg"
 
+# Codex rc1-final P1.6: refuse to release from a dirty worktree or
+# one whose version surfaces don't match the requested version.
+echo "==> Checking release-state integrity"
+if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
+    echo "Worktree has uncommitted changes. Commit or stash before releasing." >&2
+    exit 65
+fi
+EXPECTED_VERSION="$(grep -E 'public static let version' "${PROJECT_DIR}/Sources/TranscriberCore/BuildInfo.swift" | sed -nE 's/.*"([^"]+)".*/\1/p')"
+if [[ "${EXPECTED_VERSION}" != "${VERSION}" ]]; then
+    echo "BuildInfo.version is ${EXPECTED_VERSION}, but you asked to release ${VERSION}." >&2
+    echo "Run scripts/bump-version.sh ${VERSION} first." >&2
+    exit 65
+fi
+
 # 1. Locate the codesigning identity.
 echo "==> Locating Developer ID identity in Keychain"
 if ! IDENTITY="$(security find-generic-password -a claude -s codesign-identity -w 2>/dev/null)"; then
@@ -69,19 +83,36 @@ swift test --quiet
 echo "==> Regenerating Xcode project via xcodegen"
 (cd "${PROJECT_DIR}/TranscriberApp" && xcodegen)
 
-# 5. Archive.
-echo "==> xcodebuild archive"
+# 5. Archive. Codex rc1-final P0.4: do NOT mask xcodebuild failures.
+#    Wipe stale build dir first so a prior failed archive doesn't leak
+#    into this run.
+echo "==> Cleaning build directory + xcodebuild archive"
+rm -rf "${ARCHIVE_PATH}" "${EXPORT_PATH}"
 mkdir -p "${PROJECT_DIR}/build"
-xcodebuild \
-    -project "${PROJECT_DIR}/TranscriberApp/TranscriberApp.xcodeproj" \
-    -scheme TranscriberApp \
-    -configuration Release \
-    -archivePath "${ARCHIVE_PATH}" \
-    archive \
-    CODE_SIGN_STYLE=Manual \
-    CODE_SIGN_IDENTITY="${IDENTITY}" \
-    DEVELOPMENT_TEAM=$(echo "${IDENTITY}" | sed -nE 's/.*\(([0-9A-Z]+)\).*/\1/p') \
-    | xcbeautify || true
+DEVELOPMENT_TEAM=$(echo "${IDENTITY}" | sed -nE 's/.*\(([0-9A-Z]+)\).*/\1/p')
+if command -v xcbeautify >/dev/null 2>&1; then
+    set -o pipefail
+    xcodebuild \
+        -project "${PROJECT_DIR}/TranscriberApp/TranscriberApp.xcodeproj" \
+        -scheme TranscriberApp \
+        -configuration Release \
+        -archivePath "${ARCHIVE_PATH}" \
+        archive \
+        CODE_SIGN_STYLE=Manual \
+        CODE_SIGN_IDENTITY="${IDENTITY}" \
+        DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM}" \
+        | xcbeautify
+else
+    xcodebuild \
+        -project "${PROJECT_DIR}/TranscriberApp/TranscriberApp.xcodeproj" \
+        -scheme TranscriberApp \
+        -configuration Release \
+        -archivePath "${ARCHIVE_PATH}" \
+        archive \
+        CODE_SIGN_STYLE=Manual \
+        CODE_SIGN_IDENTITY="${IDENTITY}" \
+        DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM}"
+fi
 
 # 6. Sign any bundled third-party binaries before exportArchive runs.
 #    Currently a no-op; future Cohere/WebRTC binaries plug in here.
@@ -117,7 +148,11 @@ xcodebuild \
 APP_PATH="${EXPORT_PATH}/TranscriberApp.app"
 [[ -d "${APP_PATH}" ]] || { echo "Export did not produce ${APP_PATH}"; exit 1; }
 
-# 8. Notarize.
+# 8. Codesign + entitlement verification.
+echo "==> codesign --verify"
+codesign --verify --verbose=4 --strict --deep "${APP_PATH}"
+
+# 9. Notarize.
 echo "==> Submitting to notarytool (this can take several minutes)"
 ZIP_PATH="${EXPORT_PATH}/TranscriberApp.zip"
 ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${ZIP_PATH}"
@@ -125,30 +160,46 @@ xcrun notarytool submit "${ZIP_PATH}" \
     --keychain-profile transcriber-notary \
     --wait
 
-# 9. Staple.
+# 10. Staple + verify the staple actually applied (codex rc1-final P0.4).
 xcrun stapler staple "${APP_PATH}"
+xcrun stapler validate "${APP_PATH}"
 
-# 10. Build the DMG (Phase τ wires this; for rc1 the .app is the deliverable).
+# 11. Build the DMG. Codex rc1-final P1.7: create-dmg's invocation
+#     order is `<output.dmg> <source-folder>`, NOT `<source.app>
+#     <output-folder>`. Stage the .app in a temp folder so the
+#     resulting DMG only contains it.
 echo "==> Wrapping in DMG"
 if command -v create-dmg >/dev/null 2>&1; then
-    create-dmg --overwrite --volname "Transcriber" "${APP_PATH}" "${PROJECT_DIR}/build/" || true
-    if [[ -f "${PROJECT_DIR}/build/Transcriber ${VERSION}.dmg" ]]; then
-        mv "${PROJECT_DIR}/build/Transcriber ${VERSION}.dmg" "${DMG_PATH}"
-    fi
+    STAGE_DIR="${PROJECT_DIR}/build/dmg-stage-${VERSION}"
+    rm -rf "${STAGE_DIR}"
+    mkdir -p "${STAGE_DIR}"
+    cp -R "${APP_PATH}" "${STAGE_DIR}/"
+    rm -f "${DMG_PATH}"
+    create-dmg \
+        --volname "Transcriber" \
+        --window-size 540 380 \
+        --icon-size 100 \
+        --app-drop-link 360 180 \
+        "${DMG_PATH}" \
+        "${STAGE_DIR}/"
+    rm -rf "${STAGE_DIR}"
+    [[ -f "${DMG_PATH}" ]] || { echo "DMG was not produced at ${DMG_PATH}"; exit 1; }
 else
-    echo "    (create-dmg not installed; skipping. Install via 'brew install create-dmg'.)"
+    echo "    WARN: create-dmg not installed; skipping DMG build."
+    echo "    Install via 'brew install create-dmg' if you need a DMG release artifact."
+    DMG_PATH=""
 fi
 
-# 11. Verify Gatekeeper acceptance.
+# 12. Verify Gatekeeper acceptance. Codex rc1-final P0.4: never mask.
 echo "==> spctl --assess"
-spctl --assess --verbose=4 --type execute "${APP_PATH}" || true
+spctl --assess --verbose=4 --type execute "${APP_PATH}"
 
 cat <<EOF
 
 ===
 Release ${VERSION} built.
   app:  ${APP_PATH}
-  dmg:  ${DMG_PATH}
+  dmg:  ${DMG_PATH:-(skipped)}
 
 Next steps:
   - Tag the release:  git tag -s v${VERSION} -m 'Release ${VERSION}'
