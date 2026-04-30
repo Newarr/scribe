@@ -520,6 +520,7 @@ Requirements:
 - Escape YAML and Markdown correctly.
 - Redact meeting URLs by default.
 - Attendees default to display names only; emails require explicit setting.
+- Confidential UI: every Transcriber-owned window sets `NSWindow.sharingType = .none` (start prompt modal, stop prompt HUD, active-recording popover, settings, setup-required popover, diagnostics, privacy acknowledgement sheet). Prompts and popovers must not appear in shared screen video, regardless of which display they render on.
 
 ## Diagnostics
 
