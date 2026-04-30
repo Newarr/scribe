@@ -9,7 +9,7 @@ public actor CaptureSession {
     private nonisolated let system: AudioCaptureSource
     private nonisolated let micWriter: AudioFileWriter
     private nonisolated let systemWriter: AudioFileWriter
-    private nonisolated let collector = PTSCollector()
+    private nonisolated let collector: PTSCollector
 
     public init(
         directory: SessionDirectory,
@@ -23,6 +23,9 @@ public actor CaptureSession {
         self.system = system
         self.micWriter = try AudioFileWriter(url: directory.micPartial, sampleRate: sampleRate, channelCount: channelCount)
         self.systemWriter = try AudioFileWriter(url: directory.systemPartial, sampleRate: sampleRate, channelCount: channelCount)
+        // Per-buffer PTS log feeds streaming finalize (Phase ε) and AEC
+        // (Phase ξ). Lives next to the m4a partials inside the session dir.
+        self.collector = PTSCollector(streamingLogURL: directory.ptsStreamingLog)
     }
 
     public func start() async throws {
@@ -90,6 +93,9 @@ public actor CaptureSession {
         await system.stop()
         try await micWriter.finalize()
         try await systemWriter.finalize()
+        // Flush the per-buffer JSONL log before the snapshot sidecar so
+        // a downstream reader sees both finalized.
+        collector.flushLog()
         try collector.writeSidecar(to: directory.ptsSidecar)
         // Atomic rename .partial -> .m4a MUST happen before the transcript stub,
         // so the stub never references files that don't exist yet on disk.

@@ -54,4 +54,64 @@ final class PTSCollectorTests: XCTestCase {
         XCTAssertEqual(decoded.mic.frameCount, 100)
         XCTAssertEqual(decoded.system.frameCount, 200)
     }
+
+    // MARK: - per-buffer streaming log (Phase β)
+
+    func testStreamingLogPersistsEveryBuffer() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        let collector = PTSCollector(streamingLogURL: log)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.01, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+        collector.observe(.system, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.005, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+
+        let entries = try collector.loggedEntries()
+        XCTAssertEqual(entries.count, 3, "every observe() must persist exactly one log line")
+
+        // Order is ingest-order; mic+mic+system above.
+        XCTAssertEqual(entries[0].stream, "mic")
+        XCTAssertEqual(entries[0].sampleCount, 480)
+        XCTAssertEqual(entries[0].ptsSeconds, 0.0, accuracy: 1e-6)
+        XCTAssertEqual(entries[1].ptsSeconds, 0.01, accuracy: 1e-6)
+        XCTAssertEqual(entries[2].stream, "system")
+        XCTAssertEqual(entries[2].ptsSeconds, 0.005, accuracy: 1e-6)
+    }
+
+    func testGapInPTSShowsUpInLog() throws {
+        // The streaming finalize pipeline (Phase ε) detects gaps by walking
+        // the JSONL — pause + resume capture must leave a discoverable gap.
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        let collector = PTSCollector(streamingLogURL: log)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+        // 200ms gap.
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.21, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+
+        let entries = try collector.loggedEntries()
+        XCTAssertEqual(entries.count, 2)
+        let gapSeconds = entries[1].ptsSeconds - (entries[0].ptsSeconds + Double(entries[0].sampleCount) / Double(entries[0].sampleRate))
+        XCTAssertEqual(gapSeconds, 0.2, accuracy: 0.001,
+                       "200ms gap must be reconstructible from per-buffer entries; AEC + streaming mix both depend on this")
+    }
+
+    func testNilLogURLDisablesStreamingLog() throws {
+        let collector = PTSCollector(streamingLogURL: nil)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 100
+        ))
+        XCTAssertEqual(try collector.loggedEntries(), [],
+                       "tests that don't care about the JSONL must opt out cleanly")
+    }
 }

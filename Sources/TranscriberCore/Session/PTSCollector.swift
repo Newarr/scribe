@@ -1,6 +1,25 @@
 import Foundation
 import CoreMedia
 
+/// Per-buffer PTS log entry. The streaming finalize pipeline (Phase ε) and
+/// the AEC pre-pass (Phase ξ) both need per-buffer timing to detect gaps and
+/// align mic / system streams to a coherent timeline. AEC3 specifically can't
+/// recover from dropped buffers without per-chunk PTS, which is why this
+/// landed in Phase β rather than later (codex pass 2 P1 #17).
+public struct PTSLogEntry: Codable, Equatable, Sendable {
+    public let stream: String
+    public let ptsSeconds: Double
+    public let sampleCount: Int
+    public let sampleRate: Int
+
+    public init(stream: String, ptsSeconds: Double, sampleCount: Int, sampleRate: Int) {
+        self.stream = stream
+        self.ptsSeconds = ptsSeconds
+        self.sampleCount = sampleCount
+        self.sampleRate = sampleRate
+    }
+}
+
 public final class PTSCollector: @unchecked Sendable {
     public enum StreamID: String, Sendable { case mic, system }
 
@@ -14,7 +33,21 @@ public final class PTSCollector: @unchecked Sendable {
     private var micFrames: Int64 = 0
     private var sysFrames: Int64 = 0
 
-    public init() {}
+    /// Optional per-buffer log URL. When set, every `observe()` appends one
+    /// JSONL line. nil disables the log entirely (used by tests that only
+    /// care about the snapshot summary).
+    private let streamingLogURL: URL?
+    private let logQueue = DispatchQueue(label: "pts.collector.log", qos: .utility)
+    private var logHandle: FileHandle?
+    private var logOpenAttempted = false
+
+    public init(streamingLogURL: URL? = nil) {
+        self.streamingLogURL = streamingLogURL
+    }
+
+    deinit {
+        try? logHandle?.close()
+    }
 
     public func observe(_ stream: StreamID, buffer: CMSampleBuffer) {
         guard let formatDesc = CMSampleBufferGetFormatDescription(buffer),
@@ -27,7 +60,7 @@ public final class PTSCollector: @unchecked Sendable {
         let rate = Int(asbd.mSampleRate)
         let channels = Int(asbd.mChannelsPerFrame)
 
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         switch stream {
         case .mic:
             if micFirstPTS == nil { micFirstPTS = pts; micRate = rate; micChannels = channels }
@@ -36,6 +69,14 @@ public final class PTSCollector: @unchecked Sendable {
             if sysFirstPTS == nil { sysFirstPTS = pts; sysRate = rate; sysChannels = channels }
             sysFrames += frames
         }
+        lock.unlock()
+
+        appendLogEntry(PTSLogEntry(
+            stream: stream.rawValue,
+            ptsSeconds: pts,
+            sampleCount: Int(frames),
+            sampleRate: rate
+        ))
     }
 
     public func snapshot() -> PTSMetadata {
@@ -61,5 +102,67 @@ public final class PTSCollector: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot())
         try data.write(to: url, options: .atomic)
+    }
+
+    /// Blocks until every queued log entry has hit disk. Callers in the
+    /// finalize path call this so a downstream reader sees a complete log.
+    public func flushLog() {
+        logQueue.sync {
+            try? self.logHandle?.synchronize()
+        }
+    }
+
+    /// Returns the entries written so far. Walks the on-disk log to keep the
+    /// API independent of whatever in-memory buffering grows later.
+    public func loggedEntries() throws -> [PTSLogEntry] {
+        guard let url = streamingLogURL else { return [] }
+        flushLog()
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        let decoder = JSONDecoder()
+        return try text.split(separator: "\n", omittingEmptySubsequences: true).map { line in
+            try decoder.decode(PTSLogEntry.self, from: Data(line.utf8))
+        }
+    }
+
+    // MARK: - private
+
+    private func appendLogEntry(_ entry: PTSLogEntry) {
+        guard let url = streamingLogURL else { return }
+        // Encode on the caller (cheap, no I/O), dispatch the write so SCK
+        // output queues don't block on disk. Errors log + drop — losing a
+        // log line is preferable to deadlocking capture.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(entry) else { return }
+        var line = data
+        line.append(0x0A) // '\n'
+
+        logQueue.async { [self] in
+            self.openLogIfNeeded(at: url)
+            guard let handle = self.logHandle else { return }
+            do {
+                try handle.write(contentsOf: line)
+            } catch {
+                Log.capture.error("PTS log write failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    private func openLogIfNeeded(at url: URL) {
+        if logOpenAttempted { return }
+        logOpenAttempted = true
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) == false {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            logHandle = handle
+        } catch {
+            Log.capture.error("PTS log open failed: \(String(describing: error), privacy: .public)")
+        }
     }
 }

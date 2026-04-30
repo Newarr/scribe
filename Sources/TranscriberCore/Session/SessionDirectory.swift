@@ -50,6 +50,15 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("pts.json")
     }
 
+    /// Per-buffer PTS log written incrementally by `PTSCollector` during
+    /// capture. Streaming finalize (Phase ε) and AEC (Phase ξ) consume this
+    /// to align mic / system streams and insert silence for gaps. Distinct
+    /// from `ptsSidecar`, which is a one-shot summary written at finalize
+    /// time and used by metadata.json consumers.
+    public var ptsStreamingLog: URL {
+        url.appendingPathComponent("pts.jsonl")
+    }
+
     public var transcript: URL {
         url.appendingPathComponent("transcript.md")
     }
