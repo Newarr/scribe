@@ -722,12 +722,17 @@ These IDs are kept as a stable trail; the resolution lives in the relevant secti
 - `q_elevenlabs_model` — resolved: `scribe_v2` pinned in `EngineRequest` default and backend response.
 - `q_end_audio_threshold` — resolved: 0.01 RMS (~ -40 dBFS) per `EndGuard.Config.silenceThreshold` default.
 - `q_attendee_email_retention` — resolved: emails ARE stored locally as structured `{name, email}` objects in `transcript.md` frontmatter and `metadata.json`. Local artifacts are designed for agent consumption (CRM linkage, dedupe, follow-up routing); display names alone are ambiguous. The third-party-leak boundary is enforced separately: `KeytermSanitizer` scrubs emails from keyterm payloads before any upload to ElevenLabs, and `decision_keyterms_default` prevents full calendar context from being sent.
+- `q_calendar_url_retention` — resolved: meeting URLs are NOT stored. They have no value to a downstream agent (the meeting is over by the time the artifact is read) and storing them adds leak surface for nothing. The calendar-event mapping drops URLs before they reach `TranscriptContext`, frontmatter, the markdown body, or any keyterm payload.
+- `q_calendar_description_markdown` — resolved: always include sanitized calendar notes as `## Notes from calendar` when the event has a description. Sanitization drops URLs and scrubs digit runs / secret labels per `KeytermSanitizer` rules. The section is omitted entirely when the event has no description.
+- `q_full_context_setting` — resolved: NOT shipped in v1. The keyterm-only path with `KeytermSanitizer` is the canonical boundary; URLs aren't useful as recognition hints anyway. An opt-in "full context to cloud" setting can be revisited later if a concrete use case emerges.
+- `q_context_keyterm_limit` — resolved: 16 keyterms per request, deduped, in insertion order (`CalendarEvent.swift:73`).
+- `q_local_model_v1_scope` — resolved: Cohere is staged in onboarding as a background download regardless of which engine the user picks. Engine itself remains a spike per `decision_local_model_spike`, but availability of the download is firm.
 
 ---
 
 ## Known Code-vs-Spec Drift
 
-These items are unresolved drift between SPEC.md and the rc1 implementation. They are NOT spec changes — the spec captures the intended behavior and the code needs to align.
+These items are unresolved drift between SPEC.md and the rc1 implementation. They are NOT spec changes — the spec captures the intended behavior and the code needs to align. Recommended landing order at the bottom.
 
 - **Output root drift.** Spec says default is `~/Transcriber/`. Code (`AppDelegate.defaultSettingsFallback`) defaults to `~/Documents/Transcriber/`. The spec's choice is deliberate (avoids iCloud Desktop & Documents sync collisions). **Code action:** change default to `~/Transcriber/`.
 - **`Keep Recording` snooze drift.** Spec says 3 / 9 / 27 escalating per session click count. Code (`EndGuard.Config.snoozeDuration`) ships a flat 15 min. **Code action:** add a per-session click counter and switch to 3/9/27 logic.

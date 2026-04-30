@@ -1,5 +1,129 @@
 # Changelog
 
+## 1.0.0-rc4 - 2026-04-30
+
+Closes 7 P0 / 19 P1 / 9 P2 findings from the codex PM/UX review.
+Bounded fixes only; UX-5 first-run wizard, UX-18 full menu-bar
+trust surface, UX-24 end-guard HUD, UX-26 escalating snooze are
+deferred to v1.1 product work.
+
+### Confidential UI
+
+- Every Transcriber-owned window/popover/alert sets
+  `NSWindow.sharingType = .none` per spec § Design Principles.
+  Privacy modal, Settings, Diagnostics, Setup Required popover,
+  detection prompt, quit confirmation, and crash-recovery toast
+  all opt out of screen-share captures. (UX-4 P0)
+
+### First-launch + first-record flow
+
+- Calendar permission is requested LAZILY on first record attempt,
+  not at app launch. Pre-launch calendar prompt felt arbitrary
+  ("why does this need my calendar?"). (UX-1 P0)
+- Privacy modal CTA: "I understand" → "Start using Transcriber".
+  Added "Read full privacy details" link to `docs/PRIVACY.md`. Body
+  rewritten for honesty: keyterms-only rule made explicit; ElevenLabs
+  deletion-after-processing surfaced; misleading "audio leaves your
+  Mac in cloud mode" framing replaced with concrete statements about
+  what's sent and what isn't. (UX-2 + UX-3 P1)
+
+### Settings
+
+- **Local mode hidden until shipped**. Engine section is now a
+  single "ElevenLabs (Cloud)" panel + a "Local transcription —
+  coming later" disabled note. SettingsFormModel pins engineMode
+  to .cloud on Save. (UX-10 + UX-11 P0)
+- **Default output folder**: `~/Documents/Transcriber/` →
+  `~/Transcriber/`. macOS 13+ syncs Documents to iCloud Drive by
+  default; recording into a synced folder produces conflicts.
+  Existing users who chose a folder are unaffected. (UX-14 P0)
+- **API key copy**: "Stored in your macOS Keychain (service: ...)" →
+  "Saved securely in Keychain." (UX-12 P1)
+- **Output folder**: differentiated copy for iCloud Drive (passive
+  "Saved sessions sync with iCloud Drive.") vs third-party providers
+  (warning about sync conflicts). (UX-15 P1)
+- **Raw streams toggle**: "Keep raw mic / system streams after mix"
+  → "Keep separate mic and call audio files" + plain-language
+  helper. (UX-16 P1)
+- **AEC toggle hidden**. The toggle exposed a debug knob for a
+  feature that ships as a placeholder. Setting still threads through
+  to the worker; the toggle re-emerges when real AEC lands. (UX-17 P1)
+- **Privacy section**: "Read full privacy details" link to PRIVACY.md.
+  Acknowledgement remains read-only (one-way per spec line 348). (UX-32 P2)
+- **Reveal in Finder** button next to the output folder path.
+
+### Detection prompt
+
+- Two clear primary buttons: "Start recording" + "Not now"; the
+  30-min suppress is the tertiary "Stop detecting <App> for 30 min"
+  for power users. (UX-21 P1)
+- Title speaks of the meeting, not the app: "Record 'Acme Weekly'?"
+  not "Start recording Zoom?". When no event matches: "Record this
+  Zoom call?" with body explaining no calendar match. (UX-22 P1)
+
+### Quit + crash recovery
+
+- **Cmd-Q during recording confirms** with "Stop recording before
+  quitting?" Primary "Stop and quit" finalizes audio + transcript
+  before exit; "Keep recording" cancels the quit. (UX-20 P0)
+- **Crash recovery toast**: when supervisor recovery resumed/rescued
+  ≥1 sessions, AppDelegate shows a non-blocking alert: "Recovered N
+  recording(s) from before the last quit". Action button opens the
+  Transcriber folder. (UX-31 P1)
+
+### Failed transcript body
+
+- Old: "# Transcription Failed / Audio was captured and saved as ... /
+  Error: <Swift error>"
+- New: human body with "What you can do" section listing concrete
+  recovery actions (delete + relaunch to retry, use audio.m4a in
+  another tool, export diagnostics). Engine error string moved to
+  the bottom in a backtick block — present for support copy, not
+  the headline. (UX-29 + UX-30 P0)
+
+### Diagnostics labels
+
+- "Engine readiness" → "Transcription"
+- "Cloud API key" → "ElevenLabs key"
+- "Live RMS levels" → "Audio levels"
+- "Mic" / "System" → "Microphone" / "Call audio"
+- Settings section shows "Folder fingerprint (for export)" with the
+  hash prefix so the user knows the hash is for shared diagnostics,
+  not their actual folder. Engine row shows "ElevenLabs (Cloud)" not
+  the lowercase enum. (UX-27 + UX-28 P1/P2)
+
+### Menu bar
+
+- Idle/finalized/failed: "Record now" (sentence case, was "Record Now")
+- Recording: "Stop and save" (was "Stop") — "Stop" alone didn't say
+  whether it saved. (UX-19 P1)
+- Stopping: "Saving recording…" (was "Stopping…")
+- Setup item: "Check setup…" by default (neutral); flips to "Setup
+  Required…" only when AppDelegate observes a preflight deny. (UX-7 P1)
+
+### Docs
+
+- **README rewritten** as a product landing page (was developer
+  build notes). Removed misleading "Cohere local" claim from the
+  lede. (UX-33 P1)
+- **TESTING.md** Keychain-wipe step aligned with cask reality:
+  `brew uninstall --cask transcriber --zap` removes filesystem
+  paths only; Keychain wipe is manual. (UX-34 P1)
+- **`docs/STYLE.md`** is the new microcopy guide: voice rules,
+  canonical terms, copy rules, status states. Single source of
+  truth for any user-facing string. (UX-35 P1)
+
+### Deferred to v1.1 product work
+
+- UX-5: First-run setup wizard
+- UX-18: Full menu-bar trust surface (elapsed time, MIC/SYS health,
+  recents, retry)
+- UX-24: End-guard HUD wiring (the EndGuard state machine is shipped
+  in core; the floating HUD is not)
+- UX-26: Escalating snooze (3/9/27 min) — currently fixed at 15 min
+
+
+
 ## 1.0.0-rc3 - 2026-04-30
 
 Closes every entry in `docs/KNOWN_ISSUES.md` from the rc2 four-parallel
