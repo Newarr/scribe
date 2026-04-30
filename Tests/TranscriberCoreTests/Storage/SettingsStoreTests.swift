@@ -41,6 +41,45 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.engineMode, .cloud)
         XCTAssertEqual(snap.keepRawStreams, false, "spec line 102 default OFF")
         XCTAssertEqual(snap.aecEnabled, true, "D2 default ON")
+        XCTAssertEqual(snap.privacyAcknowledged, false, "spec line 348: first launch must re-prompt")
+    }
+
+    func testPrivacyAckIsRoundTripped() async throws {
+        let suite = try makeSuite()
+        let root = tempDir()
+        let store = SettingsStore(
+            defaults: suite.box,
+            fallback: .init(outputRoot: root)
+        )
+        let preSnap = await store.snapshot()
+        XCTAssertEqual(preSnap.privacyAcknowledged, false)
+
+        await store.setPrivacyAcknowledged(true)
+        let postSnap = await store.snapshot()
+        XCTAssertEqual(postSnap.privacyAcknowledged, true)
+    }
+
+    func testOlderBlobMissingPrivacyAckRollsForwardAsFalse() async throws {
+        // Spec line 348: a downgrade or pre-η blob without privacyAcknowledged
+        // should re-prompt rather than silently treating the user as having
+        // ack'd. Plant a blob with the legacy fields only and assert the
+        // missing field decodes as false.
+        let suite = try makeSuite()
+        let root = tempDir()
+        let legacyJSON = """
+        {
+            "outputRoot": "\(root.absoluteString)",
+            "engineMode": "cloud",
+            "keepRawStreams": false,
+            "aecEnabled": true
+        }
+        """
+        suite.box.defaults.set(Data(legacyJSON.utf8), forKey: SettingsStore.Key.storage.rawValue)
+
+        let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: root))
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap.privacyAcknowledged, false, "missing privacy ack key must decode as not-acked")
+        XCTAssertEqual(snap.engineMode, .cloud, "non-missing fields must still decode normally")
     }
 
     func testWritesAreRoundTripped() async throws {
@@ -78,7 +117,8 @@ final class SettingsStoreTests: XCTestCase {
             outputRoot: altRoot,
             engineMode: .local,
             keepRawStreams: true,
-            aecEnabled: false
+            aecEnabled: false,
+            privacyAcknowledged: true
         )
         await store.commit(target)
         let snap = await store.snapshot()
@@ -154,13 +194,15 @@ final class SettingsStoreTests: XCTestCase {
                 outputRoot: root,
                 engineMode: .local,
                 keepRawStreams: true,
-                aecEnabled: false
+                aecEnabled: false,
+                privacyAcknowledged: true
             )
         )
         let snap = await store.snapshot()
         XCTAssertEqual(snap.engineMode, .local)
         XCTAssertEqual(snap.keepRawStreams, true)
         XCTAssertEqual(snap.aecEnabled, false)
+        XCTAssertEqual(snap.privacyAcknowledged, true)
     }
 
     func testSyncReaderObservesStoreCommit() async throws {
@@ -178,7 +220,8 @@ final class SettingsStoreTests: XCTestCase {
             outputRoot: altRoot,
             engineMode: .local,
             keepRawStreams: true,
-            aecEnabled: false
+            aecEnabled: false,
+            privacyAcknowledged: true
         )
         await store.commit(target)
 

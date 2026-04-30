@@ -33,6 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private static let keychainService = "com.szymonsypniewicz.transcriber"
     private static let keychainAccount = "elevenlabs-api-key"
 
+    // Phase η: SwiftUI surfaces for first-run privacy ack, Settings,
+    // and the Setup Required popover. Initialized in
+    // applicationDidFinishLaunching (which runs on @MainActor); the
+    // controllers themselves are @MainActor-isolated.
+    private var privacyController: PrivacyAcknowledgementController?
+    private var settingsWindowController: SettingsWindowController?
+    private var setupPopover: PermissionRecoveryPopoverController?
+
     /// Phase ζ: SettingsStore wires runtime contracts (output folder,
     /// engine selection, raw-stream retention, AEC enable) instead of
     /// hardcoding them. The actor handles writes (Phase η Settings UI);
@@ -159,6 +167,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         self.processWatcher = watcher
         watcher.start()
         Log.lifecycle.info("Detection layer started (allowlist size=\(MeetingApps.allowlist.count, privacy: .public), dwellTime=30s)")
+
+        // Phase η controllers (MainActor-isolated; safe to construct here
+        // because applicationDidFinishLaunching runs on the main thread).
+        self.settingsWindowController = SettingsWindowController(
+            store: settingsStore,
+            fallback: Self.defaultSettingsFallback(),
+            keychainService: Self.keychainService,
+            keychainAccount: Self.keychainAccount
+        )
+        self.setupPopover = PermissionRecoveryPopoverController()
+
+        presentPrivacyAcknowledgementIfNeeded()
+    }
+
+    /// Spec line 348: first-launch privacy modal. Shown only when
+    /// `privacyAcknowledged == false`; recording stays gated until the
+    /// user dismisses the sheet.
+    @MainActor
+    private func presentPrivacyAcknowledgementIfNeeded() {
+        guard !settings.privacyAcknowledged else { return }
+        let controller = PrivacyAcknowledgementController { [weak self] in
+            guard let self else { return }
+            Task {
+                await self.settingsStore.setPrivacyAcknowledged(true)
+                Log.lifecycle.info("Privacy acknowledgement recorded")
+            }
+            self.privacyController = nil
+        }
+        self.privacyController = controller
+        controller.present()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -222,6 +260,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         case .record: await startRecording()
         case .stop:   await stopRecording()
         case .quit:   NSApp.terminate(nil)
+        case .openSettings:
+            settingsWindowController?.show()
+        case .openSetupRequired:
+            await presentSetupRequiredPopover()
+        }
+    }
+
+    /// User-triggered Setup Required popover. Re-runs the audit so the
+    /// UI reflects whichever permissions have been fixed since the last
+    /// record attempt.
+    @MainActor
+    private func presentSetupRequiredPopover() async {
+        let snap = settings
+        let report = await preflightDoctor.audit(outputRoot: snap.outputRoot, engineMode: snap.engineMode)
+        let steps = PermissionRemediation.steps(from: report)
+        guard let anchor = statusItem?.button, let popover = setupPopover else { return }
+        popover.show(steps: steps, anchor: anchor) { [weak self] in
+            Task { await self?.presentSetupRequiredPopover() }
         }
     }
 
@@ -296,6 +352,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             Log.lifecycle.info("startRecording skipped: already \(self.status.rawValue, privacy: .public)")
             return
         }
+
+        // Phase η spec line 348: recording is gated on privacy ack.
+        // If the sheet was dismissed via cmd-q without acknowledging,
+        // re-present it instead of starting the engine.
+        guard settings.privacyAcknowledged else {
+            Log.lifecycle.info("startRecording blocked: privacy acknowledgement pending")
+            presentPrivacyAcknowledgementIfNeeded()
+            return
+        }
+
         self.status = .starting
         menu?.rebuild(for: status)
 
@@ -306,10 +372,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             _ = await permissions.requestMicrophone()
         }
 
-        // Phase α preflight gate. Any blocker → abort with logged reasons.
-        // Phase η will hang the Setup Required popover off this denial; for
-        // now we log + return to idle so the user can fix the underlying
-        // permission and try again.
+        // Phase α preflight gate. Any blocker → abort and surface the
+        // Setup Required popover (Phase η) so the user has a 1-click
+        // fix path for each unmet permission.
         let snapshot = settings
         let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
         switch RecordRequestGate().verdict(from: report) {
@@ -317,6 +382,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             Log.lifecycle.error("startRecording denied by preflight: \(String(describing: reasons), privacy: .public)")
             self.status = .idle
             menu?.rebuild(for: status)
+            let steps = PermissionRemediation.steps(from: report)
+            if let anchor = statusItem?.button, let popover = setupPopover {
+                popover.show(steps: steps, anchor: anchor) { [weak self] in
+                    Task { await self?.presentSetupRequiredPopover() }
+                }
+            }
             return
         case .allowWithWarnings(let reasons):
             Log.lifecycle.info("startRecording proceeding with warnings: \(String(describing: reasons), privacy: .public)")

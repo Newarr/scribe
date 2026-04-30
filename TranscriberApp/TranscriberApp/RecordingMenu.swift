@@ -4,7 +4,7 @@ import TranscriberCore
 @MainActor
 final class RecordingMenu {
     enum Action {
-        case record, stop, quit
+        case record, stop, quit, openSettings, openSetupRequired
     }
 
     private(set) var menu = NSMenu()
@@ -36,6 +36,16 @@ final class RecordingMenu {
         }
 
         menu.addItem(.separator())
+        // Phase η: surfaces for the Settings window and the Setup Required
+        // popover (which the user can open even outside a record-attempt
+        // flow, e.g. after fixing a permission and wanting to recheck).
+        let settings = NSMenuItem(title: "Settings…", action: #selector(MenuTarget.openSettings(_:)), keyEquivalent: ",")
+        settings.target = MenuTarget.shared
+        menu.addItem(settings)
+        let setup = NSMenuItem(title: "Setup Required…", action: #selector(MenuTarget.openSetupRequired(_:)), keyEquivalent: "")
+        setup.target = MenuTarget.shared
+        menu.addItem(setup)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit", action: #selector(MenuTarget.quit(_:)), keyEquivalent: "q")
         quit.target = MenuTarget.shared
         menu.addItem(quit)
@@ -52,4 +62,6 @@ final class MenuTarget: NSObject {
     @objc func record(_ sender: Any?) { delegate?.dispatch(.record) }
     @objc func stop(_ sender: Any?)   { delegate?.dispatch(.stop) }
     @objc func quit(_ sender: Any?)   { delegate?.dispatch(.quit) }
+    @objc func openSettings(_ sender: Any?) { delegate?.dispatch(.openSettings) }
+    @objc func openSetupRequired(_ sender: Any?) { delegate?.dispatch(.openSetupRequired) }
 }

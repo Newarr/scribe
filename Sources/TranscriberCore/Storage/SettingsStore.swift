@@ -30,17 +30,39 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     /// this false bypasses the AEC pre-pass and forces single-channel
     /// mode unconditionally (debugging knob).
     public var aecEnabled: Bool
+    /// Spec line 348: the user must explicitly acknowledge what data
+    /// leaves the device (cloud engine only) before the first recording.
+    /// One-way flag — once true, never written back to false by the app.
+    public var privacyAcknowledged: Bool
 
     public init(
         outputRoot: URL,
         engineMode: EngineMode,
         keepRawStreams: Bool,
-        aecEnabled: Bool
+        aecEnabled: Bool,
+        privacyAcknowledged: Bool
     ) {
         self.outputRoot = outputRoot
         self.engineMode = engineMode
         self.keepRawStreams = keepRawStreams
         self.aecEnabled = aecEnabled
+        self.privacyAcknowledged = privacyAcknowledged
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged
+    }
+
+    /// Decoder permits older blob formats that omit `privacyAcknowledged`
+    /// — those rolled forward as `false` (re-prompt). Avoids a hard
+    /// fallback to ALL defaults just because one new field is missing.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.outputRoot = try c.decode(URL.self, forKey: .outputRoot)
+        self.engineMode = try c.decode(EngineMode.self, forKey: .engineMode)
+        self.keepRawStreams = try c.decode(Bool.self, forKey: .keepRawStreams)
+        self.aecEnabled = try c.decode(Bool.self, forKey: .aecEnabled)
+        self.privacyAcknowledged = try c.decodeIfPresent(Bool.self, forKey: .privacyAcknowledged) ?? false
     }
 }
 
@@ -75,17 +97,20 @@ public actor SettingsStore {
         public var engineMode: EngineMode
         public var keepRawStreams: Bool
         public var aecEnabled: Bool
+        public var privacyAcknowledged: Bool
 
         public init(
             outputRoot: URL,
             engineMode: EngineMode = .cloud,
             keepRawStreams: Bool = false,  // spec line 102
-            aecEnabled: Bool = true         // D2
+            aecEnabled: Bool = true,        // D2
+            privacyAcknowledged: Bool = false  // spec line 348
         ) {
             self.outputRoot = outputRoot
             self.engineMode = engineMode
             self.keepRawStreams = keepRawStreams
             self.aecEnabled = aecEnabled
+            self.privacyAcknowledged = privacyAcknowledged
         }
     }
 
@@ -133,6 +158,12 @@ public actor SettingsStore {
         commit(current)
     }
 
+    public func setPrivacyAcknowledged(_ acked: Bool) {
+        var current = snapshot()
+        current.privacyAcknowledged = acked
+        commit(current)
+    }
+
     /// Atomic multi-key commit. Phase η Settings UI calls this after
     /// the user clicks Save so the resulting on-disk state never
     /// contains a partial mix of old + new fields.
@@ -151,7 +182,8 @@ private extension SettingsStore.Defaults {
             outputRoot: outputRoot,
             engineMode: engineMode,
             keepRawStreams: keepRawStreams,
-            aecEnabled: aecEnabled
+            aecEnabled: aecEnabled,
+            privacyAcknowledged: privacyAcknowledged
         )
     }
 }
@@ -177,7 +209,8 @@ public enum SettingsSnapshotReader {
             outputRoot: fallback.outputRoot,
             engineMode: fallback.engineMode,
             keepRawStreams: fallback.keepRawStreams,
-            aecEnabled: fallback.aecEnabled
+            aecEnabled: fallback.aecEnabled,
+            privacyAcknowledged: fallback.privacyAcknowledged
         )
     }
 }
