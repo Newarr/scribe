@@ -22,6 +22,9 @@ public actor TranscriptionWorker {
     private let directory: SessionDirectory
     private let context: TranscriptContext
     private let engine: TranscriptionEngine
+    /// The original engine request as constructed by the caller. May
+    /// have `languageCode == nil`, in which case the language detector
+    /// (Phase ν) gets a chance to fill it in before the engine call.
     private let request: EngineRequest
     private let speakerMapping: [String: String]
     private let policy: RetryPolicy
@@ -32,6 +35,10 @@ public actor TranscriptionWorker {
     /// audio.m4a is on disk. NEVER deleted on pending / retrying /
     /// failed states (they may be needed for retry or recovery).
     private let keepRawStreams: Bool
+    /// Phase ν: spec line 129. Whisper-tiny pre-pass for language ID.
+    /// `nil` means skip detection (engine auto-detects). Detection runs
+    /// once per session, before the retry loop, against the mic file.
+    private let languageDetector: LanguageDetector?
     /// The canonical audio file path used in transcript + metadata. Either
     /// "audio.m4a" (after AudioFinalizer succeeded) or "" (use raw streams).
     /// Set once per run() invocation by `prepareCanonicalAudio`.
@@ -46,7 +53,8 @@ public actor TranscriptionWorker {
         policy: RetryPolicy = .cloud,
         sleep: @escaping Sleep = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
         prepareAudio: @escaping PrepareAudio = { /* no-op: caller handled prep */ },
-        keepRawStreams: Bool = false
+        keepRawStreams: Bool = false,
+        languageDetector: LanguageDetector? = nil
     ) {
         self.directory = directory
         self.context = context
@@ -57,6 +65,7 @@ public actor TranscriptionWorker {
         self.sleep = sleep
         self.prepareAudio = prepareAudio
         self.keepRawStreams = keepRawStreams
+        self.languageDetector = languageDetector
     }
 
     public func run() async -> FinalState {
@@ -110,13 +119,21 @@ public actor TranscriptionWorker {
         // and saved as audio.m4a") requires this.
         let canonicalAudioPath = await prepareCanonicalAudio()
 
+        // Phase ν: spec line 129. Run language detection (Whisper-tiny
+        // pre-pass) before the engine call, but only if the caller
+        // didn't already specify a language. The detector reads the mic
+        // file (the user's voice carries the strongest language signal;
+        // system audio can be music / silence / a different language).
+        // Failure here is non-fatal — fall through to engine auto-detect.
+        let resolvedRequest = await resolveLanguage(for: request)
+
         // Resume from the persisted attempt count, not from zero, so a relaunch
         // during the 5m/30m backoff doesn't grant a fresh retry budget.
         var failedAttempts = existing?.attempts ?? 0
         while true {
             if Task.isCancelled { return .cancelled }
             do {
-                let response = try await engine.transcribe(request)
+                let response = try await engine.transcribe(resolvedRequest)
                 if response.utterances.isEmpty {
                     let msg = "No speech detected. The audio tracks may be silent, corrupt, or below the engine's detection threshold."
                     writeFailed(reason: msg)
@@ -280,6 +297,36 @@ public actor TranscriptionWorker {
     /// Writes metadata.json mirroring the transcript frontmatter. Called from
     /// every terminal state (complete, failed) so JSON consumers always have
     /// a current snapshot. Best-effort — failure logs but doesn't escalate.
+    /// Phase ν: spec line 129. Runs the language detector on mic.m4a
+    /// once per session and returns a request copy with the detected
+    /// `languageCode` filled in. If the caller already specified a
+    /// language, or the detector returns nil (failure / no detector),
+    /// the request is returned unchanged.
+    private func resolveLanguage(for request: EngineRequest) async -> EngineRequest {
+        guard request.languageCode == nil, let detector = languageDetector else {
+            return request
+        }
+        guard FileManager.default.fileExists(atPath: directory.micFinal.path) else {
+            // No mic to detect from — recovery-deferred or one-sided
+            // session that somehow made it past the supervisor's gate.
+            // Fall through to engine auto-detect.
+            return request
+        }
+        let detected = await detector.detect(from: directory.micFinal)
+        guard let detected else {
+            Log.engine.info("Language detector returned nil; falling back to engine auto-detect")
+            return request
+        }
+        Log.engine.info("Language detector resolved \(detected, privacy: .public); seeding engine request")
+        return EngineRequest(
+            audioURL: request.audioURL,
+            mode: request.mode,
+            languageCode: detected,
+            keyterms: request.keyterms,
+            modelID: request.modelID
+        )
+    }
+
     /// Phase ι: spec line 102. Default-OFF deletes raw mic.m4a +
     /// system.m4a after audio.m4a is on disk and the terminal status
     /// has been written. The deletion is gated on:

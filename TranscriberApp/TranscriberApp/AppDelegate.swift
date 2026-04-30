@@ -695,6 +695,10 @@ extension AppDelegate {
             )
         }
 
+        // Phase ν: WhisperKitLanguageDetector is a placeholder until the
+        // spike integrates the model. It returns nil today (engine
+        // auto-detects); the architectural seam is here so swapping in
+        // the real WhisperKit-backed detector is a one-line change.
         return TranscriptionWorker(
             directory: dir,
             context: context,
@@ -703,7 +707,8 @@ extension AppDelegate {
             speakerMapping: mapping,
             policy: .cloud,
             prepareAudio: prepareAudio,
-            keepRawStreams: keepRawStreams
+            keepRawStreams: keepRawStreams,
+            languageDetector: WhisperKitLanguageDetector()
         )
     }
 
