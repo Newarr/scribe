@@ -15,6 +15,11 @@
 #         xcrun notarytool store-credentials transcriber-notary \
 #             --apple-id <email> --team-id <team> --password <app-pwd>
 #
+# Required tools (verified before any work):
+#   - xcodegen, xcodebuild, codesign, ditto, xcrun (notarytool, stapler)
+#   - security
+#   - create-dmg (brew install create-dmg)
+#
 # Usage:
 #   scripts/release.sh <version>
 #       e.g. scripts/release.sh 1.0.0-rc1
@@ -32,7 +37,23 @@ ARCHIVE_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.xcarchive"
 EXPORT_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.export"
 DMG_PATH="${PROJECT_DIR}/build/Transcriber-${VERSION}.dmg"
 
-# Codex rc1-final P1.6: refuse to release from a dirty worktree or
+# Codex rc2-audit P0: required-tool check happens BEFORE worktree
+# state, so a missing tool aborts cleanly without ever modifying the
+# project. create-dmg is mandatory — the release channel is a DMG +
+# Homebrew cask, so a release without one is a broken release.
+echo "==> Verifying required tools"
+for tool in xcodegen xcodebuild codesign ditto security create-dmg; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Required tool '$tool' is not on PATH." >&2
+        case "$tool" in
+            create-dmg) echo "  Install: brew install create-dmg" >&2 ;;
+            xcodegen)   echo "  Install: brew install xcodegen" >&2 ;;
+        esac
+        exit 78
+    fi
+done
+
+# Codex rc2-audit P1.6: refuse to release from a dirty worktree or
 # one whose version surfaces don't match the requested version.
 echo "==> Checking release-state integrity"
 if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
@@ -43,6 +64,13 @@ EXPECTED_VERSION="$(grep -E 'public static let version' "${PROJECT_DIR}/Sources/
 if [[ "${EXPECTED_VERSION}" != "${VERSION}" ]]; then
     echo "BuildInfo.version is ${EXPECTED_VERSION}, but you asked to release ${VERSION}." >&2
     echo "Run scripts/bump-version.sh ${VERSION} first." >&2
+    exit 65
+fi
+
+# Codex rc2-audit P0: project.yml MARKETING_VERSION must also match.
+PROJECT_VERSION="$(grep -E 'MARKETING_VERSION:' "${PROJECT_DIR}/TranscriberApp/project.yml" | sed -nE 's/.*"([^"]+)".*/\1/p')"
+if [[ "${PROJECT_VERSION}" != "${VERSION}" ]]; then
+    echo "project.yml MARKETING_VERSION is ${PROJECT_VERSION}, but BuildInfo says ${VERSION}." >&2
     exit 65
 fi
 
@@ -79,15 +107,27 @@ echo "==> Running swift test"
 cd "${PROJECT_DIR}"
 swift test --quiet
 
-# 4. Regenerate the Xcode project so any new sources are picked up.
+# 4. Regenerate the Xcode project so any new sources are picked up,
+#    THEN re-check the worktree. Codex rc2-audit P0: xcodegen
+#    happens after the initial worktree check, which lets a stale
+#    committed .xcodeproj diverge from the freshly-generated one.
+#    The post-xcodegen check ensures the .xcodeproj on disk matches
+#    what would be tagged.
 echo "==> Regenerating Xcode project via xcodegen"
 (cd "${PROJECT_DIR}/TranscriberApp" && xcodegen)
 
-# 5. Archive. Codex rc1-final P0.4: do NOT mask xcodebuild failures.
+if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
+    echo "xcodegen produced uncommitted changes:" >&2
+    git -C "${PROJECT_DIR}" status --short >&2
+    echo "Commit the regenerated .xcodeproj before releasing — otherwise the release artifact's source tree differs from the tagged commit." >&2
+    exit 65
+fi
+
+# 5. Archive. Codex rc1-final P0: do NOT mask xcodebuild failures.
 #    Wipe stale build dir first so a prior failed archive doesn't leak
 #    into this run.
 echo "==> Cleaning build directory + xcodebuild archive"
-rm -rf "${ARCHIVE_PATH}" "${EXPORT_PATH}"
+rm -rf "${ARCHIVE_PATH}" "${EXPORT_PATH}" "${DMG_PATH}"
 mkdir -p "${PROJECT_DIR}/build"
 DEVELOPMENT_TEAM=$(echo "${IDENTITY}" | sed -nE 's/.*\(([0-9A-Z]+)\).*/\1/p')
 if command -v xcbeautify >/dev/null 2>&1; then
@@ -148,9 +188,20 @@ xcodebuild \
 APP_PATH="${EXPORT_PATH}/TranscriberApp.app"
 [[ -d "${APP_PATH}" ]] || { echo "Export did not produce ${APP_PATH}"; exit 1; }
 
-# 8. Codesign + entitlement verification.
+# 8. Codesign + entitlement verification. Codex rc2-audit P1: actually
+#    inspect the entitlements (not just verify signature integrity)
+#    so a missing audio-input entitlement is caught before notarization.
 echo "==> codesign --verify"
 codesign --verify --verbose=4 --strict --deep "${APP_PATH}"
+
+echo "==> Verifying audio-input entitlement is present in signed app"
+ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "${APP_PATH}" 2>/dev/null || true)"
+if ! echo "${ENTITLEMENTS_OUT}" | grep -q "com.apple.security.device.audio-input"; then
+    echo "Signed app is missing com.apple.security.device.audio-input entitlement." >&2
+    echo "Hardened-runtime mic capture would fail at runtime." >&2
+    echo "Check TranscriberApp/TranscriberApp/TranscriberApp.entitlements + project.yml CODE_SIGN_ENTITLEMENTS." >&2
+    exit 1
+fi
 
 # 9. Notarize.
 echo "==> Submitting to notarytool (this can take several minutes)"
@@ -160,49 +211,79 @@ xcrun notarytool submit "${ZIP_PATH}" \
     --keychain-profile transcriber-notary \
     --wait
 
-# 10. Staple + verify the staple actually applied (codex rc1-final P0.4).
+# 10. Staple + verify the staple actually applied.
 xcrun stapler staple "${APP_PATH}"
 xcrun stapler validate "${APP_PATH}"
 
-# 11. Build the DMG. Codex rc1-final P1.7: create-dmg's invocation
-#     order is `<output.dmg> <source-folder>`, NOT `<source.app>
-#     <output-folder>`. Stage the .app in a temp folder so the
-#     resulting DMG only contains it.
+# 11. Build the DMG. Codex rc2-audit P0: create-dmg is mandatory (we
+#     verified at step 0); failure is fatal. Stage the .app in a
+#     dedicated folder so the DMG only contains it.
 echo "==> Wrapping in DMG"
-if command -v create-dmg >/dev/null 2>&1; then
-    STAGE_DIR="${PROJECT_DIR}/build/dmg-stage-${VERSION}"
-    rm -rf "${STAGE_DIR}"
-    mkdir -p "${STAGE_DIR}"
-    cp -R "${APP_PATH}" "${STAGE_DIR}/"
-    rm -f "${DMG_PATH}"
-    create-dmg \
-        --volname "Transcriber" \
-        --window-size 540 380 \
-        --icon-size 100 \
-        --app-drop-link 360 180 \
-        "${DMG_PATH}" \
-        "${STAGE_DIR}/"
-    rm -rf "${STAGE_DIR}"
-    [[ -f "${DMG_PATH}" ]] || { echo "DMG was not produced at ${DMG_PATH}"; exit 1; }
-else
-    echo "    WARN: create-dmg not installed; skipping DMG build."
-    echo "    Install via 'brew install create-dmg' if you need a DMG release artifact."
-    DMG_PATH=""
+STAGE_DIR="${PROJECT_DIR}/build/dmg-stage-${VERSION}"
+rm -rf "${STAGE_DIR}"
+mkdir -p "${STAGE_DIR}"
+cp -R "${APP_PATH}" "${STAGE_DIR}/"
+create-dmg \
+    --volname "Transcriber" \
+    --window-size 540 380 \
+    --icon-size 100 \
+    --app-drop-link 360 180 \
+    "${DMG_PATH}" \
+    "${STAGE_DIR}/"
+rm -rf "${STAGE_DIR}"
+[[ -f "${DMG_PATH}" ]] || { echo "DMG was not produced at ${DMG_PATH}"; exit 1; }
+
+# 12. Verify DMG contents (codex rc2-audit P0): mount, check the .app
+#     has the right version, run spctl on the mounted app, unmount.
+#     "DMG exists" is not the same as "DMG ships a working app."
+echo "==> Verifying DMG contents"
+MOUNT_OUT="$(hdiutil attach -nobrowse -noverify -noautoopen "${DMG_PATH}")"
+MOUNT_DIR="$(echo "${MOUNT_OUT}" | tail -1 | awk '{$1=$2=""; print substr($0,3)}')"
+trap "hdiutil detach \"${MOUNT_DIR}\" -quiet >/dev/null 2>&1 || true" EXIT
+
+DMG_APP="${MOUNT_DIR}/TranscriberApp.app"
+[[ -d "${DMG_APP}" ]] || { echo "DMG missing TranscriberApp.app"; exit 1; }
+
+DMG_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${DMG_APP}/Contents/Info.plist" 2>/dev/null || true)"
+if [[ "${DMG_BUNDLE_VERSION}" != "${VERSION}" ]]; then
+    echo "DMG ships TranscriberApp.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected ${VERSION}." >&2
+    exit 1
 fi
 
-# 12. Verify Gatekeeper acceptance. Codex rc1-final P0.4: never mask.
-echo "==> spctl --assess"
-spctl --assess --verbose=4 --type execute "${APP_PATH}"
+# Gatekeeper assess on the mounted app — that's the artifact a user
+# would actually drag-install.
+spctl --assess --verbose=4 --type execute "${DMG_APP}"
+
+hdiutil detach "${MOUNT_DIR}" -quiet >/dev/null 2>&1 || true
+trap - EXIT
+
+# 13. Compute DMG sha256 for the cask and emit a substituted
+#     transcriber.rb adjacent to the DMG. The caller still has to
+#     publish the DMG somewhere and copy the rb file into a tap repo,
+#     but the SHA stamp is reproducible from this artifact.
+echo "==> Producing concrete cask"
+DMG_SHA256="$(shasum -a 256 "${DMG_PATH}" | cut -d' ' -f1)"
+CASK_OUT="${PROJECT_DIR}/build/transcriber-${VERSION}.rb"
+sed \
+    -e "s/{{VERSION}}/${VERSION}/g" \
+    -e "s|{{DOWNLOAD_URL}}|REPLACE_WITH_PUBLISHED_DMG_URL|g" \
+    -e "s/{{SHA256}}/${DMG_SHA256}/" \
+    "${PROJECT_DIR}/Casks/transcriber.rb.template" > "${CASK_OUT}"
 
 cat <<EOF
 
 ===
 Release ${VERSION} built.
-  app:  ${APP_PATH}
-  dmg:  ${DMG_PATH:-(skipped)}
+  app:     ${APP_PATH}
+  dmg:     ${DMG_PATH}
+  sha256:  ${DMG_SHA256}
+  cask:    ${CASK_OUT}
 
 Next steps:
   - Tag the release:  git tag -s v${VERSION} -m 'Release ${VERSION}'
   - Push:             git push origin v${VERSION}
-  - Update CHANGELOG.md.
+  - Update CHANGELOG.md (must already be committed — release.sh
+    refuses to run on a dirty worktree).
+  - Publish the DMG and replace REPLACE_WITH_PUBLISHED_DMG_URL in
+    ${CASK_OUT} before submitting to your tap.
 EOF

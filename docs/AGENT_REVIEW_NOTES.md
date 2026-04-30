@@ -1,6 +1,8 @@
 # Agent Review Notes
 
-These notes synthesize the GStack review agents launched during planning.
+These notes synthesize the GStack review agents launched during initial planning. They are kept as a historical record of the review inputs that shaped the spec.
+
+**This document is historical.** Where it conflicts with `SPEC.md`, `DECISIONS.md`, or `QUESTIONS.md`, the current docs prevail. Notable later refinements not captured here include: the eight-state menu-bar UI (this doc lists six), live mic+system audio meters in the active-recording popover, the floating-HUD stop prompt, the Cohere-during-onboarding background download, the disambiguated three-button standard / two-button late-join prompts, and the confidential-UI (`NSWindow.sharingType = .none`) requirement.
 
 ## Office Hours
 

@@ -93,13 +93,24 @@ public final class SCKDualOutputStream: @unchecked Sendable {
 
     /// Stops the shared stream once. Waits for any in-flight start so the
     /// stop never races a stream that hasn't been stored yet.
+    ///
+    /// Codex rc2-audit P1 (audits 2+3): the v0 path set
+    /// `stopRequested = true` for every stop and only cleared it on a
+    /// later start's cleanup branch. Reusing one coordinator after a
+    /// normal start/stop/start cycle made the second start
+    /// self-stop. Now: only mark the stop request while there's an
+    /// in-flight start to drain (so performStart can self-clean), and
+    /// clear it after the stop completes so the next start runs to
+    /// completion.
     public func stopIfRunning() async {
         let pendingStart: Task<Void, Error>? = queue.sync {
-            stopRequested = true
+            // Only signal stop to an in-flight start; if no start is
+            // racing us, there's nothing to cancel via the flag.
+            if inFlightStart != nil {
+                stopRequested = true
+            }
             return inFlightStart
         }
-        // Drain the in-flight start so performStart sees stopRequested and
-        // self-cleans up the stream it created.
         if let pendingStart {
             _ = try? await pendingStart.value
         }
@@ -111,6 +122,8 @@ public final class SCKDualOutputStream: @unchecked Sendable {
         if let toStop {
             try? await toStop.stopCapture()
         }
+        // Clear so the NEXT start isn't poisoned by this stop's flag.
+        queue.sync { stopRequested = false }
     }
 
     private func performStart(snapshot: [Registration], sampleRate: Int, channelCount: Int) async throws {

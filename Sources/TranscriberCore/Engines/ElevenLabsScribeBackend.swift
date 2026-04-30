@@ -44,8 +44,22 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
         for term in request.keyterms {
             body.appendField(name: "keyterms", value: term)
         }
+        // Codex rc2-audit P1 (audit 3): rc2 uploads audio.m4a (mono
+        // AAC) directly. Labelling it audio/wav was a v0 holdover from
+        // when prepareAudio wrote a 16kHz WAV. Pick the Content-Type
+        // from the URL extension; default to audio/m4a to match the
+        // canonical artifact.
+        let ext = request.audioURL.pathExtension.lowercased()
+        let contentType: String
+        switch ext {
+        case "wav": contentType = "audio/wav"
+        case "m4a", "mp4", "aac": contentType = "audio/m4a"
+        case "mp3": contentType = "audio/mpeg"
+        case "flac": contentType = "audio/flac"
+        default: contentType = "audio/m4a"
+        }
         body.appendFile(name: "file", filename: request.audioURL.lastPathComponent,
-                        contentType: "audio/wav", data: audioData)
+                        contentType: contentType, data: audioData)
 
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"

@@ -113,12 +113,25 @@ public actor CaptureSession {
         // We do NOT write status: failed mid-stop here.
         await mic.stop()
         await system.stop()
-        try await micWriter.finalize()
-        try await systemWriter.finalize()
+        // Codex rc2-audit P0 (audit 3): finalize BOTH writers before
+        // failing. v0 awaited mic.finalize THEN system.finalize, so a
+        // mic-throw left system as an unclosed .partial that
+        // OrphanRecoverer would then merely rename — never recovered.
+        // Run both, capture errors separately, throw the first one
+        // after both have been attempted.
+        var firstError: Error?
+        do { try await micWriter.finalize() } catch { firstError = error }
+        do { try await systemWriter.finalize() } catch { firstError = firstError ?? error }
         collector.flushLog()
-        try collector.writeSidecar(to: directory.ptsSidecar)
-        try directory.finalize()
-        try writeTranscriptStub()
+        do { try collector.writeSidecar(to: directory.ptsSidecar) } catch { firstError = firstError ?? error }
+        do { try directory.finalize() } catch { firstError = firstError ?? error }
+        do { try writeTranscriptStub() } catch { firstError = firstError ?? error }
+        if let firstError {
+            // Status stays at .stopping so the next stop attempt can
+            // try again. Don't claim .finalized when something failed
+            // in the chain.
+            throw firstError
+        }
         status = .finalized
         Log.lifecycle.info("Capture finalized")
     }

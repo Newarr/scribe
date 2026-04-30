@@ -29,6 +29,36 @@ public enum PreflightReason: Sendable, Equatable, Hashable {
     case missingLocalLanguageModel(URL)
     case calendarDeniedOptional
     case calendarNotDetermined
+
+    /// Codex rc2-audit P0 (privacy): public-safe label for log sites
+    /// that need to record WHICH reason fired without exposing the
+    /// associated `URL` (which would carry `/Users/<name>/...`).
+    /// Use this in `Log.*` calls with `.public` privacy; pair with
+    /// the full reason at `.private` if path detail is needed.
+    public var publicLabel: String {
+        switch self {
+        case .microphoneDenied: return "microphoneDenied"
+        case .microphoneNotDetermined: return "microphoneNotDetermined"
+        case .screenRecordingDenied: return "screenRecordingDenied"
+        case .outputFolderUnwritable: return "outputFolderUnwritable"
+        case .outputFolderInSyncedStorage(_, let provider): return "outputFolderInSyncedStorage(\(provider))"
+        case .missingCloudAPIKey: return "missingCloudAPIKey"
+        case .localEngineNotConfigured: return "localEngineNotConfigured"
+        case .missingLocalEngineBinary: return "missingLocalEngineBinary"
+        case .localLanguageModelNotConfigured: return "localLanguageModelNotConfigured"
+        case .missingLocalLanguageModel: return "missingLocalLanguageModel"
+        case .calendarDeniedOptional: return "calendarDeniedOptional"
+        case .calendarNotDetermined: return "calendarNotDetermined"
+        }
+    }
+}
+
+extension Sequence where Element == PreflightReason {
+    /// Public-log-safe rendering: comma-separated case names, never
+    /// the associated paths.
+    public var publicLabels: String {
+        map(\.publicLabel).joined(separator: ", ")
+    }
 }
 
 /// Result of running the preflight audit. The gate's job is to map this into

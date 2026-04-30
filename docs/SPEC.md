@@ -10,7 +10,7 @@ The product should feel like a seatbelt, not a dashboard. It stays out of the wa
 
 - **Never fail silently.** Any state where the app appears to be working but isn't (mic muted, system audio routing broken, transcription timed out, file not saved, permission revoked while running) must surface immediately on the menu-bar trust surface. The product promise is "never miss the record"; an app that runs but doesn't capture violates it.
 - **Cost-asymmetric prompts.** Missing the start prompt = lose the whole meeting; missing the stop prompt = lose ~10s of post-call audio. Start UX is aggressive (modal + activate-ignoring-other-apps); stop UX is non-focus-stealing (floating HUD).
-- **Confidential UI by default.** Every Scribe-owned window sets `NSWindow.sharingType = .none` so prompts and popovers never appear in screen-shared video, regardless of where they render.
+- **Confidential UI by default.** Every Transcriber-owned window sets `NSWindow.sharingType = .none` so prompts and popovers never appear in screen-shared video, regardless of where they render.
 - **Finder is the database.** No transcript-history UI in v1. The menu-bar `Recents` section is a 5-item shortcut, not a browser.
 
 ## Non-Goals
@@ -59,6 +59,10 @@ Rules:
 - Audio is durably saved before transcription starts.
 - Every session ends with a `transcript.md`.
 - If transcription fails, `transcript.md` records failure status and points to saved audio.
+- **Never interrupt an active recording with a new start prompt.** While Capturing, all start-prompt triggers (process-detection candidates, calendar-event start times) are suppressed. The watcher continues to track the next event but does not modal-prompt.
+- **Surface the queued next event in the active-recording popover.** When a new event begins during recording, add a `Next: 'Customer Call - Acme' at 15:00` line under the Privacy Status block. No focus interruption.
+- **Queue-then-fire on stop.** When the current recording ends (auto-stop, manual `Stop Now`, or finalize), if the queued event is still active and process-detection is still positive, fire its prompt immediately. If the queued event has expired, drop it.
+- **No automatic context switching.** The user always confirms each new recording explicitly. There is no "stop A and start B" hotkey or single-button transition.
 
 ## Calendar Watcher
 
@@ -75,13 +79,13 @@ Watcher behavior:
 - Ignore all-day and free events by default.
 - Skip declined and tentative events (respect EventKit participation status).
 - Skip events whose end time is already in the past per EventKit, even if a stale calendar cache shows them as active.
-- After wake-from-sleep, do not re-prompt for an event the user already skipped or marked `Not this event` in this session.
+- After wake-from-sleep, do not re-prompt for an event the user already dismissed via `Not now` or suppressed via `More options ▾ → Stop asking about this meeting` in this session.
 
 Late-join (app launches into an active event):
 
 - Prompt only if at least 10 minutes remain on the scheduled event, OR a meeting app is currently running and detected as in-call. Otherwise leave the menu bar in `Meeting detected` state and let the user click in.
 - Prompt copy frames the join factually, not apologetically: `Record 'Acme Weekly'? This event started 22 minutes ago. Recording will capture from now onward.`
-- Late-joined sessions write `joined_late: true` and `elapsed_at_start_seconds` plus `scheduled_start_at` and `recording_started_at` to frontmatter.
+- Late-joined sessions write `joined_late: true` and `elapsed_at_start_seconds` to frontmatter. The standard `scheduled_start` and `actual_start` fields already encode the schedule and the recording-start timestamps.
 
 V1 is calendar-first. Google Calendar works if synced into macOS Calendar. Direct Google/Outlook APIs are deferred.
 
@@ -90,14 +94,17 @@ V1 is calendar-first. Google Calendar works if synced into macOS Calendar. Direc
 Before meeting:
 
 - Show quiet preflight 2 minutes before start only if setup is broken.
-- Broken setup includes missing permission, missing ElevenLabs key, or unwritable output folder.
+- Broken setup includes a missing required permission, a missing ElevenLabs key when Cloud is the selected engine, or an unwritable output folder. Missing recommended permissions (Calendar, Notifications) do not count as broken; the `Setup Required` badge fires but recording can still proceed via manual `Record Now`.
 
 At meeting start:
 
 - Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app (Zoom/Meet/Teams) that has been running for the dwell window fires the prompt; the title is enriched with the overlapping calendar event. The calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
 - Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start = losing the entire meeting, which dominates the politeness cost of the interruption.
-- Buttons (three): `Start Recording` (primary), `Not this event` (event-specific suppression for the event ID; replaces the older `Not a meeting` label which suppressed the app for 30 minutes — keep that 30-min app-suppression as a separate `Skip for now` semantic), `Skip for now` (just-this-occurrence dismissal).
-- Footer link: `Don't ask for this meeting →` for users who never want this recurring calendar series prompted again. Suppression keys on the recurrence-series ID.
+- Two buttons only: `Start Recording` (primary) and `Not now` (secondary). Both standard and late-join prompts use the same two-button shape so the cognitive surface is constant.
+- Below the buttons: a small `More options ▾` disclosure that hides the rare suppression flows. Closed by default. When opened, exposes:
+  - `Stop asking about this meeting` — suppresses the recurring calendar series indefinitely (keys on recurrence-series ID).
+  - `Stop detecting [App] for 30 minutes` — app-level suppression that defends against false-positive process detection (e.g., Chrome left open from yesterday).
+- Suppressed meetings are managed in Settings → Quiet Meetings, where users can re-enable any series they previously suppressed.
 - The modal's window must set `NSWindow.sharingType = .none` so it does not appear in shared screen video.
 - Position the modal on the screen containing the active meeting-app window, not the keyWindow's screen.
 - Audible cue is OFF by default; user-configurable in Settings.
@@ -118,24 +125,30 @@ Prompt copy:
 
 - Default: `Start recording 'Acme Weekly'?`
 - Calendar source subtly: `From Apple Calendar`.
-- Late-join variant: `Record 'Acme Weekly'? This event started 22 minutes ago. Recording will capture from now onward.` Two buttons only on late-join: `Start Recording` / `Not this event`. Drop `Skip for now` because the late-join intent space is narrower.
+- Late-join variant: `Record 'Acme Weekly'? This event started 22 minutes ago. Recording will capture from now onward.` Same two-button shape (`Start Recording` / `Not now`) and the same `More options ▾` disclosure.
 
 ## Menu Bar UI
 
 The menu bar item is the trust surface.
 
-Each state must be distinguishable by shape, not by color alone. Color-only differentiation fails for color-blind users, when Bartender/Ice stows the icon in compressed form, and at small Retina sizes. `Setup required` and `Failed/recoverable` must look different even though both are warnings.
+Each state must be distinguishable by shape, not by color alone. Color-only differentiation fails for color-blind users, when Bartender/Ice stows the icon in compressed form, and at small Retina sizes. `Setup Required` and `Failed/recoverable` must look different even though both are warnings.
 
 Required states:
 
 - Idle: neutral waveform icon.
-- Setup required: warning icon.
+- Setup Required: warning icon.
 - Meeting detected: amber dot.
-- Recording: red dot plus elapsed time.
+- Recording: red dot plus elapsed time, plus a live signal indicator (see below).
 - Stopping soon: red dot plus countdown.
 - Finalizing/transcribing: spinner.
 - Saved: short success notification.
 - Failed/recoverable: warning state with retry action.
+
+Live signal indicator (Recording state only):
+
+- Two small marks adjacent to the elapsed time, one for `MIC` and one for `SYS`. Default is a thin pulsing bar that animates with audio level.
+- A mark dims and turns amber if its channel falls below the silent-channel threshold for >5 seconds. Both marks turn amber if both channels are silent.
+- This is the at-a-glance trust signal: the user verifies capture is healthy without opening the popover. Surfaces signal failure in the always-visible UI, not buried one click deep.
 
 Clicking the icon should always answer:
 
@@ -146,11 +159,16 @@ Clicking the icon should always answer:
 Active recording popover:
 
 - Meeting title.
-- Live audio meters: two thin bars labelled `MIC` and `SYS`. If either bar drops to zero for >5 seconds while recording, the menu-bar icon flips to a warning variant and the popover surfaces the channel that went silent. Silent capture failure is the worst failure mode and must not be invisible.
+- **Privacy Status block** (always at the top of the popover, never collapsed):
+  - `Audio: local · ~/Transcriber/Customer Call - Acme/`
+  - `Captured: mic + system audio · no video, no screenshots`
+  - `Engine: ElevenLabs (cloud)` or `Engine: Cohere (local)` — explicit, never abbreviated.
+  - This is inspectable proof, not just a marketing claim. A paranoid user gets a 1-click verification of where audio goes and what is excluded.
+- Live audio meters: two thin bars labelled `MIC` and `SYS` (larger than the menu-bar indicator; same data source).
 - `Recording 12:34 - Mic + System Audio` text.
 - Primary action: `Stop Now`.
 - Secondary actions: `Open Folder`, `Settings`.
-- Show engine as low-priority metadata.
+- Engine restated in Privacy Status; no separate low-priority metadata line needed.
 
 Recents section (in the menu bar's main popover, not active-recording popover):
 
@@ -168,14 +186,19 @@ Saved success signal:
 
 ## Permissions
 
-The app is not ready until all required setup is complete:
+Permissions split into two tiers.
+
+Required (recording cannot start without these):
 
 - Microphone access.
-- Calendar access.
-- `UNUserNotificationCenter` (Notifications) permission.
 - Screen/system audio capture permission.
-- ElevenLabs API key, unless local mode is selected.
 - Output folder write access.
+- ElevenLabs API key when Cloud is the selected engine. Optional when Local (Cohere) is selected.
+
+Recommended (app works in degraded mode without; menu bar shows `Setup Required`):
+
+- Calendar access. Without it the calendar-driven prompt and event-aware metadata fall back to manual `Record Now`.
+- `UNUserNotificationCenter` (Notifications) permission. Without it the redundant-channel pattern collapses to the modal only; users may miss prompts in fullscreen Zoom or DND.
 
 Fail closed:
 
@@ -187,7 +210,7 @@ Permission recovery:
 
 - Each missing permission gets one `Open System Settings` action.
 - Auto-recheck after returning from System Settings.
-- Menu bar state should show `Setup Required` until fixed.
+- Menu bar state should show `Setup Required` until all required and recommended permissions are granted. Required permissions block recording; recommended permissions only show the badge.
 
 ## Onboarding
 
@@ -299,7 +322,7 @@ Recognition context:
 
 - Use bounded keyterms by default.
 - Include title terms, attendee display names, company/domain terms, and acronyms.
-- Do not send full calendar description, meeting URLs, attendee emails, dial-in codes, or passwords unless user enables full context.
+- Do not send full calendar description, meeting URLs, attendee emails, dial-in codes, or passwords. Whether a "full context" opt-in setting ships in v1 is open (`q_full_context_setting`).
 
 Local mode:
 
@@ -397,7 +420,7 @@ Required for every session (success or failure):
 Conditional:
 
 - `status` is OMITTED when the session completed successfully. It is required when the session is `partial` or `failed`. A file with no `status` field is `complete` by convention. (Same logic as HTTP not requiring a `200 OK` body.)
-- `joined_late: true`, `elapsed_at_start_seconds`, `recording_started_at` are written only when the session was a late-join.
+- `joined_late: true` and `elapsed_at_start_seconds` are written only when the session was a late-join. `scheduled_start` and `actual_start` are the canonical timestamps; no `scheduled_start_at` / `recording_started_at` aliases.
 
 Failure-only fields (in addition to the above):
 
@@ -434,7 +457,7 @@ audio: "audio.m4a"
 
 # Customer Call - Acme Weekly
 
-> 14:30-15:25 (Apple Calendar) · Mic + System Audio · ElevenLabs Scribe v2
+> 14:30-15:25 (Apple Calendar) · Mic + System Audio · ElevenLabs
 
 ## Attendees
 - Szymon Sypniewicz (organizer)
@@ -466,19 +489,30 @@ Speaker rendering rules:
 
 ### Failure transcript
 
-Same body shape, with `status: failed` frontmatter, error metadata, and a `## What you can do` section listing concrete recovery actions:
+Failure frontmatter is the success frontmatter (all required fields) plus `status: failed`, error fields (`error_code`, `error_message`, `retry_count`), and audio metadata (`audio_duration_seconds`, `audio_size_bytes`). When a required field is genuinely unavailable at failure time (e.g., the failure happened before calendar metadata was attached), the writer emits an empty value rather than omitting the key, so downstream agents can rely on the same shape across success and failure.
+
+Body shape: same as success (H1, metadata blockquote, attendees, calendar notes), but the transcript section is replaced by `# Transcription Failed` plus a `## What you can do` block.
 
 ```markdown
 ---
 status: failed
 title: "Customer Call - Acme Weekly"
 date: 2026-04-30
+scheduled_start: 2026-04-30T14:30:00+02:00
+scheduled_end: 2026-04-30T15:00:00+02:00
 actual_start: 2026-04-30T14:30:12+02:00
 actual_end: 2026-04-30T15:25:03+02:00
+attendees:
+  - "Szymon Sypniewicz"
+  - "Jane Doe"
+organizer: "Szymon Sypniewicz"
+location: ""
+meeting_url_redacted: "[redacted zoom.us URL]"
+calendar_event_id: "abc123..."
+engine: "elevenlabs"
 audio: "audio.m4a"
 audio_duration_seconds: 3291
 audio_size_bytes: 52840192
-engine: "elevenlabs"
 error_code: "elevenlabs_timeout"
 error_message: "Job did not complete within 90s"
 retry_count: 2
@@ -486,9 +520,9 @@ retry_count: 2
 
 # Transcription Failed
 
-Audio is saved at `audio.m4a` (54 MB, 54:51 duration).
+Audio is saved at `audio.m4a` (54 MB, 54:51 duration). The recording itself is intact and complete; only transcription failed.
 
-ElevenLabs returned a timeout after 2 retries. The recording itself is intact and complete.
+ElevenLabs returned a timeout after 2 retries.
 
 ## What you can do
 

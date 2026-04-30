@@ -49,8 +49,16 @@ public struct CalendarEvent: Sendable, Equatable {
     /// phone numbers, digit runs, and passcode-style labels. Capped at 16
     /// entries to keep the request bounded.
     public var keyterms: [String] {
+        // Codex rc2-audit P0 (privacy): pre-tokenization phone /
+        // dial-in / meeting-id sanitization. The per-token sanitizer
+        // only catches 4+-consecutive-digit runs, which means a
+        // spaced phone number "+1 555 123 4567" tokenizes to
+        // ["+1","555","123","4567"] where "555" and "123" pass
+        // through. Run the whole-title scrub FIRST so spaced numeric
+        // sequences are removed before splitting on whitespace.
+        let scrubbedTitle = KeytermSanitizer.scrubTitle(title)
         var terms: [String] = []
-        let titleWords = title
+        let titleWords = scrubbedTitle
             .components(separatedBy: .whitespacesAndNewlines)
             .map { $0.trimmingCharacters(in: .punctuationCharacters) }
             .filter { $0.count > 2 }

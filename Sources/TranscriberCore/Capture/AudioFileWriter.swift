@@ -21,6 +21,11 @@ public final class AudioFileWriter: @unchecked Sendable {
     /// at best.
     private let queue = DispatchQueue(label: "audiofilewriter.serial")
     private var started = false
+    /// Codex rc2-audit P1 (audit 2): track the in-flight finishWriting
+    /// Task so concurrent finalize() callers await the SAME completion
+    /// rather than the v0 pattern where a second caller saw
+    /// `finalized=true` and returned before the file was durable.
+    private var finishingTask: Task<Void, Error>?
     private var sessionStarted = false
     private var finalized = false
 
@@ -111,22 +116,31 @@ public final class AudioFileWriter: @unchecked Sendable {
     }
 
     public func finalize() async throws {
-        // Capture the in-flight state on the serial queue, mark finalized,
-        // then run finishWriting outside the queue (it's an async API and
-        // would deadlock if held on the same serial queue as `append`).
-        var notStarted = false
-        var alreadyFinalized = false
-        queue.sync {
-            if !started { notStarted = true; return }
-            if finalized { alreadyFinalized = true; return }
+        // Codex rc2-audit P1 (audit 2): the v0 path set `finalized =
+        // true` BEFORE awaiting `finishWriting()`, so a concurrent
+        // `finalize()` would see `finalized == true`, return
+        // immediately, and the caller would observe a "successful"
+        // finalize while the file was still being written. Track the
+        // in-flight finishing Task so concurrent callers await the
+        // SAME finish, not a phantom done state.
+        let finishTask: Task<Void, Error>? = queue.sync {
+            if !started { return Task { throw WriterError.notStarted } }
+            if let existing = finishingTask { return existing }
+            if finalized { return Task { /* idempotent */ } }
             input.markAsFinished()
             finalized = true
+            let writerLocal = self.writer
+            let task = Task<Void, Error> {
+                await writerLocal.finishWriting()
+                if writerLocal.status == .failed {
+                    throw WriterError.writerFailed(writerLocal.error)
+                }
+            }
+            self.finishingTask = task
+            return task
         }
-        if notStarted { throw WriterError.notStarted }
-        if alreadyFinalized { return }  // Idempotent — second finalize is a no-op.
-
-        await writer.finishWriting()
-        if writer.status == .failed { throw WriterError.writerFailed(writer.error) }
+        guard let task = finishTask else { return }
+        try await task.value
     }
 
     /// Test-only: how many append() calls the writer absorbed AFTER finalize.

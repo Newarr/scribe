@@ -423,7 +423,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
         switch RecordRequestGate().verdict(from: report) {
         case .deny(let reasons):
-            Log.lifecycle.error("startRecording denied by preflight: \(String(describing: reasons), privacy: .public)")
+            // Codex rc2-audit P0 (privacy): String(describing: reasons)
+            // expands the associated URL values, which carry
+            // `/Users/<name>/...` paths. Use the safe `publicLabels`
+            // accessor for .public; full reasons at .private.
+            Log.lifecycle.error("startRecording denied by preflight: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
             self.status = .idle
             menu?.rebuild(for: status)
             let steps = PermissionRemediation.steps(from: report)
@@ -434,7 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
             return
         case .allowWithWarnings(let reasons):
-            Log.lifecycle.info("startRecording proceeding with warnings: \(String(describing: reasons), privacy: .public)")
+            Log.lifecycle.info("startRecording proceeding with warnings: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
         case .allow:
             break
         }

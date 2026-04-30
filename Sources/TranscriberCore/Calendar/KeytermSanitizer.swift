@@ -40,6 +40,52 @@ public enum KeytermSanitizer {
         "join-code", "joincode", "access-code", "accesscode", "kennwort",
     ]
 
+    /// Codex rc2-audit P0 (privacy): pre-tokenization scrubber for
+    /// raw event titles. The per-token `sanitize` catches 4+
+    /// consecutive digits, but a spaced phone number ("+1 555 123
+    /// 4567") tokenizes into chunks of 3 digits each, slipping past
+    /// the digit-run filter. Run this BEFORE splitting the title on
+    /// whitespace so spaced numeric sequences (phone, meeting ID,
+    /// passcode) are removed in one pass.
+    ///
+    /// Patterns scrubbed:
+    ///   - Phone-like sequences: `\+?\d` followed by 7+ chars of
+    ///     digits/whitespace/punctuation, ending in a digit
+    ///   - Spaced digit groups (3+ chars × 2+ groups, total 6+
+    ///     digits): "123 456 789", "555 1234 5678"
+    ///   - "<label> NN..." patterns: "meeting id 123 456", "passcode
+    ///     1234 5678", "dial in 555 1234" — the label + everything
+    ///     after up to non-numeric word
+    public static func scrubTitle(_ title: String) -> String {
+        var result = title
+        // Strip "<label> <digits ...>" patterns first since they're
+        // the most common dial-in shape. Use a word-boundary regex
+        // capturing the label + trailing whitespace + any sequence
+        // of digit-runs separated by whitespace/punctuation.
+        let labels = "passcode|password|pin|meeting[-\\s]?id|join[-\\s]?code|access[-\\s]?code|dial[-\\s]?in|conference[-\\s]?id|kennwort"
+        let labelPattern = "(?i)\\b(\(labels))\\b\\s*[:#=]?\\s*([0-9][0-9\\s.\\-()]*)"
+        if let re = try? NSRegularExpression(pattern: labelPattern) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = re.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+        // Strip phone-like spaced sequences: digit, then 7+ chars of
+        // digits/whitespace/punctuation, ending on a digit. Catches
+        // "+1 555 123 4567" and "(555) 123-4567" verbatim.
+        let phoneish = "(?i)\\+?\\d[\\d\\s.\\-()]{7,}\\d"
+        if let re = try? NSRegularExpression(pattern: phoneish) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = re.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+        // Strip 2+ digit groups separated by whitespace, total length
+        // 6+ digits. Catches conference IDs like "123 456 789".
+        let digitGroups = "\\b\\d{3,}(?:\\s+\\d{3,}){1,}\\b"
+        if let re = try? NSRegularExpression(pattern: digitGroups) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = re.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+        return result
+    }
+
     /// Sanitizes a list of candidate keyterms. Returns a (possibly shorter)
     /// list with privacy-violating tokens removed.
     public static func sanitize(_ raw: [String]) -> [String] {

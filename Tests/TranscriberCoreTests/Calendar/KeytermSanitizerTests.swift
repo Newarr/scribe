@@ -46,6 +46,46 @@ final class KeytermSanitizerTests: XCTestCase {
                        "non-PII tokens must survive intact: \(s)")
     }
 
+    /// Codex rc2-audit P0: a calendar event titled `Acme dial in +1
+    /// 555 123 4567 meeting id 123 456 789` tokenizes via whitespace
+    /// BEFORE per-token sanitization, leaving 3-digit chunks
+    /// ("555","123","456","789") that pass through the 4+-digit-run
+    /// filter. KeytermSanitizer.scrubTitle must remove these spaced
+    /// digit sequences before tokenization so they never reach the
+    /// engine upload.
+    func testSpacedDialInDoesNotLeakDigitFragments() {
+        let event = CalendarEvent(
+            title: "Acme dial in +1 555 123 4567 meeting id 123 456 789",
+            startDate: Date(),
+            endDate: Date().addingTimeInterval(1800),
+            attendees: [.init(name: "Szymon", isCurrentUser: true)]
+        )
+        let terms = event.keyterms
+        for sentinel in ["555", "123", "456", "789", "4567"] {
+            XCTAssertFalse(
+                terms.contains(sentinel),
+                "spaced phone/meeting-id digit fragment \(sentinel) leaked into keyterms: \(terms)"
+            )
+        }
+        XCTAssertTrue(terms.contains("Acme"), "regular title words must survive: \(terms)")
+    }
+
+    func testSpacedConferenceIDIsScrubbed() {
+        // "Project Rocket 123 456 789" → "Project", "Rocket" only.
+        let event = CalendarEvent(
+            title: "Project Rocket 123 456 789",
+            startDate: Date(),
+            endDate: Date().addingTimeInterval(1800),
+            attendees: [.init(name: "Szymon", isCurrentUser: true)]
+        )
+        let terms = event.keyterms
+        XCTAssertTrue(terms.contains("Project"))
+        XCTAssertTrue(terms.contains("Rocket"))
+        for digit in ["123", "456", "789"] {
+            XCTAssertFalse(terms.contains(digit), "spaced conference-id digit \(digit) leaked: \(terms)")
+        }
+    }
+
     func testCalendarEventKeytermsExcludeSecrets() {
         let event = CalendarEvent(
             title: "Faris 1:1 — meet.google.com/abc-defg passcode 123456",
