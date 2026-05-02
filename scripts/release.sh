@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase σ: build + sign + notarize the Transcriber app.
+# Phase σ: build + sign + notarize the Scribe app.
 #
 # Reads credentials from macOS Keychain only — never accepts inline
 # secrets or environment variables for sensitive values. If a credential
@@ -10,9 +10,9 @@
 #   - service "codesign-identity", account "claude"
 #       value: "Developer ID Application: <Your Name> (<Team ID>)"
 #       look up via `security find-identity -v -p codesigning`
-#   - notarytool credential profile named "transcriber-notary"
+#   - notarytool credential profile named "scribe-notary"
 #       create via:
-#         xcrun notarytool store-credentials transcriber-notary \
+#         xcrun notarytool store-credentials scribe-notary \
 #             --apple-id <email> --team-id <team> --password <app-pwd>
 #
 # Required tools (verified before any work):
@@ -33,9 +33,9 @@ if [[ $# -ne 1 ]]; then
 fi
 VERSION="$1"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ARCHIVE_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.xcarchive"
-EXPORT_PATH="${PROJECT_DIR}/build/TranscriberApp-${VERSION}.export"
-DMG_PATH="${PROJECT_DIR}/build/Transcriber-${VERSION}.dmg"
+ARCHIVE_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.xcarchive"
+EXPORT_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.export"
+DMG_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.dmg"
 
 # Codex rc2-audit P0: required-tool check happens BEFORE worktree
 # state, so a missing tool aborts cleanly without ever modifying the
@@ -92,11 +92,11 @@ echo "    using identity: ${IDENTITY}"
 
 # 2. Verify the notarytool keychain profile exists.
 echo "==> Verifying notarytool keychain profile"
-if ! xcrun notarytool history --keychain-profile transcriber-notary >/dev/null 2>&1; then
+if ! xcrun notarytool history --keychain-profile scribe-notary >/dev/null 2>&1; then
     cat >&2 <<EOF
-notarytool keychain profile 'transcriber-notary' missing.
+notarytool keychain profile 'scribe-notary' missing.
 Create it:
-  xcrun notarytool store-credentials transcriber-notary \\
+  xcrun notarytool store-credentials scribe-notary \\
     --apple-id <email> --team-id <team> --password <app-specific-password>
 EOF
     exit 78
@@ -133,8 +133,8 @@ DEVELOPMENT_TEAM=$(echo "${IDENTITY}" | sed -nE 's/.*\(([0-9A-Z]+)\).*/\1/p')
 if command -v xcbeautify >/dev/null 2>&1; then
     set -o pipefail
     xcodebuild \
-        -project "${PROJECT_DIR}/TranscriberApp/TranscriberApp.xcodeproj" \
-        -scheme TranscriberApp \
+        -project "${PROJECT_DIR}/TranscriberApp/Scribe.xcodeproj" \
+        -scheme Scribe \
         -configuration Release \
         -archivePath "${ARCHIVE_PATH}" \
         archive \
@@ -144,8 +144,8 @@ if command -v xcbeautify >/dev/null 2>&1; then
         | xcbeautify
 else
     xcodebuild \
-        -project "${PROJECT_DIR}/TranscriberApp/TranscriberApp.xcodeproj" \
-        -scheme TranscriberApp \
+        -project "${PROJECT_DIR}/TranscriberApp/Scribe.xcodeproj" \
+        -scheme Scribe \
         -configuration Release \
         -archivePath "${ARCHIVE_PATH}" \
         archive \
@@ -185,7 +185,7 @@ xcodebuild \
     -exportPath "${EXPORT_PATH}" \
     -exportOptionsPlist "${EXPORT_PLIST}"
 
-APP_PATH="${EXPORT_PATH}/TranscriberApp.app"
+APP_PATH="${EXPORT_PATH}/Scribe.app"
 [[ -d "${APP_PATH}" ]] || { echo "Export did not produce ${APP_PATH}"; exit 1; }
 
 # 8. Codesign + entitlement verification. Codex rc2-audit P1: actually
@@ -199,16 +199,16 @@ ENTITLEMENTS_OUT="$(codesign -d --entitlements :- "${APP_PATH}" 2>/dev/null || t
 if ! echo "${ENTITLEMENTS_OUT}" | grep -q "com.apple.security.device.audio-input"; then
     echo "Signed app is missing com.apple.security.device.audio-input entitlement." >&2
     echo "Hardened-runtime mic capture would fail at runtime." >&2
-    echo "Check TranscriberApp/TranscriberApp/TranscriberApp.entitlements + project.yml CODE_SIGN_ENTITLEMENTS." >&2
+    echo "Check TranscriberApp/Scribe/Scribe.entitlements + project.yml CODE_SIGN_ENTITLEMENTS." >&2
     exit 1
 fi
 
 # 9. Notarize.
 echo "==> Submitting to notarytool (this can take several minutes)"
-ZIP_PATH="${EXPORT_PATH}/TranscriberApp.zip"
+ZIP_PATH="${EXPORT_PATH}/Scribe.zip"
 ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${ZIP_PATH}"
 xcrun notarytool submit "${ZIP_PATH}" \
-    --keychain-profile transcriber-notary \
+    --keychain-profile scribe-notary \
     --wait
 
 # 10. Staple + verify the staple actually applied.
@@ -224,7 +224,7 @@ rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
 cp -R "${APP_PATH}" "${STAGE_DIR}/"
 create-dmg \
-    --volname "Transcriber" \
+    --volname "Scribe" \
     --window-size 540 380 \
     --icon-size 100 \
     --app-drop-link 360 180 \
@@ -241,12 +241,12 @@ MOUNT_OUT="$(hdiutil attach -nobrowse -noverify -noautoopen "${DMG_PATH}")"
 MOUNT_DIR="$(echo "${MOUNT_OUT}" | tail -1 | awk '{$1=$2=""; print substr($0,3)}')"
 trap "hdiutil detach \"${MOUNT_DIR}\" -quiet >/dev/null 2>&1 || true" EXIT
 
-DMG_APP="${MOUNT_DIR}/TranscriberApp.app"
-[[ -d "${DMG_APP}" ]] || { echo "DMG missing TranscriberApp.app"; exit 1; }
+DMG_APP="${MOUNT_DIR}/Scribe.app"
+[[ -d "${DMG_APP}" ]] || { echo "DMG missing Scribe.app"; exit 1; }
 
 DMG_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${DMG_APP}/Contents/Info.plist" 2>/dev/null || true)"
 if [[ "${DMG_BUNDLE_VERSION}" != "${VERSION}" ]]; then
-    echo "DMG ships TranscriberApp.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected ${VERSION}." >&2
+    echo "DMG ships Scribe.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected ${VERSION}." >&2
     exit 1
 fi
 
@@ -258,17 +258,17 @@ hdiutil detach "${MOUNT_DIR}" -quiet >/dev/null 2>&1 || true
 trap - EXIT
 
 # 13. Compute DMG sha256 for the cask and emit a substituted
-#     transcriber.rb adjacent to the DMG. The caller still has to
+#     scribe.rb adjacent to the DMG. The caller still has to
 #     publish the DMG somewhere and copy the rb file into a tap repo,
 #     but the SHA stamp is reproducible from this artifact.
 echo "==> Producing concrete cask"
 DMG_SHA256="$(shasum -a 256 "${DMG_PATH}" | cut -d' ' -f1)"
-CASK_OUT="${PROJECT_DIR}/build/transcriber-${VERSION}.rb"
+CASK_OUT="${PROJECT_DIR}/build/scribe-${VERSION}.rb"
 sed \
     -e "s/{{VERSION}}/${VERSION}/g" \
     -e "s|{{DOWNLOAD_URL}}|REPLACE_WITH_PUBLISHED_DMG_URL|g" \
     -e "s/{{SHA256}}/${DMG_SHA256}/" \
-    "${PROJECT_DIR}/Casks/transcriber.rb.template" > "${CASK_OUT}"
+    "${PROJECT_DIR}/Casks/scribe.rb.template" > "${CASK_OUT}"
 
 cat <<EOF
 

@@ -22,7 +22,7 @@ final class BuildInfoTests: XCTestCase {
         }
     }
 
-    func testNameIsTranscriber() {
-        XCTAssertEqual(BuildInfo.appName, "Transcriber")
+    func testNameIsScribe() {
+        XCTAssertEqual(BuildInfo.appName, "Scribe")
     }
 }

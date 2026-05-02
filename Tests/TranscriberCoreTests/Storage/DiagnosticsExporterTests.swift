@@ -203,7 +203,7 @@ final class DiagnosticsExporterTests: XCTestCase {
     }
 
     func testHashPathIsDeterministicAndDoesNotLeakPath() {
-        let url = URL(fileURLWithPath: "/Users/alice/Documents/Transcriber", isDirectory: true)
+        let url = URL(fileURLWithPath: "/Users/alice/Documents/Scribe", isDirectory: true)
         let h1 = DiagnosticsCollector.hashPath(url, instanceID: "test-instance")
         let h2 = DiagnosticsCollector.hashPath(url, instanceID: "test-instance")
         XCTAssertEqual(h1, h2, "same instanceID + path must produce same hash")
@@ -217,7 +217,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         // two users with the same path get different hashes. This
         // defeats the rainbow-attack that plain SHA-256 of a low-entropy
         // path was vulnerable to.
-        let url = URL(fileURLWithPath: "/Users/alice/Documents/Transcriber", isDirectory: true)
+        let url = URL(fileURLWithPath: "/Users/alice/Documents/Scribe", isDirectory: true)
         let userA = DiagnosticsCollector.hashPath(url, instanceID: "instance-A")
         let userB = DiagnosticsCollector.hashPath(url, instanceID: "instance-B")
         XCTAssertNotEqual(userA, userB, "different instance IDs must yield different hashes for the same path")

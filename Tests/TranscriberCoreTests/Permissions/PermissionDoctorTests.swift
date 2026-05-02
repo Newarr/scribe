@@ -144,7 +144,7 @@ final class PermissionDoctorTests: XCTestCase {
     func testSyncedStorageOutputSurfacesWarningPerSpec() async {
         // Spec line 231 says "Warn" not "block" for synced storage — codex
         // Phase α review P1.1.
-        let outputRoot = URL(fileURLWithPath: "/Users/example/Library/Mobile Documents/com~apple~CloudDocs/Transcriber")
+        let outputRoot = URL(fileURLWithPath: "/Users/example/Library/Mobile Documents/com~apple~CloudDocs/Scribe")
         let doctor = PermissionDoctor(
             permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
             engine: StubEngine(cloudKey: true),
@@ -164,17 +164,17 @@ final class PermissionDoctorTests: XCTestCase {
         // folders. Codex Phase α review P1.2 caught that the original
         // heuristic missed every modern Drive/OneDrive/Dropbox install.
         let probe = DefaultOutputFolderProbe()
-        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/Transcriber")),
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/Scribe")),
                        "Google Drive")
-        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/OneDrive-Personal/Transcriber")),
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/OneDrive-Personal/Scribe")),
                        "OneDrive")
-        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Dropbox/Transcriber")),
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Dropbox/Scribe")),
                        "Dropbox")
-        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Box/Transcriber")),
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Library/CloudStorage/Box/Scribe")),
                        "Box")
-        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Dropbox (Personal)/Transcriber")),
+        XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Dropbox (Personal)/Scribe")),
                        "Dropbox")
-        XCTAssertNil(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Documents/Transcriber")),
+        XCTAssertNil(probe.syncedStorageHint(URL(fileURLWithPath: "/Users/me/Documents/Scribe")),
                      "ordinary Documents folder must not false-positive")
     }
 

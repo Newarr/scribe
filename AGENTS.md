@@ -1,6 +1,6 @@
 # Agent Context
 
-Use this directory as the source of truth for the Transcriber product spec.
+Use this directory as the source of truth for the Scribe product spec.
 
 ## GStack
 
@@ -18,7 +18,7 @@ Future agents should use GStack workflows for this project when the task matches
 
 If the user asks for broad planning, run the relevant GStack plan reviews before editing implementation. If the user asks for implementation, read the docs below first and then use GStack review/QA as verification where appropriate.
 
-Before implementing, read `docs/SPEC.md` — the consolidated single source of truth (product spec, design decisions, open questions, acceptance criteria, references). The other docs in `docs/` are redirect stubs kept for legacy backrefs.
+Before implementing, read `docs/spec/SPEC.md` — the consolidated single source of truth (product spec, design decisions, open questions, acceptance criteria, references).
 
 Important constraints:
 
@@ -34,4 +34,4 @@ Important constraints:
 - ElevenLabs key belongs only in Keychain.
 - Audio is the durable asset; transcription failure must not lose it.
 
-When adding open questions, use stable unique IDs in the `## Open Questions` section of `docs/SPEC.md`.
+When adding open questions, use stable unique IDs in the `## Open Questions` section of `docs/spec/SPEC.md`.

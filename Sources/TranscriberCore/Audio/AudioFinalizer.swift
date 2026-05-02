@@ -19,7 +19,7 @@ import Foundation
 /// LUFS normalization (spec § Audio normalization, target -16 LUFS /
 /// true peak ≤ -1 dBTP) is approximated as power-preserving RMS-style
 /// scaling per the D3 plan decision — shipping rc1 with documented
-/// spec deviation; real BS.1770 lands in V1.1. See docs/SPEC.md
+/// spec deviation; real BS.1770 lands in V1.1. See docs/spec/SPEC.md
 /// "Audio normalization" for the contract and the intentional gap.
 public enum AudioFinalizer {
     public enum FinalizeError: Error, Equatable {

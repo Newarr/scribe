@@ -7,7 +7,7 @@ final class DetectionEngineTests: XCTestCase {
         let engine = DetectionEngine(dwellTime: 0.05) { app in
             await captured.set(app)
         }
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         await engine.handleLaunch(of: zoom)
         try await Task.sleep(nanoseconds: 200_000_000)
         let result = await captured.value
@@ -19,7 +19,7 @@ final class DetectionEngineTests: XCTestCase {
         let engine = DetectionEngine(dwellTime: 0.5) { app in
             await captured.set(app)
         }
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         await engine.handleLaunch(of: zoom)
         try await Task.sleep(nanoseconds: 50_000_000)
         await engine.handleQuit(of: zoom)
@@ -31,7 +31,7 @@ final class DetectionEngineTests: XCTestCase {
     func testLaunchWhileSuppressedDoesNotFire() async throws {
         let captured = AppCapture()
         let skip = SkipState()
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         await skip.suppress(zoom.bundleID, for: 60)
         let engine = DetectionEngine(dwellTime: 0.05, skipState: skip) { app in
             await captured.set(app)
@@ -47,7 +47,7 @@ final class DetectionEngineTests: XCTestCase {
         let engine = DetectionEngine(dwellTime: 0.5) { app in
             await captured.set(app)
         }
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         await engine.handleLaunch(of: zoom)
         try await Task.sleep(nanoseconds: 50_000_000)
         await engine.suppress(zoom)
@@ -65,7 +65,7 @@ final class DetectionEngineTests: XCTestCase {
         let engine = DetectionEngine(dwellTime: 0.2) { _ in
             await captured.increment()
         }
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom")
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         await engine.handleLaunch(of: zoom)
         try await Task.sleep(nanoseconds: 50_000_000)
         await engine.handleLaunch(of: zoom)

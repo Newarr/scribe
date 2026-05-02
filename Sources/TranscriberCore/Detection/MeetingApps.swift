@@ -3,10 +3,23 @@ import Foundation
 public struct MeetingApp: Sendable, Equatable, Hashable {
     public let bundleID: String
     public let displayName: String
+    /// Native meeting apps are stronger signals than browsers — Zoom or
+    /// Teams launching means a call is plausibly starting, while a
+    /// browser opening doesn't tell us anything (per-URL inspection is
+    /// out of scope for V1). Used by `ProcessWatcher` to skip
+    /// cold-start enumeration of browsers, which were generating false
+    /// positives because most users keep a browser open all day.
+    public let kind: Kind
 
-    public init(bundleID: String, displayName: String) {
+    public enum Kind: Sendable, Equatable, Hashable {
+        case nativeMeetingApp
+        case browser
+    }
+
+    public init(bundleID: String, displayName: String, kind: Kind) {
         self.bundleID = bundleID
         self.displayName = displayName
+        self.kind = kind
     }
 }
 
@@ -15,18 +28,18 @@ public struct MeetingApp: Sendable, Equatable, Hashable {
 public enum MeetingApps {
     public static let allowlist: [MeetingApp] = [
         // Native meeting apps
-        .init(bundleID: "us.zoom.xos", displayName: "Zoom"),
-        .init(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams"),
-        .init(bundleID: "com.microsoft.teams", displayName: "Microsoft Teams (legacy)"),
-        .init(bundleID: "org.whispersystems.signal-desktop", displayName: "Signal"),
+        .init(bundleID: "us.zoom.xos",                       displayName: "Zoom",                     kind: .nativeMeetingApp),
+        .init(bundleID: "com.microsoft.teams2",              displayName: "Microsoft Teams",          kind: .nativeMeetingApp),
+        .init(bundleID: "com.microsoft.teams",               displayName: "Microsoft Teams (legacy)", kind: .nativeMeetingApp),
+        .init(bundleID: "org.whispersystems.signal-desktop", displayName: "Signal",                   kind: .nativeMeetingApp),
         // Browsers (any tab; per-URL detection deferred per slice 5 light scope)
-        .init(bundleID: "com.google.Chrome", displayName: "Chrome"),
-        .init(bundleID: "com.apple.Safari", displayName: "Safari"),
-        .init(bundleID: "company.thebrowser.Browser", displayName: "Arc"),
-        .init(bundleID: "com.microsoft.Edge", displayName: "Edge"),
-        .init(bundleID: "org.mozilla.firefox", displayName: "Firefox"),
-        .init(bundleID: "com.brave.Browser", displayName: "Brave"),
-        .init(bundleID: "im.helium.helium", displayName: "Helium"),
+        .init(bundleID: "com.google.Chrome",                 displayName: "Chrome",   kind: .browser),
+        .init(bundleID: "com.apple.Safari",                  displayName: "Safari",   kind: .browser),
+        .init(bundleID: "company.thebrowser.Browser",        displayName: "Arc",      kind: .browser),
+        .init(bundleID: "com.microsoft.Edge",                displayName: "Edge",     kind: .browser),
+        .init(bundleID: "org.mozilla.firefox",               displayName: "Firefox",  kind: .browser),
+        .init(bundleID: "com.brave.Browser",                 displayName: "Brave",    kind: .browser),
+        .init(bundleID: "im.helium.helium",                  displayName: "Helium",   kind: .browser),
     ]
 
     public static func appFor(bundleID: String) -> MeetingApp? {

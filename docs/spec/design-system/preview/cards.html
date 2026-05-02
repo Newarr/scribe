@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Cards</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body {
+    margin: 0;
+    background: var(--bg);
+    padding: 22px 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 16px 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 160ms var(--ease-out), transform 160ms var(--ease-out);
+    cursor: pointer;
+  }
+  .card:hover { border-color: var(--card-border-hover); }
+  .card:active { transform: scale(0.995); }
+
+  .top { display: flex; align-items: center; justify-content: space-between; }
+  .when {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .title {
+    font-size: 16px;
+    font-weight: var(--weight-medium);
+    letter-spacing: -0.015em;
+    line-height: 1.3;
+    margin: 0;
+    color: var(--fg-1);
+  }
+  .desc {
+    font-size: 13.5px;
+    color: var(--fg-2);
+    line-height: 1.5;
+    text-wrap: pretty;
+    margin: 0;
+  }
+
+  .foot {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .speakers { display: inline-flex; align-items: center; }
+  .speakers .av {
+    width: 20px; height: 20px;
+    border-radius: 99px;
+    border: 1.5px solid var(--bg);
+    margin-left: -6px;
+    font-family: var(--font-sans);
+    font-size: 9.5px;
+    color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  .speakers .av:first-child { margin-left: 0; }
+  .speakers .av.a { background: oklch(0.50 0.10 35); }
+  .speakers .av.b { background: oklch(0.42 0.08 255); }
+  .speakers .av.c { background: oklch(0.42 0.10 145); }
+  .speakers .av.d { background: oklch(0.36 0 0); }
+
+  .meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .meta .sep { margin: 0 6px; color: var(--gray-300); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <span class="when">Today · 14:02</span>
+      <span class="indicator indicator-ready"><span class="dot"></span>READY</span>
+    </div>
+    <div class="title">Acme Q3 sync</div>
+    <div class="desc">Pricing cutover, two cohorts. Action item assigned to Maya.</div>
+    <div class="foot">
+      <span class="speakers">
+        <span class="av a">M</span><span class="av b">T</span><span class="av c">P</span>
+      </span>
+      <span class="meta">42m<span class="sep">·</span>3 speakers</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="top">
+      <span class="when">Yesterday · 16:45</span>
+      <span class="indicator indicator-sent"><span class="dot"></span>SENT</span>
+    </div>
+    <div class="title">Onboarding — J. Patel</div>
+    <div class="desc">Walkthrough of webhook setup. Follow-up email drafted.</div>
+    <div class="foot">
+      <span class="speakers">
+        <span class="av d">JP</span><span class="av a">YS</span>
+      </span>
+      <span class="meta">12m<span class="sep">·</span>zapier 200</span>
+    </div>
+  </div>
+</body>
+</html>

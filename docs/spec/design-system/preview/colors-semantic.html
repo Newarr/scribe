@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Colors — Semantic</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+</head>
+<body style="margin:0;padding:32px 36px;background:var(--bg);">
+<style>
+  .row {
+    display: grid;
+    grid-template-columns: 14px 110px 1fr 110px;
+    align-items: center;
+    gap: 18px;
+    padding: 14px 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .row:last-child { border-bottom: 1px solid var(--border-subtle); }
+  .swatch { width: 14px; height: 14px; border-radius: 99px; }
+  .name {
+    font-size: 14px;
+    color: var(--fg-1);
+    letter-spacing: -0.005em;
+  }
+  .name em {
+    font-style: normal;
+    color: var(--fg-3);
+    margin-left: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .usage {
+    font-size: 13px;
+    color: var(--fg-2);
+    line-height: 1.45;
+    text-wrap: pretty;
+  }
+  .hex {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    text-align: right;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .ok   { background: oklch(0.62 0.10 145); }
+  .warn { background: oklch(0.65 0.12 75);  }
+  .err  { background: oklch(0.55 0.14 25);  }
+</style>
+  <div class="row">
+    <span class="swatch ok"></span>
+    <span class="name">Success<em>moss</em></span>
+    <span class="usage">Webhook delivered. Transcript saved.</span>
+    <span class="hex">.62 .10 145</span>
+  </div>
+  <div class="row">
+    <span class="swatch warn"></span>
+    <span class="name">Warning<em>ochre</em></span>
+    <span class="usage">Retrying — agent endpoint slow to respond.</span>
+    <span class="hex">.65 .12 075</span>
+  </div>
+  <div class="row">
+    <span class="swatch err"></span>
+    <span class="name">Danger<em>oxblood</em></span>
+    <span class="usage">Recording failed. Audio device unavailable.</span>
+    <span class="hex">.55 .14 025</span>
+  </div>
+</body>
+</html>

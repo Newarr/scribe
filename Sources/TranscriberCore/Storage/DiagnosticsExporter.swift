@@ -234,7 +234,7 @@ public enum DiagnosticsCollector {
 
     /// HMAC-SHA256 hex of a path string keyed with a per-install
     /// secret. Codex Phase θ P1.2: plain SHA-256 of a low-entropy path
-    /// like `/Users/<name>/Documents/Transcriber` is dictionary-
+    /// like `/Users/<name>/Documents/Scribe` is dictionary-
     /// attackable and stable across exports. HMAC with a per-install
     /// secret defeats the rainbow attack while preserving stable
     /// across-export correlation for the same user.

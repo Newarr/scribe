@@ -1,4 +1,4 @@
-name: TranscriberApp
+name: Scribe
 options:
   bundleIdPrefix: com.szymonsypniewicz
   deploymentTarget:
@@ -15,20 +15,20 @@ packages:
   TranscriberCore:
     path: ..
 targets:
-  TranscriberApp:
+  Scribe:
     type: application
     platform: macOS
     sources:
-      - path: TranscriberApp
+      - path: Scribe
         excludes:
           - "Info.plist"
-          - "TranscriberApp.entitlements"
+          - "Scribe.entitlements"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.szymonsypniewicz.transcriber
-        PRODUCT_NAME: TranscriberApp
-        INFOPLIST_FILE: TranscriberApp/Info.plist
-        CODE_SIGN_ENTITLEMENTS: TranscriberApp/TranscriberApp.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.szymonsypniewicz.scribe
+        PRODUCT_NAME: Scribe
+        INFOPLIST_FILE: Scribe/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Scribe/Scribe.entitlements
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES

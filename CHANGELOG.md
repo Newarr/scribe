@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Product renamed**: Transcriber → Scribe. User-facing strings, window
+  titles, plist usage descriptions, default output folder
+  (`~/Transcriber/` → `~/Scribe/`), log path
+  (`~/Library/Logs/TranscriberApp/` → `~/Library/Logs/Scribe/`), bundle
+  ID (`com.szymonsypniewicz.transcriber` → `com.szymonsypniewicz.scribe`),
+  and the brand wordmark SVG all flip to Scribe. The Swift package
+  `TranscriberCore`, the macOS Keychain service id
+  `com.szymonsypniewicz.transcriber`, the `transcriber/v1` schema
+  identifier, and the `transcriber.settings.v1` UserDefaults key stay
+  as-is so existing dev installs don't lose stored API keys or
+  diagnostics instance IDs. Bundle ID change is one-way for any
+  installed dev build (UserDefaults plist filename changes; Keychain
+  entries survive).
+
 ## 1.0.0-rc4 - 2026-04-30
 
 Closes 7 P0 / 19 P1 / 9 P2 findings from the codex PM/UX review.
@@ -9,7 +25,7 @@ deferred to v1.1 product work.
 
 ### Confidential UI
 
-- Every Transcriber-owned window/popover/alert sets
+- Every Scribe-owned window/popover/alert sets
   `NSWindow.sharingType = .none` per spec § Design Principles.
   Privacy modal, Settings, Diagnostics, Setup Required popover,
   detection prompt, quit confirmation, and crash-recovery toast
@@ -20,8 +36,8 @@ deferred to v1.1 product work.
 - Calendar permission is requested LAZILY on first record attempt,
   not at app launch. Pre-launch calendar prompt felt arbitrary
   ("why does this need my calendar?"). (UX-1 P0)
-- Privacy modal CTA: "I understand" → "Start using Transcriber".
-  Added "Read full privacy details" link to `docs/PRIVACY.md`. Body
+- Privacy modal CTA: "I understand" → "Start using Scribe".
+  Added "Read full privacy details" link to `docs/user/PRIVACY.md`. Body
   rewritten for honesty: keyterms-only rule made explicit; ElevenLabs
   deletion-after-processing surfaced; misleading "audio leaves your
   Mac in cloud mode" framing replaced with concrete statements about
@@ -33,8 +49,8 @@ deferred to v1.1 product work.
   single "ElevenLabs (Cloud)" panel + a "Local transcription —
   coming later" disabled note. SettingsFormModel pins engineMode
   to .cloud on Save. (UX-10 + UX-11 P0)
-- **Default output folder**: `~/Documents/Transcriber/` →
-  `~/Transcriber/`. macOS 13+ syncs Documents to iCloud Drive by
+- **Default output folder**: `~/Documents/Scribe/` →
+  `~/Scribe/`. macOS 13+ syncs Documents to iCloud Drive by
   default; recording into a synced folder produces conflicts.
   Existing users who chose a folder are unaffected. (UX-14 P0)
 - **API key copy**: "Stored in your macOS Keychain (service: ...)" →
@@ -69,7 +85,7 @@ deferred to v1.1 product work.
 - **Crash recovery toast**: when supervisor recovery resumed/rescued
   ≥1 sessions, AppDelegate shows a non-blocking alert: "Recovered N
   recording(s) from before the last quit". Action button opens the
-  Transcriber folder. (UX-31 P1)
+  Scribe folder. (UX-31 P1)
 
 ### Failed transcript body
 
@@ -109,7 +125,7 @@ deferred to v1.1 product work.
 - **TESTING.md** Keychain-wipe step aligned with cask reality:
   `brew uninstall --cask transcriber --zap` removes filesystem
   paths only; Keychain wipe is manual. (UX-34 P1)
-- **`docs/STYLE.md`** is the new microcopy guide: voice rules,
+- **`docs/contributing/STYLE.md`** is the new microcopy guide: voice rules,
   canonical terms, copy rules, status states. Single source of
   truth for any user-facing string. (UX-35 P1)
 
@@ -126,7 +142,7 @@ deferred to v1.1 product work.
 
 ## 1.0.0-rc3 - 2026-04-30
 
-Closes every entry in `docs/KNOWN_ISSUES.md` from the rc2 four-parallel
+Closes every entry in `docs/archive/KNOWN_ISSUES-rc3.md` from the rc2 four-parallel
 codex audit (15 architectural P0/P1s + 9 P2s).
 
 ### Capture pipeline correctness
@@ -199,7 +215,7 @@ codex audit (15 architectural P0/P1s + 9 P2s).
 
 The codex audit pipeline (8 reviews total over the autonomous run)
 has produced no outstanding architectural findings as of this commit.
-The user can tag `v1.0.0` once `docs/TESTING.md` is walked through.
+The user can tag `v1.0.0` once `docs/contributing/TESTING.md` is walked through.
 
 
 
@@ -274,7 +290,7 @@ recovery.
 
 ## 1.0.0-rc1 - 2026-04-30
 
-Code-complete release candidate. Validate against `docs/TESTING.md` before tagging `v1.0.0`.
+Code-complete release candidate. Validate against `docs/contributing/TESTING.md` before tagging `v1.0.0`.
 
 ### New
 
@@ -291,7 +307,7 @@ Code-complete release candidate. Validate against `docs/TESTING.md` before taggi
   - Phase θ: typed `DiagnosticsExporter` + DiagnosticsView with mandatory redaction tests (no transcript content, no attendee names, no API key fragments, no stray session-folder content). HMAC-SHA256 path hashing keyed with per-install secret. Recursive schema-shape test pins every nested field.
   - Phase ι: `keep_raw_streams` default-OFF correctly deletes raw streams after `audio.m4a` is on disk and the terminal `.complete` state is written.
   - Phase κ: SPEC documents BS.1770 LUFS as deferred to V1.1; rc1 ships RMS-style approximation.
-  - Phase λ: `docs/PRIVACY.md`, `docs/SECURITY.md`, `docs/TROUBLESHOOTING.md`, `docs/RELEASE.md`.
+  - Phase λ: `docs/user/PRIVACY.md`, `docs/user/SECURITY.md`, `docs/user/TROUBLESHOOTING.md`, `docs/contributing/RELEASE.md`.
 
 - **Track 3 (Engines)**:
   - Phase μ: ElevenLabs parser handles both `words[]` (single-channel diarized) and `transcripts[]` (multichannel) shapes with chronological flattening.
@@ -303,7 +319,7 @@ Code-complete release candidate. Validate against `docs/TESTING.md` before taggi
   - Phase π: 60s prompt auto-dismiss in StartPromptCoordinator. `AudioActivityProbe` protocol seam.
   - Phase σ: hardened-runtime entitlements (audio-input, no JIT, no library-validation bypass). `scripts/release.sh` reads credentials from Keychain only — never inline secrets.
   - Phase τ: `Casks/transcriber.rb.template` for Homebrew distribution, with `zap` block matching the manual-wipe steps in PRIVACY.md.
-  - Phase υ: `scripts/bump-version.sh` keeps every version surface in lockstep. `docs/TESTING.md` is the gating doc.
+  - Phase υ: `scripts/bump-version.sh` keeps every version surface in lockstep. `docs/contributing/TESTING.md` is the gating doc.
 
 ### Tests
 

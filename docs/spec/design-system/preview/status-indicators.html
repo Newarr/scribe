@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Status indicators</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: #0a0a0a;
+    padding: 22px 24px;
+    color: #fff;
+    font-family: var(--font-sans);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 18px;
+    align-content: start;
+  }
+
+  /* Override .indicator for higher-impact display:
+     - bigger dot (10px), brighter colors
+     - tabular mono label with stronger contrast
+     - meta on a second line, dimmed */
+  .row {
+    display: grid;
+    grid-template-columns: 14px 1fr;
+    align-items: baseline;
+    gap: 10px;
+    padding: 12px 14px;
+    background: oklch(0.10 0 0);
+    border: 1px solid var(--card-border-dark);
+    border-radius: 8px;
+  }
+  .dot {
+    width: 10px; height: 10px;
+    border-radius: 99px;
+    align-self: center;
+    background: currentColor;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: currentColor;
+    text-shadow: 0 0 18px currentColor;
+  }
+  .meta {
+    grid-column: 2;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: oklch(0.55 0 0);
+    letter-spacing: 0.02em;
+  }
+
+  /* Color tints — louder than the muted token defaults */
+  .live    { color: oklch(0.78 0.18 35); }
+  .tx      { color: #fff; }
+  .ready   { color: oklch(0.84 0.15 250); }
+  .sent    { color: oklch(0.82 0.18 145); }
+  .failed  { color: oklch(0.74 0.20 25); }
+  .idle    { color: oklch(0.60 0 0); }
+
+  /* Animations */
+  .live .dot {
+    animation: live-pulse 1.4s var(--ease-out) infinite;
+  }
+  @keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0 oklch(0.78 0.18 35 / 0.7); }
+    70%  { box-shadow: 0 0 0 10px oklch(0.78 0.18 35 / 0); }
+    100% { box-shadow: 0 0 0 0 oklch(0.78 0.18 35 / 0); }
+  }
+  .tx .dot {
+    animation: tx-blink 1.1s ease-in-out infinite alternate;
+  }
+  @keyframes tx-blink { from { opacity: 0.35; } to { opacity: 1; } }
+
+  .failed .dot {
+    animation: fail-flicker 1.6s steps(4) infinite;
+  }
+  @keyframes fail-flicker { 0%, 60%, 100% { opacity: 1; } 70% { opacity: 0.3; } }
+</style>
+</head>
+<body>
+  <div class="row live">
+    <span class="dot"></span>
+    <span class="label">LIVE · 04:21</span>
+    <span class="meta">recording in progress · zoom</span>
+  </div>
+  <div class="row tx">
+    <span class="dot"></span>
+    <span class="label">TRANSCRIBING</span>
+    <span class="meta">whisper · local · 1.2× rt</span>
+  </div>
+  <div class="row ready">
+    <span class="dot"></span>
+    <span class="label">READY</span>
+    <span class="meta">awaiting send · agent paused</span>
+  </div>
+  <div class="row sent">
+    <span class="dot"></span>
+    <span class="label">SENT</span>
+    <span class="meta">2s ago · webhook 200 · zapier</span>
+  </div>
+  <div class="row failed">
+    <span class="dot"></span>
+    <span class="label">FAILED</span>
+    <span class="meta">timeout · retry in 30s · 504</span>
+  </div>
+  <div class="row idle">
+    <span class="dot"></span>
+    <span class="label">IDLE</span>
+    <span class="meta">no calls today · listening</span>
+  </div>
+</body>
+</html>

@@ -9,6 +9,7 @@ Package.resolved
 xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
+TranscriberApp/.dd/
 
 # macOS
 .DS_Store

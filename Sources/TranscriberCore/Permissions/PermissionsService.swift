@@ -1,5 +1,6 @@
 import AVFoundation
-import ScreenCaptureKit
+import CoreGraphics
+import EventKit
 
 public enum PermissionStatus: Sendable, Equatable {
     case notDetermined, denied, granted
@@ -22,12 +23,25 @@ public final class PermissionsService: Sendable {
         return granted ? .granted : .denied
     }
 
+    // CGPreflightScreenCaptureAccess reads TCC directly, returns instantly,
+    // and doesn't have the "first call after grant throws until restart"
+    // failure mode that SCShareableContent.current does. The async signature
+    // is preserved so PermissionStatusProbing can keep its shape.
     public func screenRecordingStatus() async -> PermissionStatus {
-        do {
-            _ = try await SCShareableContent.current
-            return .granted
-        } catch {
-            return .denied
+        CGPreflightScreenCaptureAccess() ? .granted : .denied
+    }
+
+    @discardableResult
+    public func requestScreenRecording() async -> Bool {
+        CGRequestScreenCaptureAccess()
+    }
+
+    public func requestCalendar() async -> PermissionStatus {
+        let store = EKEventStore()
+        return await withCheckedContinuation { continuation in
+            store.requestFullAccessToEvents { granted, _ in
+                continuation.resume(returning: granted ? .granted : .denied)
+            }
         }
     }
 }

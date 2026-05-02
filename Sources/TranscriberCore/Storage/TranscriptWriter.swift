@@ -51,24 +51,26 @@ public enum TranscriptWriter {
     }
 
     public static func writeFailed(at url: URL, context c: TranscriptContext, errorMessage: String) throws {
-        // Codex PM-review UX-29: human failure body. The user opens
-        // this transcript expecting words, sees "Transcription
-        // Failed", and needs to know two things: is my audio safe,
-        // and what do I do now? The error itself is the LAST line —
-        // not the headline — and only there for support to copy.
+        // F-12 (per scribe-design-system PROJECT-README "Failure as a
+        // kept promise"): lead with what happened, then whether the
+        // audio is safe, then the next action. The raw engine error
+        // belongs in a backtick block at the very bottom for support
+        // copy. Sentence case throughout, no em dashes, no emoji.
         let audioRef = audioReferenceList(c.audioRelativePaths)
         let body = """
         \(frontmatter(status: "failed", context: c))
 
-        # \(c.title) — transcription failed
+        # Transcription failed
 
         Your recording is safe. The audio is saved as \(audioRef) inside this folder.
 
+        This was the transcript for `\(c.title)`.
+
         ## What you can do
 
-        - **Retry:** Delete this `transcript.md` and relaunch Transcriber. The supervisor scan picks it up and tries again.
-        - **Use the audio elsewhere:** Drop \(audioRef) into another transcription tool — the recording is a normal mono AAC m4a.
-        - **Get help:** Open Transcriber → Diagnostics… → Export… and share the JSON file.
+        - **Retry:** Delete this `transcript.md` and relaunch Scribe. The supervisor scan picks it up and tries again.
+        - **Use the audio elsewhere:** Drop \(audioRef) into another transcription tool. The recording is a normal mono AAC m4a.
+        - **Get help:** Open Scribe → Diagnostics… → Export… and share the JSON file.
 
         ---
 
