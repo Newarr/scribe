@@ -13,16 +13,19 @@ public actor DetectionEngine {
 
     private let dwellTime: TimeInterval
     private let skipState: SkipState
+    private let probe: AudioActivityProbe
     private let onCandidate: OnCandidate
     private var pendingTasks: [String: Task<Void, Never>] = [:]
 
     public init(
         dwellTime: TimeInterval = 30,
         skipState: SkipState = SkipState(),
+        probe: AudioActivityProbe = UnknownAudioActivityProbe(),
         onCandidate: @escaping OnCandidate
     ) {
         self.dwellTime = dwellTime
         self.skipState = skipState
+        self.probe = probe
         self.onCandidate = onCandidate
     }
 
@@ -64,6 +67,15 @@ public actor DetectionEngine {
 
     private func fireCandidate(for app: MeetingApp) async {
         pendingTasks.removeValue(forKey: app.bundleID)
+        // Per-PID input-device gate. Probe semantics:
+        //   - true  → bundle is reading from the mic right now → fire.
+        //   - false → bundle is running but not on a call → suppress.
+        //   - nil   → probe couldn't determine (older OS, HAL hiccup);
+        //             pass through to preserve dwell-only legacy behavior.
+        // Closes the Signal-opens-for-messaging and Chrome-opens-with-
+        // music-tab false positives that dwell-on-launch alone produces.
+        let isActive = await probe.isActive(bundleID: app.bundleID)
+        if isActive == false { return }
         await onCandidate(app)
     }
 }

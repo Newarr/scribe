@@ -56,6 +56,54 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertNil(result, "suppress() during dwell must cancel the in-flight callback")
     }
 
+    func testInactiveProbeSuppressesCandidate() async throws {
+        let captured = AppCapture()
+        let engine = DetectionEngine(
+            dwellTime: 0.05,
+            probe: ConstantProbe(value: false)
+        ) { app in
+            await captured.set(app)
+        }
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        await engine.handleLaunch(of: zoom)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let result = await captured.value
+        XCTAssertNil(result, "probe returning false must suppress candidate fire (this is the Signal-without-call fix)")
+    }
+
+    func testActiveProbeFiresCandidate() async throws {
+        let captured = AppCapture()
+        let engine = DetectionEngine(
+            dwellTime: 0.05,
+            probe: ConstantProbe(value: true)
+        ) { app in
+            await captured.set(app)
+        }
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        await engine.handleLaunch(of: zoom)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let result = await captured.value
+        XCTAssertEqual(result?.bundleID, "us.zoom.xos", "probe returning true must allow candidate fire")
+    }
+
+    func testUnknownProbePassesThrough() async throws {
+        // nil from the probe means "couldn't determine" — preserve the
+        // dwell-only legacy path so older OS / HAL hiccups don't silently
+        // black-hole detection.
+        let captured = AppCapture()
+        let engine = DetectionEngine(
+            dwellTime: 0.05,
+            probe: ConstantProbe(value: nil)
+        ) { app in
+            await captured.set(app)
+        }
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        await engine.handleLaunch(of: zoom)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let result = await captured.value
+        XCTAssertEqual(result?.bundleID, "us.zoom.xos", "probe returning nil must pass through")
+    }
+
     func testRedundantLaunchEventsDebounce() async throws {
         let captured = FireCounter()
         // Bump dwellTime + final wait to absorb CI's scheduling jitter — local
@@ -85,4 +133,9 @@ actor AppCapture {
 actor FireCounter {
     private(set) var value = 0
     func increment() { value += 1 }
+}
+
+struct ConstantProbe: AudioActivityProbe {
+    let value: Bool?
+    func isActive(bundleID: String) async -> Bool? { value }
 }

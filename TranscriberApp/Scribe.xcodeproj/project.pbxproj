@@ -26,7 +26,6 @@
 		C2A96AB7EE98B8202FA6E08D /* Inter-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = E5F59C608909E8E52F4CC15A /* Inter-LICENSE.txt */; };
 		C4457AFB46EBCC8F7A30D469 /* ScribeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */; };
 		C88C5DC6D949DB3B9964300E /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = D529955956249F0700BFFD73 /* DesignSystem.swift */; };
-		DD8AAC2CA7198160B660C127 /* StartPromptWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20F41274FBFC24B6973368C6 /* StartPromptWindow.swift */; };
 		E5C6D97873E51C84CF16DE83 /* GeistMonoVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = E1AD54C2365F26003491870B /* GeistMonoVariable.ttf */; };
 		E779DA60BCB9E871BE08B542 /* StartPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */; };
 		EEC5742F1E4892468EEF2EDD /* JetBrainsMonoVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 71044992EBA5AF0C0CFA48D2 /* JetBrainsMonoVariable.ttf */; };
@@ -40,7 +39,6 @@
 		11345C81116DC36BA7419B25 /* Scribe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scribe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18EBB27FDC7B355AA673489A /* GeistVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistVariable-Italic.ttf"; sourceTree = "<group>"; };
 		1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InterVariable-Italic.ttf"; sourceTree = "<group>"; };
-		20F41274FBFC24B6973368C6 /* StartPromptWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptWindow.swift; sourceTree = "<group>"; };
 		21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptCoordinator.swift; sourceTree = "<group>"; };
 		223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Geist-OFL.txt"; sourceTree = "<group>"; };
 		24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
@@ -124,7 +122,6 @@
 				572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */,
 				45C6B78097708D59228C8C65 /* SettingsWindow.swift */,
 				21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */,
-				20F41274FBFC24B6973368C6 /* StartPromptWindow.swift */,
 				80ECC09A60AB563DAA7AF65E /* Fonts */,
 			);
 			path = Scribe;
@@ -236,7 +233,6 @@
 				C4457AFB46EBCC8F7A30D469 /* ScribeApp.swift in Sources */,
 				69D35C9D594B8F1F1EB96A53 /* SettingsWindow.swift in Sources */,
 				E779DA60BCB9E871BE08B542 /* StartPromptCoordinator.swift in Sources */,
-				DD8AAC2CA7198160B660C127 /* StartPromptWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

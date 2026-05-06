@@ -245,8 +245,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Detection layer: process allowlist watcher feeds DetectionEngine,
-        // engine fires onCandidate after dwell, app shows the start prompt.
-        let engine = DetectionEngine(dwellTime: 30) { [weak self] app in
+        // engine fires onCandidate after dwell + per-PID input-device
+        // check, app shows the start prompt. The probe closes the
+        // Signal-opens-for-messaging and Chrome-opens-for-anything-else
+        // false positives that dwell-on-launch alone produced.
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            probe: CoreAudioInputProbe()
+        ) { [weak self] app in
             await self?.handleDetectionCandidate(app)
         }
         self.detectionEngine = engine
