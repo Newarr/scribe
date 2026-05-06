@@ -167,7 +167,11 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
                 )
             ],
             intentIdentifiers: [],
-            options: []
+            // .customDismissAction routes a user-issued dismiss through
+            // didReceive (with UNNotificationDismissActionIdentifier).
+            // Without it, the user closing the banner is silent and we
+            // wait the full 60s before resolving as skipForNow.
+            options: [.customDismissAction]
         )
         UNUserNotificationCenter.current().setNotificationCategories([category])
         registeredCategories = true
@@ -230,7 +234,11 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             default:
                 choice = .skipForNow
             }
-            self.resolve(identifier: identifier, with: choice, removeNotification: false)
+            // Terminal user response — clear the banner from Notification
+            // Center too. Otherwise actioned prompts pile up there, since
+            // willPresent includes .list to keep the banner around for
+            // late-arriving clicks.
+            self.resolve(identifier: identifier, with: choice, removeNotification: true)
         }
     }
 }

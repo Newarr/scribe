@@ -66,7 +66,6 @@ public actor DetectionEngine {
     }
 
     private func fireCandidate(for app: MeetingApp) async {
-        pendingTasks.removeValue(forKey: app.bundleID)
         // Per-PID input-device gate. Probe semantics:
         //   - true  → bundle is reading from the mic right now → fire.
         //   - false → bundle is running but not on a call → suppress.
@@ -74,7 +73,15 @@ public actor DetectionEngine {
         //             pass through to preserve dwell-only legacy behavior.
         // Closes the Signal-opens-for-messaging and Chrome-opens-with-
         // music-tab false positives that dwell-on-launch alone produces.
+        //
+        // Pending-task entry is held across the probe await so a quit
+        // arriving during the probe still has something to cancel. The
+        // dwell task that calls us checks isCancelled after the await
+        // and bails before onCandidate fires, so a quit-during-probe
+        // race no longer leaks a post-quit prompt.
         let isActive = await probe.isActive(bundleID: app.bundleID)
+        defer { pendingTasks.removeValue(forKey: app.bundleID) }
+        if Task.isCancelled { return }
         if isActive == false { return }
         await onCandidate(app)
     }

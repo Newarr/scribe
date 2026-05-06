@@ -21,23 +21,44 @@ import Foundation
 ///     (background YouTube tabs, system sounds, music) to keep the
 ///     signal narrow.
 ///
-/// Multiple `AudioObjectID`s can share a bundle ID (Chrome helpers,
-/// Teams renderer + main, etc.). Returns true if ANY matching process
-/// is reading input.
+/// Bundle matching is **prefix-aware**: Chrome's renderer that
+/// actually holds the mic for a Meet tab has bundle ID
+/// `com.google.Chrome.helper.renderer`, not `com.google.Chrome`. Same
+/// for Signal (`org.whispersystems.signal-desktop.helper.Renderer`),
+/// Teams, Slack, etc. Matching only the parent bundle would silently
+/// miss every real browser/Electron call. The probe therefore matches
+/// when a process bundle equals the allowlist bundle OR is in its
+/// dotted descendant namespace.
+///
+/// Returns true if ANY matching process is reading input. Returns nil
+/// (engine pass-through) if the HAL refused to enumerate processes OR
+/// if a matching process had a transient read error on its input
+/// property — the caller treats nil as "couldn't determine, run the
+/// dwell-only legacy path" rather than "no call."
 public struct CoreAudioInputProbe: AudioActivityProbe {
     public init() {}
 
     public func isActive(bundleID: String) async -> Bool? {
         let processIDs = readProcessObjectList()
         guard let processIDs else { return nil }
+        var sawReadError = false
         for processID in processIDs {
             guard let processBundleID = readBundleID(processID: processID),
-                  processBundleID == bundleID else { continue }
-            if readIsRunningInput(processID: processID) {
-                return true
+                  Self.matches(allowlistBundle: bundleID, processBundle: processBundleID) else { continue }
+            switch readIsRunningInput(processID: processID) {
+            case .some(true):  return true
+            case .some(false): continue
+            case .none:        sawReadError = true
             }
         }
-        return false
+        return sawReadError ? nil : false
+    }
+
+    /// Internal so tests can lock the prefix semantics without spinning
+    /// up the full HAL plumbing. Public probe surface stays `isActive`.
+    static func matches(allowlistBundle: String, processBundle: String) -> Bool {
+        if processBundle == allowlistBundle { return true }
+        return processBundle.hasPrefix(allowlistBundle + ".")
     }
 
     private func readProcessObjectList() -> [AudioObjectID]? {
@@ -57,7 +78,12 @@ public struct CoreAudioInputProbe: AudioActivityProbe {
         guard sizeStatus == noErr else { return nil }
         if size == 0 { return [] }
 
-        let count = Int(size) / MemoryLayout<AudioObjectID>.stride
+        // Defend against a non-multiple HAL response (rare, but cheap
+        // to guard). If the byte count isn't a clean multiple of the
+        // AudioObjectID stride, drop the trailing partial element.
+        let stride = MemoryLayout<AudioObjectID>.stride
+        let count = Int(size) / stride
+        size = UInt32(count * stride)
         var ids = [AudioObjectID](repeating: 0, count: count)
         let dataStatus = ids.withUnsafeMutableBufferPointer { buffer -> OSStatus in
             guard let base = buffer.baseAddress else { return kAudioHardwareUnspecifiedError }
@@ -91,7 +117,15 @@ public struct CoreAudioInputProbe: AudioActivityProbe {
         return ref.takeRetainedValue() as String
     }
 
-    private func readIsRunningInput(processID: AudioObjectID) -> Bool {
+    /// Returns:
+    ///   - `.some(true)`  — process is actively reading input.
+    ///   - `.some(false)` — process is not reading input.
+    ///   - `nil`          — HAL refused the read (process tearing down,
+    ///                      transient error). Caller distinguishes this
+    ///                      from a definitive "no" and surfaces nil up
+    ///                      to `isActive` so the engine pass-through
+    ///                      doesn't suppress a real call.
+    private func readIsRunningInput(processID: AudioObjectID) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioProcessPropertyIsRunningInput,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -102,6 +136,7 @@ public struct CoreAudioInputProbe: AudioActivityProbe {
         let status = withUnsafeMutablePointer(to: &value) { ptr -> OSStatus in
             AudioObjectGetPropertyData(processID, &address, 0, nil, &size, UnsafeMutableRawPointer(ptr))
         }
-        return status == noErr && value != 0
+        guard status == noErr else { return nil }
+        return value != 0
     }
 }
