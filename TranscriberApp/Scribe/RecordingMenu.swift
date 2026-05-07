@@ -39,6 +39,36 @@ final class RecordingMenu {
         didSet { model.refreshRecents(under: outputRoot) }
     }
 
+    /// Elapsed seconds since recording started. AppDelegate ticks
+    /// this once per second from a `Timer` while in the recording
+    /// state so the popover header + capture card show a live timer
+    /// instead of a frozen `0:00`. The popover uses
+    /// `font: monospaced digit` so per-tick width changes don't
+    /// jitter the surface.
+    var elapsedSeconds: Int = 0 {
+        didSet { model.elapsedSeconds = elapsedSeconds }
+    }
+
+    /// Right-side label inside the live indicator on the recording
+    /// surface. AppDelegate sets this to the matched calendar event
+    /// title (preferred), the detection candidate's display name,
+    /// or `Recording` when neither is known.
+    var recordingSourceLabel: String = "Recording" {
+        didSet { model.recordingSourceLabel = recordingSourceLabel }
+    }
+
+    /// Where the saved transcript will land. AppDelegate sets this
+    /// when a session starts so the recording surface's outcome
+    /// strip can show the user the destination folder name. Nil
+    /// hides the strip.
+    var outcomeFolderName: String? {
+        didSet { model.outcomeFolderName = outcomeFolderName }
+    }
+
+    var outcomeFolderURL: URL? {
+        didSet { model.outcomeFolderURL = outcomeFolderURL }
+    }
+
     let popover: NSPopover
     private let onAction: (Action) -> Void
     private let model: RecordingMenuModel
@@ -117,6 +147,11 @@ final class RecordingMenuModel: ObservableObject {
     /// Right-side mono value for the Mic row. Defaults to the system
     /// default device's display name when known; falls back to `"-"`.
     @Published var micLabel: String = "-"
+    /// Where the saved transcript will land (folder name only, e.g.
+    /// `2026-04-30 14:02 - Acme Q3 sync`). Nil hides the outcome
+    /// strip below the waveform.
+    @Published var outcomeFolderName: String? = nil
+    @Published var outcomeFolderURL: URL? = nil
 
     init(status: SessionStatus) {
         self.status = status
@@ -129,193 +164,233 @@ final class RecordingMenuModel: ObservableObject {
 }
 
 private struct RecordingPopoverContent: View {
+    // TEMPORARY DEVELOPMENT PLACEHOLDER ONLY. This light mock is not close
+    // to the final end-user menu UI; it exists so we can inspect broad
+    // spacing, status, and action direction while the real surface is designed.
+    // The state-switching tab bar below is dev-only scaffolding and must be
+    // removed before the user-facing implementation ships.
     @ObservedObject var model: RecordingMenuModel
     let onAction: (RecordingMenu.Action) -> Void
 
-    /// Width of the menu popover. Height is dynamic; the outer
-    /// `.fixedSize(horizontal: false, vertical: true)` lets SwiftUI
-    /// size to content so an empty state takes ~190pt while a full
-    /// recents list pushes to ~440pt without wasting middle space.
-    private let menuWidth: CGFloat = 320
+    private let menuWidth: CGFloat = 420
+    @SwiftUI.State private var didAppear: Bool = false
+
+    private var selectedTab: SurfaceTab {
+        switch model.status {
+        case .recording, .stopping, .starting, .finalized:
+            return .recording
+        case .failed:
+            return .transcript
+        case .idle:
+            return .idle
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().background(SwiftUI.Color.white.opacity(0.06))
+            Divider().background(LightPopover.line)
+            tabBar
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             content
-            Divider().background(SwiftUI.Color.white.opacity(0.06))
-            footer
         }
-        // Translucent dark surface. The popover's system vibrancy
-        // chrome supplies the underlying blur; this layer adds the
-        // muted dark tint and 1px hairline border that match the
-        // reference's "dark but kinda liquid glass muted look."
-        .background(SwiftUI.Color.black.opacity(0.40))
+        .background(LightPopover.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(SwiftUI.Color.white.opacity(0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(LightPopover.line, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: SwiftUI.Color.black.opacity(0.16), radius: 18, x: 0, y: 8)
         .frame(width: menuWidth)
         .fixedSize(horizontal: false, vertical: true)
+        .opacity(didAppear ? 1 : 0)
+        .offset(y: didAppear ? 0 : -6)
+        .animation(.easeOut(duration: 0.18), value: didAppear)
+        .onAppear { didAppear = true }
+        .preferredColorScheme(.light)
     }
-
-    // MARK: header
 
     private var header: some View {
-        HStack(spacing: 10) {
-            BrandMark(size: 18)
-                .foregroundStyle(DS.Color.foreground)
+        HStack(spacing: 12) {
+            BrandMark(size: 14)
+                .foregroundStyle(SwiftUI.Color.black)
             Text("scribe")
-                .font(DS.Font.bodyEmphasis)
-                .foregroundStyle(DS.Color.foreground)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(LightPopover.text)
             Spacer()
-            statusBadge
+            LightStatusBadge(
+                text: headerStatusText,
+                color: headerStatusColor
+            )
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .frame(height: 44)
     }
 
-    @ViewBuilder
-    private var statusBadge: some View {
-        switch model.status {
-        case .recording, .stopping:
-            Indicator(state: .live, label: "REC · \(timeString(model.elapsedSeconds))")
-        case .starting:
-            Indicator(state: .transcribing, label: "Starting")
-        case .finalized:
-            Indicator(state: .transcribing, label: "Saving")
-        case .failed:
-            Indicator(state: .failed, label: "Failed")
-        case .idle:
-            if model.setupNeedsAttention {
-                Indicator(state: .warning, label: "Setup")
-            } else {
-                Indicator(state: .ready, label: "Ready")
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(SurfaceTab.allCases) { tab in
+                Button {
+                    if tab == .settings { onAction(.openSettings) }
+                } label: {
+                    Text(tab.title)
+                        .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .regular))
+                        .foregroundStyle(selectedTab == tab ? LightPopover.text : LightPopover.secondaryText)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(selectedTab == tab ? SwiftUI.Color.white : SwiftUI.Color.clear)
+                                .shadow(color: selectedTab == tab ? SwiftUI.Color.black.opacity(0.11) : .clear, radius: 3, x: 0, y: 1)
+                        )
+                }
+                .buttonStyle(.plain)
             }
         }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LightPopover.controlFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(LightPopover.line, lineWidth: 1)
+        )
     }
-
-    // MARK: body
 
     @ViewBuilder
     private var content: some View {
         switch model.status {
         case .recording, .stopping, .starting, .finalized:
             recordingLayout
-        case .idle, .failed:
-            recentsLayout
+        case .failed:
+            transcriptLayout
+        case .idle:
+            idleLayout
         }
+    }
+
+    private var idleLayout: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(model.setupNeedsAttention ? LightPopover.warning : LightPopover.ready)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(model.setupNeedsAttention ? "Setup needs attention" : "Ready when you are.")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(LightPopover.text)
+                    Text(model.setupNeedsAttention ? "Open setup to grant missing permissions." : "Scribe is watching for calls. Start manually any time.")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(LightPopover.secondaryText)
+                }
+                Spacer()
+            }
+            if model.recents.isEmpty {
+                EmptyView()
+            } else {
+                VStack(spacing: 1) {
+                    ForEach(model.recents, id: \.directory) { entry in
+                        MenuRow(entry: entry)
+                    }
+                }
+                .padding(6)
+                .background(LightPopover.controlFill.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            HStack {
+                Spacer()
+                Button("Record now") { onAction(.record) }
+                    .keyboardShortcut("r", modifiers: [.command])
+                    .buttonStyle(LightPrimaryButtonStyle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 18)
     }
 
     private var recordingLayout: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Recording surface. One card carrying the source label,
-            // elapsed time, and the live waveform. Matches the
-            // reference design's centerpiece.
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Indicator(state: .live, label: model.recordingSourceLabel)
-                    Spacer()
-                    Text(timeString(model.elapsedSeconds))
-                        .font(SwiftUI.Font.custom(DS.monoFamily, size: 22).weight(.semibold))
-                        .foregroundStyle(DS.Color.foreground)
-                        .monospacedDigit()
-                }
-                DSWaveform()
-            }
-            .padding(14)
-            .background(DS.Color.backgroundCard)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg)
-                    .stroke(DS.Color.borderCard, lineWidth: 1)
-            )
-            .cornerRadius(DS.Radius.lg)
-
-            // CAPTURING group: real-time capture facts as status
-            // rows. Values come from the live model where known;
-            // placeholders read "-" so the rhythm holds.
-            VStack(alignment: .leading, spacing: 10) {
-                DSEyebrow(text: "Capturing")
-                VStack(spacing: 0) {
-                    DSStatusRow("System audio", value: model.systemAudioLabel)
-                    DSStatusRow("Mic",          value: model.micLabel)
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
-
-    @ViewBuilder
-    private var recentsLayout: some View {
-        if model.recents.isEmpty {
-            HStack {
-                Text("No recordings yet")
-                    .font(DS.Font.bodySmall)
-                    .foregroundStyle(DS.Color.foregroundSecondary)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Circle().fill(LightPopover.live).frame(width: 8, height: 8)
+                Text(model.recordingSourceLabel)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(LightPopover.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("via Zoom")
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(LightPopover.secondaryText)
                 Spacer()
+                Text(timeString(model.elapsedSeconds))
+                    .font(.system(size: 20, weight: .regular, design: .monospaced))
+                    .foregroundStyle(LightPopover.text)
+                    .monospacedDigit()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
-        } else {
-            VStack(spacing: 1) {
-                ForEach(model.recents, id: \.directory) { entry in
-                    MenuRow(entry: entry)
-                }
+            HeroWaveform()
+                .frame(height: 148)
+            Text("Recording locally · saved when you stop")
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(LightPopover.secondaryText)
+            HStack {
+                Spacer()
+                Button("Pause") {}
+                    .buttonStyle(LightGhostButtonStyle())
+                Button("Stop") { onAction(.stop) }
+                    .keyboardShortcut("s", modifiers: [.command])
+                    .buttonStyle(LightSecondaryButtonStyle())
             }
-            .padding(6)
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
     }
 
-    // MARK: footer
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            overflowMenu
-            Spacer()
-            primaryFooterButton
+    private var transcriptLayout: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(LightPopover.warning)
+                Text("Audio is intact.")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(LightPopover.text)
+            }
+            Text("Transcription failed, but the recording remains on disk and can be retried.")
+                .font(.system(size: 15))
+                .foregroundStyle(LightPopover.secondaryText)
+            HStack {
+                Spacer()
+                Button("Retry") { onAction(.record) }
+                    .buttonStyle(LightPrimaryButtonStyle())
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
     }
 
-    @ViewBuilder
-    private var primaryFooterButton: some View {
+    private var emptyWave: some View {
+        HeroWaveform()
+            .frame(height: 96)
+    }
+
+    private var headerStatusText: String {
         switch model.status {
-        case .recording, .stopping:
-            Button("Stop and save") { onAction(.stop) }
-                .keyboardShortcut("s", modifiers: [.command])
-                .buttonStyle(PrimaryButtonStyle())
-        case .idle, .failed, .finalized:
-            Button("Record now") { onAction(.record) }
-                .keyboardShortcut("r", modifiers: [.command])
-                .buttonStyle(PrimaryButtonStyle())
-        case .starting:
-            Button("Starting…") {}
-                .buttonStyle(SecondaryButtonStyle())
-                .disabled(true)
+        case .recording, .stopping: return "LIVE"
+        case .starting: return "STARTING"
+        case .finalized: return "SAVING"
+        case .failed: return "FAILED"
+        case .idle: return model.setupNeedsAttention ? "SETUP" : "READY"
         }
     }
 
-    private var overflowMenu: some View {
-        Menu {
-            Button("Settings…")    { onAction(.openSettings) }
-            Button(model.setupNeedsAttention ? "Setup required…" : "Check setup…") {
-                onAction(.openSetupRequired)
-            }
-            Button("Diagnostics…") { onAction(.openDiagnostics) }
-            Divider()
-            Button("Quit")         { onAction(.quit) }
-        } label: {
-            Text("⋯")
-                .font(DS.Font.bodyEmphasis)
-                .foregroundStyle(DS.Color.foregroundSecondary)
+    private var headerStatusColor: SwiftUI.Color {
+        switch model.status {
+        case .recording, .stopping: return LightPopover.live
+        case .failed: return LightPopover.warning
+        case .idle: return model.setupNeedsAttention ? LightPopover.warning : LightPopover.ready
+        default: return LightPopover.secondaryText
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .frame(height: 28)
     }
 
     private func timeString(_ seconds: Int) -> String {
@@ -323,7 +398,111 @@ private struct RecordingPopoverContent: View {
         let m = (seconds % 3600) / 60
         let s = seconds % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
+        return String(format: "%02d:%02d", m, s)
+    }
+}
+
+private enum SurfaceTab: CaseIterable, Identifiable {
+    case idle, recording, transcript, settings
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .idle: return "Idle"
+        case .recording: return "Recording"
+        case .transcript: return "Transcript"
+        case .settings: return "Settings"
+        }
+    }
+}
+
+private enum LightPopover {
+    static let surface = SwiftUI.Color(red: 0.965, green: 0.950, blue: 0.940)
+    static let controlFill = SwiftUI.Color(red: 0.900, green: 0.875, blue: 0.860)
+    static let line = SwiftUI.Color.black.opacity(0.10)
+    static let text = SwiftUI.Color(red: 0.07, green: 0.07, blue: 0.075)
+    static let secondaryText = SwiftUI.Color(red: 0.38, green: 0.36, blue: 0.35)
+    static let live = SwiftUI.Color(red: 0.82, green: 0.31, blue: 0.24)
+    static let ready = SwiftUI.Color(red: 0.38, green: 0.67, blue: 0.44)
+    static let warning = SwiftUI.Color(red: 0.83, green: 0.55, blue: 0.16)
+}
+
+private struct LightStatusBadge: View {
+    let text: String
+    let color: SwiftUI.Color
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(text)
+                .font(.system(size: 15, weight: .medium, design: .monospaced))
+                .tracking(1)
+                .foregroundStyle(color)
+        }
+    }
+}
+
+private struct HeroWaveform: View {
+    private let amplitudes: [CGFloat] = [
+        0.18,0.20,0.22,0.18,0.26,0.42,0.46,0.54,0.42,0.72,0.96,0.64,0.55,0.60,0.42,0.30,
+        0.26,0.30,0.44,0.36,0.25,0.30,0.36,0.48,0.62,0.45,0.58,0.50,0.46,0.50,0.80,0.70,
+        0.62,0.42,0.38,0.32,0.25,0.20,0.16
+    ]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            ForEach(amplitudes.indices, id: \.self) { i in
+                Capsule()
+                    .fill(barColor(at: i))
+                    .frame(width: 5, height: 128 * amplitudes[i])
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(
+                colors: [SwiftUI.Color.white.opacity(0.0), SwiftUI.Color.white.opacity(0.70), SwiftUI.Color.white.opacity(0.0)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    private func barColor(at index: Int) -> SwiftUI.Color {
+        let edge = min(index, amplitudes.count - 1 - index)
+        let opacity = edge < 4 ? 0.18 + Double(edge) * 0.12 : 0.62
+        return SwiftUI.Color.black.opacity(opacity)
+    }
+}
+
+private struct LightPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(SwiftUI.Color.white)
+            .padding(.horizontal, 15)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 9).fill(LightPopover.text.opacity(configuration.isPressed ? 0.82 : 1)))
+    }
+}
+
+private struct LightSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(LightPopover.text)
+            .padding(.horizontal, 15)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 9).fill(SwiftUI.Color.white.opacity(configuration.isPressed ? 0.72 : 0.92)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(LightPopover.line, lineWidth: 1))
+    }
+}
+
+private struct LightGhostButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(LightPopover.text)
+            .padding(.horizontal, 16)
+            .frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 9).fill(SwiftUI.Color.black.opacity(configuration.isPressed ? 0.05 : 0)))
     }
 }
 
@@ -417,6 +596,49 @@ private struct MenuRow: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: entry.createdAt, relativeTo: Date()).uppercased()
+    }
+}
+
+private struct LevelBar: View {
+    let label: String
+    let value: Float
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .frame(width: 14)
+            Text(label)
+                .font(DS.Font.monoSmall)
+                .tracking(0.6)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .frame(width: 26, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(SwiftUI.Color.white.opacity(0.08))
+                    Capsule()
+                        .fill(levelColor)
+                        .frame(width: max(3, proxy.size.width * CGFloat(clampedValue)))
+                }
+            }
+            .frame(height: 4)
+            Text(levelText)
+                .font(DS.Font.monoSmall)
+                .foregroundStyle(DS.Color.foregroundTertiary)
+                .frame(width: 46, alignment: .trailing)
+        }
+    }
+
+    private var clampedValue: Float { min(max(value, 0), 1) }
+
+    private var levelColor: SwiftUI.Color {
+        clampedValue <= 0.02 ? DS.Color.warning : SwiftUI.Color.white.opacity(0.92)
+    }
+
+    private var levelText: String {
+        clampedValue <= 0.02 ? "silent" : "−\(Int((1 - clampedValue) * 36 + 6)) dB"
     }
 }
 
