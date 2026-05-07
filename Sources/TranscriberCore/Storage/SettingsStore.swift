@@ -69,10 +69,10 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     public init(
         outputRoot: URL,
         engineMode: EngineMode,
-        appearanceTheme: AppearanceTheme = .system,
         keepRawStreams: Bool,
         aecEnabled: Bool,
         privacyAcknowledged: Bool,
+        appearanceTheme: AppearanceTheme = .system,
         launchAtLogin: Bool = false,
         showInMenuBar: Bool = true,
         startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
@@ -154,10 +154,10 @@ public actor SettingsStore {
         public init(
             outputRoot: URL,
             engineMode: EngineMode = .cloud,
-            appearanceTheme: AppearanceTheme = .system,
             keepRawStreams: Bool = false,  // spec line 102
             aecEnabled: Bool = true,        // D2
             privacyAcknowledged: Bool = false,  // spec line 348
+            appearanceTheme: AppearanceTheme = .system,
             launchAtLogin: Bool = false,
             showInMenuBar: Bool = true,
             startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
@@ -284,10 +284,10 @@ private extension SettingsStore.Defaults {
         SessionSettings(
             outputRoot: outputRoot,
             engineMode: engineMode,
-            appearanceTheme: appearanceTheme,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
             privacyAcknowledged: privacyAcknowledged,
+            appearanceTheme: appearanceTheme,
             launchAtLogin: launchAtLogin,
             showInMenuBar: showInMenuBar,
             startStopShortcut: startStopShortcut
@@ -315,10 +315,10 @@ public enum SettingsSnapshotReader {
         return SessionSettings(
             outputRoot: fallback.outputRoot,
             engineMode: fallback.engineMode,
-            appearanceTheme: fallback.appearanceTheme,
             keepRawStreams: fallback.keepRawStreams,
             aecEnabled: fallback.aecEnabled,
             privacyAcknowledged: fallback.privacyAcknowledged,
+            appearanceTheme: fallback.appearanceTheme,
             launchAtLogin: fallback.launchAtLogin,
             showInMenuBar: fallback.showInMenuBar,
             startStopShortcut: fallback.startStopShortcut

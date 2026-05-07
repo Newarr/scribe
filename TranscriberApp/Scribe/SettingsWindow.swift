@@ -1,5 +1,4 @@
 import AppKit
-import EventKit
 import SwiftUI
 import TranscriberCore
 import UserNotifications
@@ -13,19 +12,27 @@ final class SettingsWindowController {
     private let fallback: SettingsStore.Defaults
     private let keychainService: String
     private let keychainAccount: String
+    private let onShowInMenuBarChange: @MainActor (Bool) -> Void
+    private let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
+    private let onAppearanceThemeChange: @MainActor (AppearanceTheme) -> Void
     private var window: NSWindow?
-    var onAppearanceThemeChange: (@MainActor (AppearanceTheme) -> Void)?
 
     init(
         store: SettingsStore,
         fallback: SettingsStore.Defaults,
         keychainService: String,
-        keychainAccount: String
+        keychainAccount: String,
+        onShowInMenuBarChange: @escaping @MainActor (Bool) -> Void = { _ in },
+        onShortcutChange: @escaping @MainActor (KeyboardShortcutSetting) -> Void = { _ in },
+        onAppearanceThemeChange: @escaping @MainActor (AppearanceTheme) -> Void = { _ in }
     ) {
         self.store = store
         self.fallback = fallback
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
+        self.onShowInMenuBarChange = onShowInMenuBarChange
+        self.onShortcutChange = onShortcutChange
+        self.onAppearanceThemeChange = onAppearanceThemeChange
     }
 
     func show() {
@@ -44,19 +51,55 @@ final class SettingsWindowController {
 
         let host = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 880, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
         host.title = "Scribe Settings"
+        host.titleVisibility = .hidden
+        host.titlebarAppearsTransparent = true
         host.minSize = NSSize(width: 880, height: 600)
         host.maxSize = NSSize(width: 880, height: 600)
         host.center()
+        host.isOpaque = false
+        host.backgroundColor = .clear
+        host.isMovableByWindowBackground = true
         host.isReleasedWhenClosed = false
         // Codex PM-review UX-4: confidential UI.
         host.sharingType = WindowChromeSharing.confidential
         host.contentView = NSHostingView(rootView: SettingsForm(
             model: model,
+            onAppearanceThemeChange: { [weak self] theme in
+                AppearanceApplier.apply(theme)
+                self?.onAppearanceThemeChange(theme)
+                Task { await self?.store.setAppearanceTheme(theme) }
+            },
+            onLaunchAtLoginChange: { [weak self] enabled in
+                do {
+                    try LaunchAtLoginController.setEnabled(enabled)
+                    Task { await self?.store.setLaunchAtLogin(enabled) }
+                    model.saveError = nil
+                } catch {
+                    model.launchAtLogin = !enabled
+                    model.saveError = "Failed to update launch at login: \(error.localizedDescription)"
+                }
+            },
+            onShowInMenuBarChange: { [weak self] visible in
+                self?.onShowInMenuBarChange(visible)
+                Task { await self?.store.setShowInMenuBar(visible) }
+                model.saveError = nil
+            },
+            onShortcutChange: { [weak self] shortcut in
+                self?.onShortcutChange(shortcut)
+                Task { await self?.store.setStartStopShortcut(shortcut) }
+            },
+            onSettingsChange: { [weak self] settings in
+                do {
+                    try await self?.store.commit(settings)
+                } catch {
+                    model.saveError = "Failed to save settings: \(error.localizedDescription)"
+                }
+            },
             onSave: { [weak self, weak host] settings in
                 guard let self else { return }
                 // Codex Phase η P1.1 + P1.2: actually await the commit
@@ -64,7 +107,6 @@ final class SettingsWindowController {
                 // stays open on error; closes only after success.
                 do {
                     try await self.store.commit(settings)
-                    self.onAppearanceThemeChange?(settings.appearanceTheme)
                     host?.close()
                     self.window = nil
                 } catch {
@@ -72,12 +114,8 @@ final class SettingsWindowController {
                 }
             },
             onCancel: { [weak self, weak host] in
-                self?.onAppearanceThemeChange?(model.initialSnapshot.appearanceTheme)
                 host?.close()
                 self?.window = nil
-            },
-            onAppearanceThemeChange: { [weak self] theme in
-                self?.onAppearanceThemeChange?(theme)
             }
         ))
 
@@ -85,14 +123,13 @@ final class SettingsWindowController {
         // Cancel (drop the in-flight model + clear the window pointer
         // so the next open re-reads the on-disk snapshot fresh).
         let delegate = SettingsWindowDelegate { [weak self] in
-            guard let self else { return }
-            self.onAppearanceThemeChange?(SettingsSnapshotReader.read(fallback: self.fallback).appearanceTheme)
-            self.window = nil
+            self?.window = nil
         }
         host.delegate = delegate
         objc_setAssociatedObject(host, &settingsWindowDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         WindowChrome.installGlass(on: host, material: .hudWindow)
+        SettingsWindowChrome.makeCornersTransparent(on: host)
 
         self.window = host
         host.makeKeyAndOrderFront(nil)
@@ -122,6 +159,23 @@ private final class SettingsWindowDelegate: NSObject, NSWindowDelegate, @uncheck
 /// SettingsWindowController (which is constructed lazily).
 nonisolated(unsafe) private var settingsWindowDelegateKey: UInt8 = 0
 
+@MainActor
+private enum SettingsWindowChrome {
+    static let cornerRadius: CGFloat = 14
+
+    static func makeCornersTransparent(on window: NSWindow) {
+        window.isOpaque = false
+        window.backgroundColor = .clear
+
+        guard let contentView = window.contentView else { return }
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.clear.cgColor
+        contentView.layer?.cornerRadius = cornerRadius
+        contentView.layer?.cornerCurve = .continuous
+        contentView.layer?.masksToBounds = true
+    }
+}
+
 /// Observable backing store for the Settings form. SwiftUI binds to the
 /// `@Published` fields; on Save the controller plucks `currentSettings`
 /// out and hands it to `SettingsStore.commit(_:)`.
@@ -133,18 +187,15 @@ nonisolated(unsafe) private var settingsWindowDelegateKey: UInt8 = 0
 final class SettingsFormModel: ObservableObject {
     @Published var outputRoot: URL
     @Published var engineMode: EngineMode
-    @Published var appearanceTheme: AppearanceTheme
     @Published var keepRawStreams: Bool
     @Published var aecEnabled: Bool
+    @Published var appearanceTheme: AppearanceTheme
+    @Published var launchAtLogin: Bool
+    @Published var showInMenuBar: Bool
+    @Published var startStopShortcut: KeyboardShortcutSetting
     @Published var apiKey: String
     @Published var apiKeyEditedFromInitial: Bool = false
     @Published var saveError: String?
-    @Published var storageAudioBytes: Int64 = 0
-    @Published var deleteAudioError: String?
-    @Published var microphoneStatus: PermissionStatus = .notDetermined
-    @Published var screenRecordingStatus: PermissionStatus = .notDetermined
-    @Published var calendarStatus: PermissionStatus = .notDetermined
-    @Published var notificationStatus: PermissionStatus = .notDetermined
 
     let initialSnapshot: SessionSettings
     private let keychainService: String
@@ -159,9 +210,12 @@ final class SettingsFormModel: ObservableObject {
         self.initialSnapshot = initial
         self.outputRoot = initial.outputRoot
         self.engineMode = initial.engineMode
-        self.appearanceTheme = initial.appearanceTheme
         self.keepRawStreams = initial.keepRawStreams
         self.aecEnabled = initial.aecEnabled
+        self.appearanceTheme = initial.appearanceTheme
+        self.launchAtLogin = LaunchAtLoginController.isEnabled
+        self.showInMenuBar = initial.showInMenuBar
+        self.startStopShortcut = initial.startStopShortcut
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
 
@@ -169,8 +223,6 @@ final class SettingsFormModel: ObservableObject {
         let stored = (try? keychain.read()) ?? ""
         self.initialAPIKey = stored
         self.apiKey = stored
-        refreshStorageUsage()
-        refreshPermissionStatuses()
     }
 
     var currentSettings: SessionSettings {
@@ -181,17 +233,19 @@ final class SettingsFormModel: ObservableObject {
             // EngineSelector dispatch; saving it would create a
             // dead-end recording failure.
             engineMode: .cloud,
-            appearanceTheme: appearanceTheme,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
             // Privacy ack is one-way; if the user already acked it,
             // preserve. The Settings UI doesn't let them un-ack.
-            privacyAcknowledged: initialSnapshot.privacyAcknowledged
+            privacyAcknowledged: initialSnapshot.privacyAcknowledged,
+            appearanceTheme: appearanceTheme,
+            launchAtLogin: launchAtLogin,
+            showInMenuBar: showInMenuBar,
+            startStopShortcut: startStopShortcut
         )
     }
 
     /// Commits the API key through Keychain. Returns true on success.
-    /// Caller drops `saveError` if non-nil so the form can surface it.
     func persistAPIKeyIfChanged() -> Bool {
         guard apiKey != initialAPIKey else { return true }
         let keychain = KeychainStore(service: keychainService, account: keychainAccount)
@@ -201,93 +255,11 @@ final class SettingsFormModel: ObservableObject {
             } else {
                 try keychain.write(apiKey)
             }
+            saveError = nil
             return true
         } catch {
             self.saveError = "Failed to save API key: \(error.localizedDescription)"
             return false
-        }
-    }
-
-    func refreshStorageUsage() {
-        storageAudioBytes = Self.totalAudioBytes(under: outputRoot)
-    }
-
-    func refreshPermissionStatuses() {
-        microphoneStatus = PermissionsService().microphoneStatus()
-        switch EKEventStore.authorizationStatus(for: .event) {
-        case .fullAccess:
-            calendarStatus = .granted
-        case .denied, .restricted:
-            calendarStatus = .denied
-        case .notDetermined, .authorized, .writeOnly:
-            calendarStatus = .notDetermined
-        @unknown default:
-            calendarStatus = .notDetermined
-        }
-        Task { @MainActor in
-            screenRecordingStatus = await PermissionsService().screenRecordingStatus()
-            let settings = await UNUserNotificationCenter.current().notificationSettings()
-            switch settings.authorizationStatus {
-            case .authorized, .provisional, .ephemeral:
-                notificationStatus = .granted
-            case .denied:
-                notificationStatus = .denied
-            case .notDetermined:
-                notificationStatus = .notDetermined
-            @unknown default:
-                notificationStatus = .notDetermined
-            }
-        }
-    }
-
-    func deleteAllAudioKeepingTranscripts() {
-        do {
-            try Self.deleteAudioFiles(under: outputRoot)
-            deleteAudioError = nil
-            refreshStorageUsage()
-        } catch {
-            deleteAudioError = "Failed to delete audio: \(error.localizedDescription)"
-        }
-    }
-
-    static func totalAudioBytes(under root: URL) -> Int64 {
-        let names = Set(["audio.m4a", "mic.m4a", "system.m4a"])
-        var total: Int64 = 0
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return 0 }
-        for case let url as URL in enumerator where names.contains(url.lastPathComponent) {
-            if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-               values.isRegularFile == true {
-                total += Int64(values.fileSize ?? 0)
-            }
-        }
-        return total
-    }
-
-    static func deleteAudioFiles(under root: URL) throws {
-        let names = Set(["audio.m4a", "mic.m4a", "system.m4a"])
-        guard let sessionDirs = try? FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey]
-        ) else { return }
-        for dir in sessionDirs {
-            guard let values = try? dir.resourceValues(forKeys: [.isDirectoryKey]), values.isDirectory == true else {
-                continue
-            }
-            let transcript = dir.appendingPathComponent("transcript.md")
-            guard let status = TranscriptStatusReader.read(at: transcript), status == .complete || status == .failed else {
-                continue
-            }
-            for name in names {
-                let audio = dir.appendingPathComponent(name)
-                if let values = try? audio.resourceValues(forKeys: [.isRegularFileKey]),
-                   values.isRegularFile == true {
-                    try FileManager.default.removeItem(at: audio)
-                }
-            }
         }
     }
 
@@ -315,176 +287,109 @@ final class SettingsFormModel: ObservableObject {
 
 private struct SettingsForm: View {
     @ObservedObject var model: SettingsFormModel
+    let onAppearanceThemeChange: @MainActor (AppearanceTheme) -> Void
+    let onLaunchAtLoginChange: @MainActor (Bool) -> Void
+    let onShowInMenuBarChange: @MainActor (Bool) -> Void
+    let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
+    let onSettingsChange: @MainActor (SessionSettings) async -> Void
     let onSave: @MainActor (SessionSettings) async -> Void
     let onCancel: @MainActor () -> Void
-    let onAppearanceThemeChange: (@MainActor (AppearanceTheme) -> Void)?
-    @State private var saving: Bool = false
-    @State private var selectedTab: SettingsTab = .general
+    @State private var selectedPage: SettingsPage = .general
 
     var body: some View {
         HStack(spacing: 0) {
-            SettingsSidebar(selectedTab: $selectedTab)
-                .frame(width: 200)
-            Divider().background(SwiftUI.Color.white.opacity(0.06))
+            FidelitySidebar(selection: $selectedPage)
+                .frame(width: FidelitySettings.sideWidth)
+            FidelityDivider()
             VStack(spacing: 0) {
-                head
-                Divider().background(SwiftUI.Color.white.opacity(0.06))
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(selectedTab.title)
-                                .font(SettingsDesign.title)
-                                .foregroundStyle(DS.Color.foreground)
-                            Text(selectedTab.subtitle)
-                                .font(SettingsDesign.subtitle)
-                                .foregroundStyle(DS.Color.foregroundSecondary)
-                                .lineSpacing(2)
-                                .frame(maxWidth: 520, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
+                FidelityHeader(title: selectedPage.title)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if let saveError = model.saveError {
+                            FidelityErrorBanner(message: saveError) {
+                                model.saveError = nil
+                            }
                         }
-                        tabContent
+                        activePanel
                     }
-                    .padding(.horizontal, 36)
                     .padding(.top, 28)
+                    .padding(.horizontal, 36)
                     .padding(.bottom, 36)
                 }
             }
+            .frame(width: FidelitySettings.mainWidth)
         }
-        .frame(width: 880, height: 600)
-        .background(SettingsWindowSurface())
+        .frame(width: FidelitySettings.windowWidth, height: FidelitySettings.windowHeight)
+        .background(FidelityWindowSurface())
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .font(SettingsDesign.body)
-        .onAppear {
-            model.refreshStorageUsage()
-            model.refreshPermissionStatuses()
-        }
-        .onChange(of: model.appearanceTheme) { theme in
-            onAppearanceThemeChange?(theme)
-        }
-    }
-
-    private var head: some View {
-        HStack {
-            Text("Settings")
-                .font(SettingsDesign.headerTitle)
-                .foregroundStyle(DS.Color.foreground)
-            Spacer()
-            if let err = model.saveError {
-                HStack(spacing: 7) {
-                    Indicator(state: .failed, label: "Error")
-                    Text(err)
-                        .font(SettingsDesign.caption)
-                        .foregroundStyle(DS.Color.danger)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .padding(.trailing, 6)
-            }
-            Button("Discard", action: onCancel)
-                .keyboardShortcut(.cancelAction)
-                .buttonStyle(GhostButtonStyle())
-                .disabled(saving)
-            Button(saving ? "Saving…" : "Save") {
-                Task { await save() }
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(PrimaryButtonStyle())
-            .hoverSheen()
-            .disabled(saving)
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 38)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(FidelitySettings.lineStrong, lineWidth: 1)
+        )
+        .preferredColorScheme(model.appearanceTheme.preferredColorScheme)
     }
 
     @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
+    private var activePanel: some View {
+        switch selectedPage {
         case .general:
-            GeneralSection(model: model)
-            EngineSection(model: model)
+            FidelityGeneralPanel(
+                model: model,
+                onAppearanceThemeChange: onAppearanceThemeChange,
+                onLaunchAtLoginChange: onLaunchAtLoginChange,
+                onShowInMenuBarChange: onShowInMenuBarChange,
+                onShortcutChange: onShortcutChange,
+                onSettingsChange: onSettingsChange
+            )
         case .audio:
-            AudioSection(model: model)
-        case .storage:
-            OutputSection(model: model)
-            StorageSection(model: model)
+            FidelityAudioPanel(model: model, onSettingsChange: onSettingsChange)
+        case .shortcuts:
+            FidelityShortcutsPanel(
+                model: model,
+                onShortcutChange: onShortcutChange,
+                onSettingsChange: onSettingsChange
+            )
+        case .vault:
+            FidelityVaultPanel(model: model, onSettingsChange: onSettingsChange)
         case .privacy:
-            PrivacyStatusSection(model: model)
+            FidelityPrivacyPanel(model: model)
         case .permissions:
-            PermissionsSection(model: model)
+            FidelityPermissionsPanel()
         case .about:
-            AboutSection()
+            FidelityAboutPanel()
         }
     }
-
-    @MainActor
-    private func save() async {
-        saving = true
-        defer { saving = false }
-        model.saveError = nil
-        // Codex Phase η P1.2: keychain write THEN settings commit, both
-        // awaited. If keychain fails, surface and abort. If settings
-        // commit fails, the keychain key was already written; log the
-        // partial state but keep the form open so the user can retry
-        // (rolling back the keychain on commit failure could destroy a
-        // good key the user just typed).
-        guard model.persistAPIKeyIfChanged() else { return }
-        await onSave(model.currentSettings)
-    }
 }
 
-private struct SettingsWindowSurface: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(SwiftUI.Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.78))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(SwiftUI.Color.white.opacity(0.10), lineWidth: 1)
-            )
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [SwiftUI.Color.clear, SwiftUI.Color.white.opacity(0.20), SwiftUI.Color.clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(height: 1)
-                .padding(.horizontal, 24)
-            }
-            .allowsHitTesting(false)
-    }
-}
+private enum SettingsPage: String, CaseIterable, Identifiable {
+    case general
+    case audio
+    case shortcuts
+    case vault
+    case privacy
+    case permissions
+    case about
 
-private enum SettingsTab: CaseIterable, Identifiable {
-    case general, audio, storage, privacy, permissions, about
-
-    var id: Self { self }
+    var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "General"
         case .audio: return "Audio"
-        case .storage: return "Vault"
+        case .shortcuts: return "Shortcuts"
+        case .vault: return "Vault"
         case .privacy: return "Privacy"
         case .permissions: return "Permissions"
         case .about: return "About"
         }
     }
 
-    var subtitle: String {
-        switch self {
-        case .general: return "Choose the transcription engine and configure Scribe's core behavior."
-        case .audio: return "Control capture details for mic and system audio."
-        case .storage: return "Pick where transcripts land and manage retained audio."
-        case .privacy: return "Review how Scribe handles captured audio and metadata."
-        case .permissions: return "Check the macOS permissions Scribe needs to capture meetings."
-        case .about: return "Version and build details for this copy of Scribe."
-        }
-    }
-
     var symbol: String {
         switch self {
-        case .general: return "gearshape"
+        case .general: return "target"
         case .audio: return "waveform"
-        case .storage: return "folder"
+        case .shortcuts: return "keyboard"
+        case .vault: return "cube"
         case .privacy: return "lock"
         case .permissions: return "checkmark.shield"
         case .about: return "info.circle"
@@ -492,267 +397,658 @@ private enum SettingsTab: CaseIterable, Identifiable {
     }
 }
 
-private struct SettingsSidebar: View {
-    @Binding var selectedTab: SettingsTab
+private enum FidelitySettings {
+    static let windowWidth: CGFloat = 880
+    static let windowHeight: CGFloat = 600
+    static let sideWidth: CGFloat = 200
+    static let mainWidth: CGFloat = windowWidth - sideWidth - 1
+    static let headerHeight: CGFloat = 38
+    static let rowLabelWidth: CGFloat = 160
+    static let rowGap: CGFloat = 18
+
+    static let font = "Inter"
+    static let rust = SwiftUI.Color(red: 0.93, green: 0.34, blue: 0.26)
+    static let green = SwiftUI.Color(red: 0.35, green: 0.77, blue: 0.46)
+    static let amber = SwiftUI.Color(red: 0.97, green: 0.72, blue: 0.24)
+    static let ink = adaptive(
+        dark: NSColor(calibratedWhite: 0.98, alpha: 1.0),
+        light: NSColor(calibratedWhite: 0.08, alpha: 1.0)
+    )
+    static let ink2 = adaptive(
+        dark: NSColor(calibratedWhite: 0.72, alpha: 1.0),
+        light: NSColor(calibratedWhite: 0.28, alpha: 1.0)
+    )
+    static let ink3 = adaptive(
+        dark: NSColor(calibratedWhite: 0.48, alpha: 1.0),
+        light: NSColor(calibratedWhite: 0.42, alpha: 1.0)
+    )
+    static let line = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.08)
+    )
+    static let lineRow = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.05),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.07)
+    )
+    static let lineStrong = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.12)
+    )
+    static let groupFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.025),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.62)
+    )
+    static let iconFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.05),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.055)
+    )
+    static let sidebarFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.025),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.035)
+    )
+    static let selectedSidebarFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.075)
+    )
+    static let controlShell = adaptive(
+        dark: NSColor(calibratedWhite: 0.0, alpha: 0.30),
+        light: NSColor(calibratedWhite: 0.88, alpha: 1.0)
+    )
+    static let controlStroke = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.08),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.10)
+    )
+    static let controlSelected = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.82)
+    )
+    static let controlSelectedStroke = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.08),
+        light: NSColor(calibratedRed: 0.02, green: 0.39, blue: 0.78, alpha: 1.0)
+    )
+    static let fieldFill = adaptive(
+        dark: NSColor(calibratedWhite: 0.0, alpha: 0.24),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.76)
+    )
+    static let pathFieldFill = adaptive(
+        dark: NSColor(calibratedWhite: 0.0, alpha: 0.30),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.76)
+    )
+    static let meterFill = adaptive(
+        dark: NSColor(calibratedWhite: 0.0, alpha: 0.35),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.10)
+    )
+    static let codeFill = adaptive(
+        dark: NSColor(calibratedWhite: 0.0, alpha: 0.34),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.68)
+    )
+    static let offToggleFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.10)
+    )
+    static let keyFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.88)
+    )
+    static let keyStroke = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.12)
+    )
+    static let ghostButtonFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.0),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.50)
+    )
+    static let ghostButtonStroke = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.0),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.08)
+    )
+    static let secondaryButtonFill = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.04),
+        light: NSColor(calibratedWhite: 1.0, alpha: 0.70)
+    )
+    static let secondaryButtonStroke = adaptive(
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.10)
+    )
+    static let accentFocus = SwiftUI.Color(red: 0.02, green: 0.39, blue: 0.78)
+
+    static let headerFont = SwiftUI.Font.custom(font, size: 13).weight(.semibold)
+    static let titleFont = SwiftUI.Font.custom(font, size: 22).weight(.semibold)
+    static let subtitleFont = SwiftUI.Font.custom(font, size: 13).weight(.regular)
+    static let sectionFont = SwiftUI.Font.custom(font, size: 11).weight(.semibold)
+    static let rowFont = SwiftUI.Font.custom(font, size: 13).weight(.regular)
+    static let rowValueFont = SwiftUI.Font.custom(font, size: 13).weight(.regular)
+    static let controlFont = SwiftUI.Font.custom(font, size: 12.5).weight(.medium)
+    static let keyFont = SwiftUI.Font.custom(font, size: 12).weight(.medium)
+
+    private static func adaptive(dark: NSColor, light: NSColor) -> SwiftUI.Color {
+        SwiftUI.Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua ? light : dark
+        })
+    }
+}
+
+private struct FidelityWindowSurface: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            base
+            topRightGlow
+            topLeftGlow
+            bottomVignette
+        }
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [.clear, topHairline, .clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 1)
+            .padding(.horizontal, 24)
+        }
+    }
+
+    private var isLight: Bool { colorScheme == .light }
+
+    private var base: SwiftUI.Color {
+        isLight ? SwiftUI.Color(red: 0.96, green: 0.97, blue: 0.98) : SwiftUI.Color(red: 0.028, green: 0.004, blue: 0.010)
+    }
+
+    private var topRightGlow: RadialGradient {
+        RadialGradient(
+            colors: [
+                isLight ? SwiftUI.Color(red: 0.86, green: 0.92, blue: 0.98).opacity(0.94) : SwiftUI.Color(red: 0.30, green: 0.05, blue: 0.10).opacity(0.78),
+                SwiftUI.Color.clear
+            ],
+            center: UnitPoint(x: 0.75, y: 0.06),
+            startRadius: 0,
+            endRadius: 520
+        )
+    }
+
+    private var topLeftGlow: RadialGradient {
+        RadialGradient(
+            colors: [
+                isLight ? SwiftUI.Color(red: 1.0, green: 0.88, blue: 0.84).opacity(0.70) : SwiftUI.Color(red: 0.36, green: 0.11, blue: 0.07).opacity(0.58),
+                SwiftUI.Color.clear
+            ],
+            center: UnitPoint(x: 0.03, y: 0.01),
+            startRadius: 0,
+            endRadius: 480
+        )
+    }
+
+    private var bottomVignette: RadialGradient {
+        RadialGradient(
+            colors: [
+                isLight ? SwiftUI.Color.white.opacity(0.42) : SwiftUI.Color.black.opacity(0.82),
+                SwiftUI.Color.clear
+            ],
+            center: UnitPoint(x: 0.50, y: 1.02),
+            startRadius: 90,
+            endRadius: 500
+        )
+    }
+
+    private var topHairline: SwiftUI.Color {
+        isLight ? SwiftUI.Color.white.opacity(0.60) : SwiftUI.Color.white.opacity(0.20)
+    }
+}
+
+private struct FidelityDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(FidelitySettings.line)
+            .frame(width: 1)
+    }
+}
+
+private struct FidelityHeader: View {
+    let title: String
 
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: 38)
+            HStack {
+                Text(title)
+                    .font(FidelitySettings.headerFont)
+                    .foregroundStyle(FidelitySettings.ink)
+                    .tracking(-0.13)
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+            .frame(height: FidelitySettings.headerHeight)
+            Rectangle()
+                .fill(FidelitySettings.line)
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct FidelitySidebar: View {
+    @Binding var selection: SettingsPage
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                FidelityTrafficButton(color: SwiftUI.Color(red: 1.0, green: 0.31, blue: 0.29)) {
+                    NSApp.keyWindow?.close()
+                }
+                FidelityTrafficButton(color: SwiftUI.Color(red: 1.0, green: 0.75, blue: 0.13)) {
+                    NSApp.keyWindow?.miniaturize(nil)
+                }
+                FidelityTrafficButton(color: SwiftUI.Color(red: 0.19, green: 0.80, blue: 0.30)) {
+                    NSApp.keyWindow?.zoom(nil)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: FidelitySettings.headerHeight)
+            .padding(.leading, 15)
 
             VStack(spacing: 1) {
-                ForEach(SettingsTab.allCases) { tab in
-                    Button {
-                        selectedTab = tab
-                    } label: {
-                        HStack(spacing: 10) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(selectedTab == tab ? DS.Color.recording : SwiftUI.Color.white.opacity(0.05))
-                                Image(systemName: tab.symbol)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(selectedTab == tab ? SwiftUI.Color.white : DS.Color.foregroundTertiary)
-                            }
-                            .frame(width: 22, height: 22)
-                            Text(tab.title)
-                                .font(SettingsDesign.rowLabel)
-                                .foregroundStyle(selectedTab == tab ? DS.Color.foreground : DS.Color.foregroundSecondary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 36)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(selectedTab == tab ? SwiftUI.Color.white.opacity(0.06) : SwiftUI.Color.clear)
-                        )
+                ForEach(SettingsPage.allCases) { page in
+                    FidelitySidebarItem(
+                        symbol: page.symbol,
+                        title: page.title,
+                        selected: selection == page
+                    ) {
+                        selection = page
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(8)
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .background(SwiftUI.Color.white.opacity(0.025))
+        .background(FidelitySettings.sidebarFill)
     }
 }
 
-private enum SettingsDesign {
-    static let family = "Inter"
-    static let title = SwiftUI.Font.custom(family, size: 22).weight(.semibold).leading(.tight)
-    static let subtitle = SwiftUI.Font.custom(family, size: 13).weight(.regular).leading(.standard)
-    static let headerTitle = SwiftUI.Font.custom(family, size: 13).weight(.semibold)
-    static let section = SwiftUI.Font.custom(family, size: 11).weight(.semibold)
-    static let rowLabel = SwiftUI.Font.custom(family, size: 13).weight(.regular)
-    static let rowValue = SwiftUI.Font.custom(family, size: 13).weight(.regular)
-    static let rowEmphasis = SwiftUI.Font.custom(family, size: 13).weight(.medium)
-    static let caption = SwiftUI.Font.custom(family, size: 11.5).weight(.regular)
-    static let button = SwiftUI.Font.custom(family, size: 12.5).weight(.medium)
-    static let body = SwiftUI.Font.custom(family, size: 13).weight(.regular)
+private struct FidelityTrafficButton: View {
+    let color: SwiftUI.Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Circle()
+                .fill(color)
+                .frame(width: 12, height: 12)
+                .overlay(
+                    Circle()
+                        .stroke(SwiftUI.Color.black.opacity(0.22), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+    }
 }
 
-private struct SettingsBox<Content: View>: View {
+private struct FidelitySidebarItem: View {
+    let symbol: String
     let title: String
-    @ViewBuilder var content: () -> Content
+    let selected: Bool
+    let action: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased())
-                .font(SettingsDesign.section)
-                .tracking(0.66)
-                .foregroundStyle(DS.Color.foregroundTertiary)
-                .padding(.leading, 14)
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(SwiftUI.Color.white.opacity(0.025))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(SwiftUI.Color.white.opacity(0.06), lineWidth: 1)
-            )
-        }
-    }
-}
-
-private struct SettingsDivider: View {
-    var body: some View {
-        Rectangle()
-            .fill(SwiftUI.Color.white.opacity(0.05))
-            .frame(height: 1)
-            .padding(.leading, 178)
-    }
-}
-
-private struct GeneralSection: View {
-    @ObservedObject var model: SettingsFormModel
-
-    var body: some View {
-        SettingsBox(title: "App") {
-            DSStatusRow("Menu bar app") {
-                HStack(spacing: 6) {
-                    Indicator(state: .ready, label: "On")
-                            Text("Scribe runs from the menu bar")
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(selected ? FidelitySettings.rust : FidelitySettings.iconFill)
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(selected ? SwiftUI.Color.white : FidelitySettings.ink3)
                 }
-            }
-            SettingsDivider()
-            DSStatusRow("Launch at login") {
-                Text("Configured in macOS Login Items")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-            }
-            SettingsDivider()
-            DSStatusRow("Appearance") {
-                Picker("", selection: $model.appearanceTheme) {
-                    Text(AppearanceTheme.system.displayName).tag(AppearanceTheme.system)
-                    Text(AppearanceTheme.light.displayName).tag(AppearanceTheme.light)
-                    Text(AppearanceTheme.dark.displayName).tag(AppearanceTheme.dark)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 210)
-                Text("Applies to the menu popover")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-            }
-        }
-    }
-}
-
-private struct EngineSection: View {
-    @ObservedObject var model: SettingsFormModel
-
-    var body: some View {
-        // Codex PM-review UX-10/UX-11/UX-12: don't let users pick a
-        // configuration that can't record. Cloud is the only option
-        // until local transcription ships; the disabled-but-visible
-        // row signals "this is coming" without offering a dead-end.
-        SettingsBox(title: "Transcription") {
-            // Active engine as a status row: label left, indicator and
-            // mono value right, matching the canonical design pattern.
-            DSStatusRow("Engine") {
-                HStack(spacing: 6) {
-                    Indicator(state: .ready, label: "Active")
-                    Text("ElevenLabs · cloud")
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundSecondary)
-                }
-            }
-            DSStatusRow("ElevenLabs key") {
-                SecureField("Paste your ElevenLabs API key", text: $model.apiKey)
-                    .textFieldStyle(DSTextFieldStyle())
-                    .frame(maxWidth: 340)
-            }
-            SettingsDivider()
-            HStack(alignment: .top, spacing: 18) {
-                // Spacer to align with the 160pt label column above.
-                Color.clear.frame(width: 160, height: 0)
-                Text("Saved securely in Keychain.")
-                    .font(SettingsDesign.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
+                .frame(width: 22, height: 22)
+                Text(title)
+                    .font(FidelitySettings.rowFont)
+                    .foregroundStyle(selected ? FidelitySettings.ink : FidelitySettings.ink2)
+                    .tracking(-0.13)
                 Spacer(minLength: 0)
             }
-            SettingsDivider()
-            DSStatusRow("Local engine") {
-                HStack(spacing: 6) {
-                    Indicator(state: .idle, label: "Soon")
-                    Text("on-device · coming next")
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
-                }
-            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(selected ? FidelitySettings.selectedSidebarFill : .clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-    }
-
-    private var keychainServiceLabel: String {
-        // Surface the label so users editing keychain via Keychain Access
-        // can find the right item.
-        Bundle.main.bundleIdentifier ?? "com.szymonsypniewicz.transcriber"
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
-private struct AudioSection: View {
+@MainActor
+private enum ShortcutCapturePanel {
+    static func present(
+        current: KeyboardShortcutSetting,
+        onCapture: @escaping @MainActor (KeyboardShortcutSetting) -> Void
+    ) {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 150),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Change Shortcut"
+        panel.isReleasedWhenClosed = false
+        panel.sharingType = WindowChromeSharing.confidential
+
+        let view = ShortcutCaptureView(frame: panel.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 360, height: 150))
+        view.current = current
+        view.onCancel = { panel.close() }
+        view.onCapture = { shortcut in
+            onCapture(shortcut)
+            panel.close()
+        }
+        panel.contentView = view
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeFirstResponder(view)
+    }
+}
+
+@MainActor
+private final class ShortcutCaptureView: NSView {
+    var current: KeyboardShortcutSetting = .defaultStartStop {
+        didSet { currentLabel.stringValue = "Current: \(current.displayString)" }
+    }
+    var onCapture: (@MainActor (KeyboardShortcutSetting) -> Void)?
+    var onCancel: (@MainActor () -> Void)?
+
+    private let titleLabel = NSTextField(labelWithString: "Press the new start / stop shortcut")
+    private let currentLabel = NSTextField(labelWithString: "")
+    private let hintLabel = NSTextField(labelWithString: "Use Command, Shift, Option, or Control with a letter or number. Esc cancels.")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        [titleLabel, currentLabel, hintLabel].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            $0.alignment = .center
+            addSubview($0)
+        }
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        currentLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        hintLabel.font = .systemFont(ofSize: 11)
+        hintLabel.textColor = .secondaryLabelColor
+        currentLabel.stringValue = "Current: \(current.displayString)"
+
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 28),
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            currentLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 14),
+            currentLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            currentLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            hintLabel.topAnchor.constraint(equalTo: currentLabel.bottomAnchor, constant: 18),
+            hintLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            hintLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancel?()
+            return
+        }
+        guard let key = event.charactersIgnoringModifiers?.uppercased(), key.count == 1 else {
+            NSSound.beep()
+            return
+        }
+        let modifiers = event.shortcutModifiers
+        guard !modifiers.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        onCapture?(KeyboardShortcutSetting(key: key, keyCode: event.keyCode, modifiers: modifiers))
+    }
+}
+
+private extension NSEvent {
+    var shortcutModifiers: [ShortcutModifier] {
+        var result: [ShortcutModifier] = []
+        if modifierFlags.contains(.command) { result.append(.command) }
+        if modifierFlags.contains(.shift) { result.append(.shift) }
+        if modifierFlags.contains(.option) { result.append(.option) }
+        if modifierFlags.contains(.control) { result.append(.control) }
+        return result
+    }
+}
+
+private struct FidelityGeneralPanel: View {
     @ObservedObject var model: SettingsFormModel
+    let onAppearanceThemeChange: @MainActor (AppearanceTheme) -> Void
+    let onLaunchAtLoginChange: @MainActor (Bool) -> Void
+    let onShowInMenuBarChange: @MainActor (Bool) -> Void
+    let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
+    let onSettingsChange: @MainActor (SessionSettings) async -> Void
 
     var body: some View {
-        SettingsBox(title: "Capture") {
-            DSStatusRow("System audio") {
-                HStack(spacing: 6) {
-                    Indicator(state: .ready, label: "Required")
-                    Text("Captured through ScreenCaptureKit")
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("General")
+                .font(FidelitySettings.titleFont)
+                .foregroundStyle(FidelitySettings.ink)
+                .tracking(-0.55)
+                .padding(.bottom, 6)
+            Text("Scribe records and transcribes locally on your Mac. Nothing leaves the device.")
+                .font(FidelitySettings.subtitleFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .lineSpacing(4)
+                .tracking(-0.08)
+                .frame(maxWidth: 520, alignment: .leading)
+                .padding(.bottom, 24)
+
+            FidelitySection(title: "Appearance") {
+                FidelityRow(label: "Theme") {
+                    FidelitySegmentedControl(selection: Binding(
+                        get: { model.appearanceTheme },
+                        set: { theme in
+                            guard model.appearanceTheme != theme else { return }
+                            model.appearanceTheme = theme
+                            onAppearanceThemeChange(theme)
+                            persistSettings()
+                        }
+                    ))
                 }
             }
-            SettingsDivider()
-            DSStatusRow("Microphone") {
-                HStack(spacing: 6) {
-                    Indicator(state: .ready, label: "Required")
-                    Text("Mixed with call audio for transcription")
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
+            .padding(.bottom, 22)
+
+            FidelitySection(title: "Shortcut") {
+                FidelityRow(label: "Start / stop recording") {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 3) {
+                            ForEach(Array(model.startStopShortcut.displayString.map(String.init).enumerated()), id: \.offset) { _, part in
+                                FidelityKey(part)
+                            }
+                        }
+                        FidelityGhostButton("Change…") {
+                            ShortcutCapturePanel.present(current: model.startStopShortcut) { shortcut in
+                                model.startStopShortcut = shortcut
+                                onShortcutChange(shortcut)
+                                persistSettings()
+                            }
+                        }
+                    }
                 }
             }
-            SettingsDivider()
-            DSStatusRow("Keep raw streams") {
-                Toggle(isOn: $model.keepRawStreams) { EmptyView() }
-                    .toggleStyle(ScribeSwitchStyle())
-                    .labelsHidden()
-                    .fixedSize()
-                Text("Separate mic and call audio · uses more disk")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
+            .padding(.bottom, 22)
+
+            FidelitySection(title: "App") {
+                FidelityRow(label: "Launch at login") {
+                    FidelityToggle(isOn: Binding(
+                        get: { model.launchAtLogin },
+                        set: { enabled in
+                            model.launchAtLogin = enabled
+                            onLaunchAtLoginChange(enabled)
+                        }
+                    ))
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Show in menu bar") {
+                    FidelityToggle(isOn: Binding(
+                        get: { model.showInMenuBar },
+                        set: { visible in
+                            model.showInMenuBar = visible
+                            onShowInMenuBarChange(visible)
+                        }
+                    ))
+                }
+            }
+        }
+    }
+
+    private func persistSettings() {
+        Task { await onSettingsChange(model.currentSettings) }
+    }
+}
+
+private struct FidelityAudioPanel: View {
+    @ObservedObject var model: SettingsFormModel
+    let onSettingsChange: @MainActor (SessionSettings) async -> Void
+    @State private var inputDevice = "MacBook Pro Microphone"
+    @State private var language = "English (auto-detect dialect)"
+    @State private var speakerLabels = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "Audio",
+                subtitle: "Configure how Scribe captures and transcribes voice."
+            )
+
+            FidelitySection(title: "Recording") {
+                FidelityRow(label: "Input device") {
+                    HStack(spacing: 12) {
+                        FidelitySelectLike(
+                            selection: $inputDevice,
+                            options: ["MacBook Pro Microphone", "AirPods Pro", "External USB-C Mic", "System default"],
+                            minWidth: 240
+                        )
+                        FidelityMeter()
+                    }
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Language") {
+                    FidelitySelectLike(
+                        selection: $language,
+                        options: ["English (auto-detect dialect)", "English — US", "English — UK", "Spanish", "French", "German", "Japanese"],
+                        minWidth: 240
+                    )
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Speaker labels") {
+                    HStack(spacing: 10) {
+                        FidelityToggle(isOn: $speakerLabels)
+                        FidelityHelpText("Diarize speakers when more than one voice is detected.")
+                    }
+                }
+            }
+        }
+    }
+
+    private func persistSettings() {
+        Task { await onSettingsChange(model.currentSettings) }
+    }
+}
+
+private struct FidelityShortcutsPanel: View {
+    @ObservedObject var model: SettingsFormModel
+    let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
+    let onSettingsChange: @MainActor (SessionSettings) async -> Void
+    @State private var menuShortcut = KeyboardShortcutSetting(key: "S", keyCode: 1, modifiers: [.control, .command])
+    @State private var clipboardShortcut: KeyboardShortcutSetting?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "Shortcuts",
+                subtitle: "Keyboard shortcuts for quick capture."
+            )
+
+            FidelitySection(title: "Global") {
+                FidelityRow(label: "Start / stop recording") {
+                    HStack(spacing: 8) {
+                        FidelityKeyboardShortcutDisplay(shortcut: model.startStopShortcut)
+                        FidelityGhostButton("Change…") {
+                            ShortcutCapturePanel.present(current: model.startStopShortcut) { shortcut in
+                                model.startStopShortcut = shortcut
+                                onShortcutChange(shortcut)
+                                Task { await onSettingsChange(model.currentSettings) }
+                            }
+                        }
+                    }
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Open menu bar popover") {
+                    HStack(spacing: 8) {
+                        FidelityKeyboardShortcutDisplay(shortcut: menuShortcut)
+                        FidelityGhostButton("Change…") {
+                            ShortcutCapturePanel.present(current: menuShortcut) { shortcut in
+                                menuShortcut = shortcut
+                            }
+                        }
+                    }
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "New transcript from clipboard") {
+                    HStack(spacing: 8) {
+                        if let clipboardShortcut {
+                            FidelityKeyboardShortcutDisplay(shortcut: clipboardShortcut)
+                        } else {
+                            FidelityHelpText("Not set")
+                        }
+                        FidelityGhostButton(clipboardShortcut == nil ? "Set…" : "Change…") {
+                            ShortcutCapturePanel.present(current: clipboardShortcut ?? model.startStopShortcut) { shortcut in
+                                clipboardShortcut = shortcut
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-private struct OutputSection: View {
+private struct FidelityVaultPanel: View {
     @ObservedObject var model: SettingsFormModel
+    let onSettingsChange: @MainActor (SessionSettings) async -> Void
 
     var body: some View {
-        SettingsBox(title: "Location") {
-            DSStatusRow("Folder") {
-                DSCodeBlock(model.outputRoot.path) {
-                    Button("Choose…") { pickFolder() }
-                        .buttonStyle(GhostButtonStyle())
-                    Button("Reveal") { NSWorkspace.shared.open(model.outputRoot) }
-                        .buttonStyle(GhostButtonStyle())
-                }
-            }
-            if model.outputRootIsInICloudDrive || model.outputRootIsInSyncedStorage {
-                SettingsDivider()
-            }
-            // Codex PM-review UX-15: differentiated warning copy for
-            // iCloud (passive, sync is fine) vs third-party cloud
-            // providers (sync conflicts can corrupt audio). Both are
-            // optional; recording works either way.
-            if model.outputRootIsInICloudDrive {
-                DSStatusRow("Cloud sync") {
-                    HStack(spacing: 6) {
-                        Indicator(state: .ready, label: "iCloud")
-                        Text("Saved sessions sync with iCloud Drive.")
-                            .font(SettingsDesign.caption)
-                            .foregroundStyle(DS.Color.foregroundTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "Vault",
+                subtitle: "Where your transcripts and audio live on disk."
+            )
+
+            FidelitySection(title: "Location") {
+                FidelityRow(label: "Save transcripts to") {
+                    HStack(spacing: 8) {
+                        FidelityPathField(path: shortenedPath)
+                            .frame(maxWidth: .infinity)
+                        FidelitySecondaryButton("Choose…") { pickFolder() }
+                        FidelityGhostButton("Reveal") { revealFolder(model.outputRoot) }
                     }
                 }
-            } else if model.outputRootIsInSyncedStorage {
-                DSStatusRow("Cloud sync") {
-                    HStack(alignment: .top, spacing: 8) {
-                        Indicator(state: .warning, label: "Synced")
-                        Text("Heads up: recordings will upload to your cloud provider as they save. Sync conflicts can create duplicate or incomplete files.")
-                            .font(SettingsDesign.caption)
-                            .foregroundStyle(DS.Color.foregroundTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                FidelityRowDivider()
+                FidelityRow(label: "On disk") {
+                    FidelityStorageStat(url: model.outputRoot)
                 }
             }
         }
+    }
+
+    private var shortenedPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return model.outputRoot.path.replacingOccurrences(of: home, with: "~")
     }
 
     private func pickFolder() {
@@ -764,247 +1060,821 @@ private struct OutputSection: View {
         panel.directoryURL = model.outputRoot
         if panel.runModal() == .OK, let url = panel.url {
             model.outputRoot = url
-            model.refreshStorageUsage()
+            Task { await onSettingsChange(model.currentSettings) }
+        }
+    }
+
+    private func revealFolder(_ url: URL) {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+            model.saveError = nil
+        } catch {
+            model.saveError = "Failed to open folder: \(error.localizedDescription)"
         }
     }
 }
 
-private struct StorageSection: View {
+private struct FidelityPrivacyPanel: View {
     @ObservedObject var model: SettingsFormModel
+    @State private var hideFromScreenRecordings = true
 
     var body: some View {
-        SettingsBox(title: "Storage") {
-            DSStatusRow("Audio on disk") {
-                HStack(spacing: 8) {
-                    Text(byteString(model.storageAudioBytes))
-                        .font(SettingsDesign.rowValue)
-                        .foregroundStyle(DS.Color.foregroundSecondary)
-                    Button("Refresh") { model.refreshStorageUsage() }
-                        .buttonStyle(GhostButtonStyle())
-                }
-            }
-            SettingsDivider()
-            DSStatusRow("Folder") {
-                Button("Reveal in Finder") { NSWorkspace.shared.open(model.outputRoot) }
-                    .buttonStyle(GhostButtonStyle())
-            }
-            SettingsDivider()
-            DSStatusRow("Delete audio") {
-                HStack(spacing: 8) {
-                    Button("Delete all audio") { confirmDeleteAudio() }
-                        .buttonStyle(GhostButtonStyle())
-                        .disabled(model.storageAudioBytes == 0)
-                    Text("Keeps transcript.md and metadata.json")
-                        .font(SettingsDesign.caption)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
-                }
-            }
-            if let error = model.deleteAudioError {
-                SettingsDivider()
-                DSStatusRow("Storage error") {
-                    Text(error)
-                        .font(SettingsDesign.caption)
-                        .foregroundStyle(DS.Color.danger)
-                }
-            }
-        }
-        .onAppear { model.refreshStorageUsage() }
-    }
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "Privacy",
+                subtitle: "Everything stays on your Mac. These options give you a little extra control."
+            )
 
-    private func confirmDeleteAudio() {
-        let alert = NSAlert()
-        alert.messageText = "Delete all Scribe audio?"
-        alert.informativeText = "This keeps transcripts and metadata, but removes audio.m4a, mic.m4a, and system.m4a files under the selected Scribe folder."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete audio")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.sharingType = WindowChromeSharing.confidential
-        if alert.runModal() == .alertFirstButtonReturn {
-            model.deleteAllAudioKeepingTranscripts()
-        }
-    }
-
-    private func byteString(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-}
-
-private struct AdvancedSection: View {
-    @ObservedObject var model: SettingsFormModel
-
-    var body: some View {
-        // Codex PM-review UX-17: AEC toggle was a debugging knob for
-        // a feature that doesn't actually ship in rc4 (the backend
-        // is a placeholder). Hide until the real AEC pre-pass lands.
-        // The setting is preserved on disk; the model.aecEnabled
-        // value still threads through the worker.
-        EmptyView()
-    }
-}
-
-private struct PrivacyStatusSection: View {
-    @ObservedObject var model: SettingsFormModel
-
-    var body: some View {
-        // Codex PM-review UX-32: re-readable privacy details from
-        // Settings. The first-launch modal acknowledgement is
-        // one-way; this section gives the user the link without
-        // pretending they can revoke (which would require disabling
-        // cloud-mode recording, a separate feature).
-        SettingsBox(title: "Cloud processing") {
-            DSStatusRow("Transcription") {
-                Text("Audio is sent to ElevenLabs and deleted there after processing.")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            SettingsDivider()
-            DSStatusRow("Notice") {
-                Indicator(
-                    state: model.initialSnapshot.privacyAcknowledged ? .sent : .warning,
-                    label: model.initialSnapshot.privacyAcknowledged ? "Acked" : "Pending"
-                )
-                Text(model.initialSnapshot.privacyAcknowledged
-                     ? "Acknowledged at first launch"
-                     : "Not yet acknowledged")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-            }
-            SettingsDivider()
-            DSStatusRow("Reference") {
-                Button("Read full privacy details") {
-                    if let url = URL(string: "https://github.com/Newarr/scribe/blob/main/docs/user/PRIVACY.md") {
-                        NSWorkspace.shared.open(url)
+            FidelitySection(title: "Visibility") {
+                FidelityRow(label: "Hide from screen recordings") {
+                    HStack(spacing: 10) {
+                        FidelityToggle(isOn: $hideFromScreenRecordings)
+                        FidelityHelpText("Scribe windows won’t appear in screenshots, screen recordings, or shared screens.")
                     }
                 }
-                .buttonStyle(DSLinkButtonStyle())
             }
         }
     }
 }
 
-private struct PermissionsSection: View {
-    @ObservedObject var model: SettingsFormModel
+private struct FidelityPermissionsPanel: View {
+    @State private var microphoneStatus: PermissionStatus = .notDetermined
+    @State private var screenRecordingStatus: PermissionStatus = .notDetermined
+    @State private var calendarStatus: PermissionStatus = .notDetermined
+    @State private var notificationStatus: PermissionStatus = .notDetermined
+
+    private let permissions = PermissionsService()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            SettingsBox(title: "Required") {
-                PermissionRow(
-                    name: "Microphone",
-                    status: model.microphoneStatus,
-                    detail: "Captures your voice from the selected mic.",
-                    actionTitle: "Open in System Settings",
-                    action: { openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") }
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "Permissions",
+                subtitle: "Scribe needs a few macOS permissions to capture meetings. Granted permissions stay in System Settings; revoke any of them at any time."
+            )
+
+            FidelitySection(title: "Required") {
+                FidelityPermissionRow(
+                    title: "Microphone",
+                    status: microphoneStatus,
+                    help: "Captures your voice from the mic.",
+                    action: .systemSettings {
+                        openSystemSettings("Privacy_Microphone")
+                    }
                 )
-                SettingsDivider()
-                PermissionRow(
-                    name: "Screen Recording",
-                    status: model.screenRecordingStatus,
-                    detail: "Captures system audio for other speakers. No video is recorded.",
-                    actionTitle: "Open in System Settings",
-                    action: { openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") }
-                )
-            }
-            SettingsBox(title: "Optional") {
-                PermissionRow(
-                    name: "Calendar",
-                    status: model.calendarStatus,
-                    detail: "Adds meeting titles and attendee keyterms to transcript context.",
-                    actionTitle: "Open in System Settings",
-                    action: { openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") }
-                )
-                SettingsDivider()
-                PermissionRow(
-                    name: "Notifications",
-                    status: model.notificationStatus,
-                    detail: "Shows meeting-detected and transcript-ready alerts.",
-                    actionTitle: "Open in System Settings",
-                    action: { openSettings("x-apple.systempreferences:com.apple.Notifications-Settings.extension") }
+                FidelityRowDivider()
+                FidelityPermissionRow(
+                    title: "Screen Recording",
+                    status: screenRecordingStatus,
+                    help: "Captures system audio so other speakers are transcribed. No video is recorded.",
+                    action: .systemSettings {
+                        openSystemSettings("Privacy_ScreenCapture")
+                    }
                 )
             }
-            Button("Refresh permissions") { model.refreshPermissionStatuses() }
-                .buttonStyle(GhostButtonStyle())
+            .padding(.bottom, 22)
+
+            FidelitySection(title: "Optional") {
+                FidelityPermissionRow(
+                    title: "Calendar",
+                    status: calendarStatus,
+                    help: "Names transcripts using the meeting title and labels speakers with attendee names.",
+                    action: .systemSettings {
+                        openSystemSettings("Privacy_Calendars")
+                    }
+                )
+                FidelityRowDivider()
+                FidelityPermissionRow(
+                    title: "Notifications",
+                    status: notificationStatus,
+                    help: "Tells you when a transcript is ready or when a meeting is detected.",
+                    action: .secondary("Allow…") {
+                        Task { await requestNotifications() }
+                    }
+                )
+            }
         }
+        .task { await refreshStatuses() }
     }
 
-    private func openSettings(_ raw: String) {
-        if let url = URL(string: raw) {
+    private func openSystemSettings(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
         }
     }
+
+    @MainActor
+    private func refreshStatuses() async {
+        let probe = DefaultPermissionStatusProbe(permissions: permissions)
+        async let microphone = probe.microphone()
+        async let screen = probe.screenRecording()
+        async let calendar = probe.calendar()
+        async let notifications = notificationPermissionStatus()
+        microphoneStatus = await microphone
+        screenRecordingStatus = await screen
+        calendarStatus = await calendar
+        notificationStatus = await notifications
+    }
+
+    @MainActor
+    private func requestNotifications() async {
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+            notificationStatus = granted ? .granted : .denied
+        } catch {
+            notificationStatus = .denied
+        }
+    }
+
+    private func notificationPermissionStatus() async -> PermissionStatus {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return .granted
+        case .denied:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        @unknown default:
+            return .notDetermined
+        }
+    }
 }
 
-private struct PermissionRow: View {
-    let name: String
+private struct FidelityAboutPanel: View {
+    @State private var microphoneStatus: PermissionStatus = .notDetermined
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FidelityPanelIntro(
+                title: "About",
+                subtitle: "Scribe — every call, captured locally."
+            )
+
+            FidelitySection(title: "App") {
+                FidelityRow(label: "Version") {
+                    HStack(spacing: 8) {
+                        Text(BuildInfo.version)
+                            .font(FidelitySettings.rowValueFont)
+                            .foregroundStyle(FidelitySettings.ink)
+                        FidelityGhostButton("Check for updates") {
+                            if let url = URL(string: "https://github.com/Newarr/scribe/releases") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Build") {
+                    Text("2026.05.07 · macOS 14.4+")
+                        .font(FidelitySettings.rowValueFont)
+                        .foregroundStyle(FidelitySettings.ink2)
+                }
+                FidelityRowDivider()
+                FidelityRow(label: "Mic access") {
+                    Text(microphoneStatus.fidelityLabel)
+                        .font(FidelitySettings.rowValueFont.weight(.medium))
+                        .foregroundStyle(microphoneStatus.fidelityColor)
+                }
+            }
+        }
+        .task {
+            microphoneStatus = PermissionsService().microphoneStatus()
+        }
+    }
+}
+
+private struct FidelityPanelIntro: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(FidelitySettings.titleFont)
+                .foregroundStyle(FidelitySettings.ink)
+                .tracking(-0.55)
+                .padding(.bottom, 6)
+            Text(subtitle)
+                .font(FidelitySettings.subtitleFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .lineSpacing(4)
+                .tracking(-0.08)
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(.bottom, 24)
+        }
+    }
+}
+
+private struct FidelityErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FidelitySettings.rust)
+            Text(message)
+                .font(FidelitySettings.rowValueFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(FidelitySettings.ink3)
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 42)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(FidelitySettings.rust.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(FidelitySettings.rust.opacity(0.22), lineWidth: 1)
+        )
+    }
+}
+
+private struct FidelityStatusDot: View {
+    let color: SwiftUI.Color
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+    }
+}
+
+private struct FidelitySelectLike: View {
+    @Binding var selection: String
+    let options: [String]
+    let minWidth: CGFloat
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button(option) {
+                    selection = option
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(selection)
+                    .font(FidelitySettings.controlFont)
+                    .foregroundStyle(FidelitySettings.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 12)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(FidelitySettings.ink3)
+            }
+            .padding(.horizontal, 11)
+            .frame(minWidth: minWidth, minHeight: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(FidelitySettings.fieldFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(FidelitySettings.line, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct FidelityMeter: View {
+    @State private var high = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(FidelitySettings.meterFill)
+                    .overlay(Capsule().stroke(FidelitySettings.line, lineWidth: 1))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [FidelitySettings.green, FidelitySettings.green, FidelitySettings.amber, FidelitySettings.rust],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * (high ? 0.72 : 0.38))
+            }
+        }
+        .frame(width: 200, height: 6)
+        .clipShape(Capsule())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                high = true
+            }
+        }
+    }
+}
+
+private struct FidelityHelpText: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+            .foregroundStyle(FidelitySettings.ink3)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct FidelityKeyboardShortcutDisplay: View {
+    let shortcut: KeyboardShortcutSetting
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(Array(shortcut.displayString.map(String.init).enumerated()), id: \.offset) { _, part in
+                FidelityKey(part)
+            }
+        }
+    }
+}
+
+private struct FidelityPathField: View {
+    let path: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(FidelitySettings.ink3)
+            Text(attributedPath)
+                .font(FidelitySettings.controlFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 28)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(FidelitySettings.pathFieldFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(FidelitySettings.line, lineWidth: 1)
+        )
+    }
+
+    private var attributedPath: AttributedString {
+        var value = AttributedString(path)
+        if let range = value.range(of: "Scribe") {
+            value[range].foregroundColor = FidelitySettings.ink
+            value[range].font = FidelitySettings.controlFont.weight(.medium)
+        }
+        return value
+    }
+}
+
+private struct FidelityStorageStat: View {
+    let url: URL
+
+    var body: some View {
+        let stat = storageStat
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(stat.transcriptCount)")
+                .font(SwiftUI.Font.custom(FidelitySettings.font, size: 15).weight(.semibold))
+                .foregroundStyle(FidelitySettings.ink)
+                .monospacedDigit()
+            Text("transcripts")
+                .font(FidelitySettings.rowValueFont)
+                .foregroundStyle(FidelitySettings.ink2)
+            Text("·")
+                .font(FidelitySettings.rowValueFont)
+                .foregroundStyle(FidelitySettings.ink3)
+            Text(stat.byteCount)
+                .font(SwiftUI.Font.custom(FidelitySettings.font, size: 15).weight(.semibold))
+                .foregroundStyle(FidelitySettings.ink)
+                .monospacedDigit()
+        }
+    }
+
+    private var storageStat: (transcriptCount: Int, byteCount: String) {
+        let manager = FileManager.default
+        guard let enumerator = manager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return (0, "0 KB")
+        }
+
+        var count = 0
+        var bytes: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else { continue }
+            if fileURL.pathExtension.lowercased() == "md" {
+                count += 1
+            }
+            bytes += Int64(values?.fileSize ?? 0)
+        }
+
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = bytes < 1_000_000 ? [.useKB] : [.useMB, .useGB]
+        return (count, formatter.string(fromByteCount: bytes))
+    }
+}
+
+private enum FidelityPermissionAction {
+    case systemSettings(@MainActor () -> Void)
+    case secondary(String, @MainActor () -> Void)
+
+    var title: String {
+        switch self {
+        case .systemSettings:
+            return "Open in System Settings"
+        case .secondary(let title, _):
+            return title
+        }
+    }
+
+    var isSystemSettings: Bool {
+        if case .systemSettings = self { return true }
+        return false
+    }
+
+    @MainActor
+    func callAsFunction() {
+        switch self {
+        case .systemSettings(let action), .secondary(_, let action):
+            action()
+        }
+    }
+}
+
+private struct FidelityPermissionRow: View {
+    let title: String
     let status: PermissionStatus
-    let detail: String
-    let actionTitle: String
-    let action: () -> Void
+    let help: String
+    let action: FidelityPermissionAction
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Circle()
-                .fill(color)
+                .fill(status.fidelityColor)
                 .frame(width: 8, height: 8)
-                .padding(.top, 7)
+                .padding(.top, 6)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(name)
-                        .font(SettingsDesign.rowEmphasis)
-                        .foregroundStyle(DS.Color.foreground)
-                    Text(label)
-                        .font(SettingsDesign.caption)
-                        .foregroundStyle(color)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(FidelitySettings.rowFont.weight(.medium))
+                        .foregroundStyle(FidelitySettings.ink)
+                    Text(status.fidelityLabel)
+                        .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5).weight(.medium))
+                        .foregroundStyle(status.fidelityColor)
                 }
-                Text(detail)
-                    .font(SettingsDesign.caption)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
+                Text(help)
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                    .foregroundStyle(FidelitySettings.ink3)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
-            Button(actionTitle, action: action)
-                .buttonStyle(DSLinkButtonStyle())
+            FidelityPermissionButton(action: action)
+                .padding(.top, 2)
         }
-        .padding(.vertical, 7)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct FidelityPermissionButton: View {
+    let action: FidelityPermissionAction
+
+    var body: some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 4) {
+                Text(action.title)
+                    .font(FidelitySettings.controlFont)
+                if action.isSystemSettings {
+                    Image(systemName: "arrow.up.forward")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .opacity(0.58)
+                }
+            }
+            .foregroundStyle(action.isSystemSettings ? FidelitySettings.ink2 : FidelitySettings.ink)
+            .padding(.horizontal, action.isSystemSettings ? 6 : 11)
+            .frame(height: 28)
+            .background(buttonBackground)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    private var label: String {
-        switch status {
+    @ViewBuilder
+    private var buttonBackground: some View {
+        if action.isSystemSettings {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(SwiftUI.Color.clear)
+        } else {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(FidelitySettings.secondaryButtonFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(FidelitySettings.secondaryButtonStroke, lineWidth: 1)
+                )
+        }
+    }
+}
+
+private extension PermissionStatus {
+    var fidelityLabel: String {
+        switch self {
         case .granted: return "Granted"
         case .denied: return "Denied"
         case .notDetermined: return "Not asked"
         }
     }
 
-    private var color: SwiftUI.Color {
-        switch status {
-        case .granted: return DS.Color.success
-        case .denied: return DS.Color.warning
-        case .notDetermined: return DS.Color.foregroundTertiary
+    var fidelityColor: SwiftUI.Color {
+        switch self {
+        case .granted: return FidelitySettings.green
+        case .denied: return FidelitySettings.amber
+        case .notDetermined: return FidelitySettings.ink3
         }
     }
 }
 
-private struct AboutSection: View {
+private struct FidelityCodeBlock<Actions: View>: View {
+    let text: String
+    @ViewBuilder var actions: () -> Actions
+
     var body: some View {
-        SettingsBox(title: "App") {
-            DSStatusRow("Version") {
-                Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Development")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundSecondary)
+        HStack(spacing: 10) {
+            Text(text)
+                .font(FidelitySettings.keyFont)
+                .foregroundStyle(SwiftUI.Color(red: 1.0, green: 0.55, blue: 0.46))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actions()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 40)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(FidelitySettings.codeFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(FidelitySettings.line, lineWidth: 1)
+        )
+    }
+}
+
+private struct FidelitySection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(FidelitySettings.sectionFont)
+                .foregroundStyle(FidelitySettings.ink3)
+                .tracking(0.66)
+                .padding(.leading, 14)
+            VStack(spacing: 0) {
+                content()
             }
-            SettingsDivider()
-            DSStatusRow("Build") {
-                Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Debug")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
-            }
-            SettingsDivider()
-            DSStatusRow("Output") {
-                Text("Every session ends with transcript.md")
-                    .font(SettingsDesign.rowValue)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(FidelitySettings.groupFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(FidelitySettings.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+private struct FidelityRow<Content: View>: View {
+    let label: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .center, spacing: FidelitySettings.rowGap) {
+            Text(label)
+                .font(FidelitySettings.rowFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .tracking(-0.13)
+                .frame(width: FidelitySettings.rowLabelWidth, alignment: .leading)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 56)
+    }
+}
+
+private struct FidelityRowDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(FidelitySettings.lineRow)
+            .frame(height: 1)
+    }
+}
+
+private struct FidelitySegmentedControl: View {
+    @Binding var selection: AppearanceTheme
+
+    private let segments: [(AppearanceTheme, String, String)] = [
+        (.system, "System", "display"),
+        (.light, "Light", "sun.max"),
+        (.dark, "Dark", "moon")
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(segments, id: \.0) { segment in
+                FidelitySegment(
+                    title: segment.1,
+                    symbol: segment.2,
+                    selected: selection == segment.0
+                ) {
+                    selection = segment.0
+                }
             }
         }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(FidelitySettings.controlShell)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(FidelitySettings.controlStroke, lineWidth: 1)
+        )
+    }
+}
+
+private struct FidelitySegment: View {
+    let title: String
+    let symbol: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                Text(title)
+                    .font(FidelitySettings.controlFont)
+            }
+            .foregroundStyle(selected ? FidelitySettings.ink : FidelitySettings.ink2)
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .frame(minWidth: 72)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(selected ? FidelitySettings.controlSelected : .clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(selected ? FidelitySettings.controlSelectedStroke : .clear, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+}
+
+private struct FidelityKey: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(FidelitySettings.keyFont)
+            .foregroundStyle(FidelitySettings.ink)
+            .frame(minWidth: 22, minHeight: 22)
+            .padding(.horizontal, text.count > 1 ? 6 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(FidelitySettings.keyFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(FidelitySettings.keyStroke, lineWidth: 1)
+            )
+    }
+}
+
+private struct FidelityGhostButton: View {
+    let title: String
+    let action: () -> Void
+    init(_ title: String, action: @escaping () -> Void = {}) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(FidelitySettings.controlFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .frame(height: 28)
+                .padding(.horizontal, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(FidelitySettings.ghostButtonFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(FidelitySettings.ghostButtonStroke, lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct FidelitySecondaryButton: View {
+    let title: String
+    let action: () -> Void
+
+    init(_ title: String, action: @escaping () -> Void = {}) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(FidelitySettings.controlFont)
+                .foregroundStyle(FidelitySettings.ink)
+                .frame(height: 28)
+                .padding(.horizontal, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(FidelitySettings.secondaryButtonFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(FidelitySettings.secondaryButtonStroke, lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct FidelityToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(isOn ? FidelitySettings.rust : FidelitySettings.offToggleFill)
+                    .overlay(
+                        Capsule()
+                            .stroke(isOn ? FidelitySettings.rust : FidelitySettings.line, lineWidth: 1)
+                    )
+                Circle()
+                    .fill(SwiftUI.Color.white)
+                    .frame(width: 14, height: 14)
+                    .shadow(color: SwiftUI.Color.black.opacity(0.25), radius: 1, x: 0, y: 1)
+                    .offset(x: isOn ? 13 : 1)
+            }
+            .frame(width: 30, height: 18)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .contentShape(Capsule())
     }
 }

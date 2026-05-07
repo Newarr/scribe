@@ -1,5 +1,7 @@
 import AppKit
+import Carbon.HIToolbox
 import EventKit  // .EKEventStoreChanged notification name (codex slice-6 final-review P1)
+import ServiceManagement
 import TranscriberCore
 
 /// Codex rc2-audit STATE-2: was @unchecked Sendable + ad-hoc
@@ -14,6 +16,7 @@ import TranscriberCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var menu: RecordingMenu?
+    private var hotKeyRegistrar: StartStopHotKeyRegistrar?
     private var session: CaptureSession?
     private var status: SessionStatus = .idle
     private let permissions = PermissionsService()
@@ -196,27 +199,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = RecordingMenu { [weak self] action in
             Task { @MainActor in await self?.handle(action) }
         }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // scribe-design-system: replace the placeholder "T" with the
-        // 5-bar wave mark. Both variants are rendered as template images
-        // so AppKit tints them with the menu bar's adaptive vibrancy.
-        // The recording variant has the same bars plus a small filled
-        // circle at the top-right; shape, not color, signals state.
-        if let icon = NSImage(named: "MenuBarIcon") {
-            icon.isTemplate = true
-            icon.accessibilityDescription = "Scribe"
-            item.button?.image = icon
-            item.button?.imagePosition = .imageOnly
-        } else {
-            // Fallback if the asset catalog is missing for any reason.
-            item.button?.title = "S"
-        }
-        // F-6: status-item click opens our custom popover instead of
-        // an NSMenu. The system click-and-drag-to-highlight behavior is
-        // sacrificed in exchange for the design's recents layout +
-        // live MIC/SYS meters.
-        item.button?.target = StatusItemClickTarget.shared
-        item.button?.action = #selector(StatusItemClickTarget.statusItemClicked(_:))
         StatusItemClickTarget.shared.delegate = m
         // Raise the welcome window before opening the popover when a
         // click lands on the menu bar icon and consent is still pending.
@@ -232,9 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         m.outputRoot = outputRoot
         m.appearanceTheme = settings.appearanceTheme
-        self.statusItem = item
         self.menu = m
-        applyTrustIcon()
+        if settings.showInMenuBar {
+            installStatusItemIfNeeded()
+        }
+
+        let hotKeyRegistrar = StartStopHotKeyRegistrar { [weak self] in
+            Task { await self?.toggleRecordingFromShortcut() }
+        }
+        hotKeyRegistrar.register(settings.startStopShortcut)
+        self.hotKeyRegistrar = hotKeyRegistrar
 
         // Codex Phase η P0.2: orphaned-session supervisor scan can
         // dispatch a worker that uploads audio to ElevenLabs (cloud
@@ -278,12 +267,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store: settingsStore,
             fallback: Self.defaultSettingsFallback(),
             keychainService: Self.keychainService,
-            keychainAccount: Self.keychainAccount
+            keychainAccount: Self.keychainAccount,
+            onShowInMenuBarChange: { [weak self] visible in
+                self?.setMenuBarVisible(visible)
+            },
+            onShortcutChange: { [weak self] shortcut in
+                self?.hotKeyRegistrar?.register(shortcut)
+            },
+            onAppearanceThemeChange: { [weak self] theme in
+                self?.applyAppearanceTheme(theme)
+                self?.menu?.appearanceTheme = theme
+            }
         )
-        self.settingsWindowController?.onAppearanceThemeChange = { [weak self] theme in
-            self?.applyAppearanceTheme(theme)
-            self?.menu?.appearanceTheme = theme
-        }
         self.setupPopover = PermissionRecoveryPopoverController()
         self.diagnosticsWindowController = DiagnosticsWindowController(
             snapshotProvider: { [weak self] in
@@ -446,6 +441,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inflightTasks.removeValue(forKey: id)
     }
 
+    @MainActor
+    private func installStatusItemIfNeeded() {
+        guard statusItem == nil else {
+            applyTrustIcon()
+            return
+        }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let icon = NSImage(named: "MenuBarIcon") {
+            icon.isTemplate = true
+            icon.accessibilityDescription = "Scribe"
+            item.button?.image = icon
+            item.button?.imagePosition = .imageOnly
+        } else {
+            item.button?.title = "S"
+        }
+        item.button?.target = StatusItemClickTarget.shared
+        item.button?.action = #selector(StatusItemClickTarget.statusItemClicked(_:))
+        statusItem = item
+        menu?.outputRoot = outputRoot
+        applyTrustIcon()
+    }
+
+    @MainActor
+    private func setMenuBarVisible(_ visible: Bool) {
+        if visible {
+            installStatusItemIfNeeded()
+        } else if let item = statusItem {
+            menu?.close()
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
+
     /// scribe-design-system: full 8-state trust language on the menu
     /// bar. The shape encodes status (`SessionStatus`), setup blockers,
     /// in-flight detection prompts, and recent saved/failed outcomes;
@@ -492,6 +520,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             button.layer?.add(spin, forKey: "trust.finalizing.spin")
         default:
+            break
+        }
+    }
+
+    @MainActor
+    private func toggleRecordingFromShortcut() async {
+        switch status {
+        case .recording:
+            await stopRecording()
+        case .idle, .failed, .finalized:
+            await startRecording()
+        case .starting, .stopping:
             break
         }
     }
@@ -1025,6 +1065,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return total
+    }
+}
+
+@MainActor
+enum AppearanceApplier {
+    static func apply(_ theme: AppearanceTheme) {
+        NSApp.appearance = theme.nsAppearance
+    }
+}
+
+@MainActor
+enum LaunchAtLoginController {
+    static var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        if enabled {
+            if SMAppService.mainApp.status != .enabled {
+                try SMAppService.mainApp.register()
+            }
+        } else if SMAppService.mainApp.status == .enabled {
+            try SMAppService.mainApp.unregister()
+        }
+    }
+}
+
+@MainActor
+final class StartStopHotKeyRegistrar {
+    private var hotKeyRef: EventHotKeyRef?
+    private var eventHandler: EventHandlerRef?
+    private let onFire: @MainActor () -> Void
+
+    init(onFire: @escaping @MainActor () -> Void) {
+        self.onFire = onFire
+        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            StartStopHotKeyRegistrar.handleEvent,
+            1,
+            &eventSpec,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &eventHandler
+        )
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            if let hotKeyRef {
+                UnregisterEventHotKey(hotKeyRef)
+            }
+            if let eventHandler {
+                RemoveEventHandler(eventHandler)
+            }
+        }
+    }
+
+    func register(_ shortcut: KeyboardShortcutSetting) {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+
+        var ref: EventHotKeyRef?
+        let identifier = EventHotKeyID(signature: Self.fourCC("Scrb"), id: 1)
+        let status = RegisterEventHotKey(
+            UInt32(shortcut.keyCode),
+            shortcut.carbonModifierFlags,
+            identifier,
+            GetApplicationEventTarget(),
+            0,
+            &ref
+        )
+        if status == noErr {
+            hotKeyRef = ref
+        }
+    }
+
+    private func fire() {
+        onFire()
+    }
+
+    private static let handleEvent: EventHandlerUPP = { _, _, userData in
+        guard let userData else { return noErr }
+        let registrar = Unmanaged<StartStopHotKeyRegistrar>.fromOpaque(userData).takeUnretainedValue()
+        Task { @MainActor in registrar.fire() }
+        return noErr
+    }
+
+    private static func fourCC(_ string: String) -> OSType {
+        var result: OSType = 0
+        for scalar in string.unicodeScalars.prefix(4) {
+            result = (result << 8) + OSType(scalar.value)
+        }
+        return result
+    }
+}
+
+extension KeyboardShortcutSetting {
+    var carbonModifierFlags: UInt32 {
+        modifiers.reduce(UInt32(0)) { flags, modifier in
+            switch modifier {
+            case .command:
+                return flags | UInt32(cmdKey)
+            case .shift:
+                return flags | UInt32(shiftKey)
+            case .option:
+                return flags | UInt32(optionKey)
+            case .control:
+                return flags | UInt32(controlKey)
+            }
+        }
+    }
+
+    var displayString: String {
+        var parts: [String] = []
+        if modifiers.contains(.command) { parts.append("⌘") }
+        if modifiers.contains(.shift) { parts.append("⇧") }
+        if modifiers.contains(.option) { parts.append("⌥") }
+        if modifiers.contains(.control) { parts.append("⌃") }
+        parts.append(key.uppercased())
+        return parts.joined()
     }
 }
 
