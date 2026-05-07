@@ -283,7 +283,7 @@ private struct RecordingPopoverContent: View {
             )
             .frame(height: 1)
             .padding(.horizontal, 18)
-        )
+        }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: palette.shadow, radius: 18, x: 0, y: 8)
         .frame(width: menuWidth)
