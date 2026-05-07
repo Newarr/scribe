@@ -298,7 +298,7 @@ private struct SettingsForm: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            FidelitySidebar(selection: $selectedPage)
+            FidelitySidebar(selection: $selectedPage, onClose: onCancel)
                 .frame(width: FidelitySettings.sideWidth)
             FidelityDivider()
             VStack(spacing: 0) {
@@ -627,12 +627,13 @@ private struct FidelityHeader: View {
 
 private struct FidelitySidebar: View {
     @Binding var selection: SettingsPage
+    let onClose: @MainActor () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
                 FidelityTrafficButton(color: SwiftUI.Color(red: 1.0, green: 0.31, blue: 0.29)) {
-                    NSApp.keyWindow?.close()
+                    onClose()
                 }
                 FidelityTrafficButton(color: SwiftUI.Color(red: 1.0, green: 0.75, blue: 0.13)) {
                     NSApp.keyWindow?.miniaturize(nil)
