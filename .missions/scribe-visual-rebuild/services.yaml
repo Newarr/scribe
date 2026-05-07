@@ -1,0 +1,9 @@
+commands:
+  install: "true"
+  typecheck: "swift build --package-path /Users/szymonsypniewicz/Documents/code/scribe"
+  build: "xcodebuild -project /Users/szymonsypniewicz/Documents/code/scribe/TranscriberApp/Scribe.xcodeproj -scheme Scribe -destination 'platform=macOS' -configuration Debug build"
+  test: "swift test --package-path /Users/szymonsypniewicz/Documents/code/scribe --parallel"
+  lint: "true"
+  app_run: "open /Users/szymonsypniewicz/Documents/code/scribe/TranscriberApp/.dd-release/Scribe.app || xcodebuild -project /Users/szymonsypniewicz/Documents/code/scribe/TranscriberApp/Scribe.xcodeproj -scheme Scribe -destination 'platform=macOS' -configuration Debug build && open ~/Library/Developer/Xcode/DerivedData/Scribe-*/Build/Products/Debug/Scribe.app"
+
+services: {}

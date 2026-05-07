@@ -10,7 +10,7 @@ final class MetadataJSONWriterTests: XCTestCase {
             audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon]]", "[[Faris]]"],
+            attendees: [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")],
             language: language
         )
     }
@@ -31,7 +31,9 @@ final class MetadataJSONWriterTests: XCTestCase {
         XCTAssertEqual(decoded.schema, "transcriber/v1")
         XCTAssertEqual(decoded.status, "complete")
         XCTAssertEqual(decoded.audio, "audio.m4a")
-        XCTAssertEqual(decoded.attendees, ["[[Szymon]]", "[[Faris]]"])
+        XCTAssertEqual(decoded.actual_start, "2026-04-29T14:30:00Z")
+        XCTAssertEqual(decoded.actual_end, "2026-04-29T15:00:00Z")
+        XCTAssertEqual(decoded.attendees, [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")])
         XCTAssertEqual(decoded.language, "en")
     }
 

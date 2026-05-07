@@ -26,6 +26,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentSessionStartedAt: Date?
     private var currentCalendarEvent: CalendarEvent?
 
+    /// Drives the popover's elapsed-time field while a session is
+    /// active. Fires once per second; the popover formats the value
+    /// as `M:SS` / `H:MM:SS`. Timer instead of a `Task.sleep` loop
+    /// because the popover is the only consumer and `RunLoop.main`
+    /// suspension semantics are simpler under tests.
+    private var elapsedTickTimer: Timer?
+
     private var inflightTasks: [UUID: Task<Void, Never>] = [:]
 
     // Detection layer (slice 5 light)
@@ -117,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var outputRoot: URL { settings.outputRoot }
+    private static let minimumFreeDiskBytes: Int64 = 1_000_000_000
 
     /// Phase α preflight. Engine mode is now read from settings (so a
     /// later flip to local-mode lands the local-binary readiness check
@@ -131,12 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
-        // scribe-design-system: dark is the canonical default per
-        // `colors_and_type.css` ("the default vibe for menu bar app +
-        // landing hero"). Light mode is supported by the token set
-        // but every reference visual is rendered dark, so we force
-        // dark here regardless of the user's system appearance.
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        applyAppearanceTheme(settings.appearanceTheme)
         FontRegistration.assertLoaded()
         #if DEBUG
         FontRegistration.writeDebugSentinel()
@@ -228,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         m.outputRoot = outputRoot
+        m.appearanceTheme = settings.appearanceTheme
         self.statusItem = item
         self.menu = m
         applyTrustIcon()
@@ -276,6 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keychainService: Self.keychainService,
             keychainAccount: Self.keychainAccount
         )
+        self.settingsWindowController?.onAppearanceThemeChange = { [weak self] theme in
+            self?.applyAppearanceTheme(theme)
+            self?.menu?.appearanceTheme = theme
+        }
         self.setupPopover = PermissionRecoveryPopoverController()
         self.diagnosticsWindowController = DiagnosticsWindowController(
             snapshotProvider: { [weak self] in
@@ -288,6 +296,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         presentPrivacyAcknowledgementIfNeeded()
+    }
+
+    private func applyAppearanceTheme(_ theme: AppearanceTheme) {
+        NSApp.appearance = theme.nsAppearance
     }
 
     /// Spec line 348: first-launch privacy modal. Shown only when
@@ -661,6 +673,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    private func presentLowDiskAlert(freeBytes: Int64, outputRoot: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Not enough disk space to record"
+        alert.informativeText = "Scribe needs at least 1 GB free before starting a recording. \(ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)) is available in the selected folder."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open folder")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.sharingType = WindowChromeSharing.confidential
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(outputRoot)
+        }
+    }
+
+    private static func availableDiskBytes(for url: URL) -> Int64? {
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        if let important = values?.volumeAvailableCapacityForImportantUsage {
+            return important
+        }
+        if let capacity = values?.volumeAvailableCapacity {
+            return Int64(capacity)
+        }
+        return nil
+    }
+
+    @MainActor
     private func scheduleRearm(for app: MeetingApp, after seconds: TimeInterval) {
         let id = UUID()
         let task = Task { [weak self] in
@@ -736,6 +773,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // fix path for each unmet permission.
         let snapshot = settings
         let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
+        if let freeBytes = Self.availableDiskBytes(for: snapshot.outputRoot), freeBytes < Self.minimumFreeDiskBytes {
+            Log.lifecycle.error("startRecording denied: low disk space (\(freeBytes, privacy: .public) bytes free)")
+            self.status = .idle
+            menu?.rebuild(for: status)
+            applyTrustIcon()
+            presentLowDiskAlert(freeBytes: freeBytes, outputRoot: snapshot.outputRoot)
+            return
+        }
+
         switch RecordRequestGate().verdict(from: report) {
         case .deny(let reasons):
             // Codex rc2-audit P0 (privacy): String(describing: reasons)
@@ -797,6 +843,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             try await session.start()
             self.status = .recording
+            // Wire the popover's live trust-surface readouts so the
+            // user sees a ticking timer + the matched meeting title
+            // the moment they open the menu bar. Without this, the
+            // popover read `0:00 · Recording` for the entire session.
+            menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
+            menu?.outcomeFolderName = dir.url.lastPathComponent
+            menu?.outcomeFolderURL = dir.url
+            menu?.elapsedSeconds = 0
+            startElapsedTickTimer()
             menu?.rebuild(for: status)
             applyTrustIcon()
         } catch {
@@ -812,9 +867,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.currentSessionDirectory = nil
             self.currentSessionStartedAt = nil
             self.currentCalendarEvent = nil
+            stopElapsedTickTimer()
+            menu?.outcomeFolderName = nil
+            menu?.outcomeFolderURL = nil
+            menu?.recordingSourceLabel = "Recording"
+            menu?.elapsedSeconds = 0
             menu?.rebuild(for: status)
             applyTrustIcon()
         }
+    }
+
+    /// Maps a matched calendar event to a short, sentence-case label
+    /// the popover shows alongside the LIVE indicator. Falls back to
+    /// `Recording` when there's no calendar match (the user
+    /// triggered Record manually).
+    private static func recordingSourceLabel(for event: CalendarEvent?) -> String {
+        let title = event?.title.trimmingCharacters(in: .whitespaces) ?? ""
+        return title.isEmpty ? "Recording" : title
+    }
+
+    /// Stand up the per-second tick that drives the popover's
+    /// elapsed-time field. Runs on `RunLoop.main` so the popover
+    /// observes the change immediately without dispatching across
+    /// actors.
+    @MainActor
+    private func startElapsedTickTimer() {
+        elapsedTickTimer?.invalidate()
+        let started = currentSessionStartedAt ?? Date()
+        elapsedTickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let elapsed = max(0, Int(Date().timeIntervalSince(started)))
+                self.menu?.elapsedSeconds = elapsed
+            }
+        }
+    }
+
+    @MainActor
+    private func stopElapsedTickTimer() {
+        elapsedTickTimer?.invalidate()
+        elapsedTickTimer = nil
     }
 
     @MainActor
@@ -837,6 +929,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.currentSessionDirectory = nil
         self.currentSessionStartedAt = nil
         self.currentCalendarEvent = nil
+        stopElapsedTickTimer()
+        menu?.outcomeFolderName = nil
+        menu?.outcomeFolderURL = nil
+        menu?.recordingSourceLabel = "Recording"
+        menu?.elapsedSeconds = 0
         menu?.rebuild(for: status)
         applyTrustIcon()
 
@@ -1071,15 +1168,20 @@ extension AppDelegate {
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "yyyy-MM-dd"
         let title = event?.title ?? "Manual recording \(dir.url.lastPathComponent)"
-        let attendees = (event?.attendees ?? []).map { "[[\($0.name)]]" }
+        let elapsed = event.map { max(0, Int(startedAt.timeIntervalSince($0.startDate))) }
+        let joinedLate = elapsed.map { $0 > 60 }
         return TranscriptContext(
             title: title,
             date: dayFmt.string(from: startedAt),
             engine: "elevenlabs",
             audioRelativePaths: ["mic.m4a", "system.m4a"],
-            startedAt: isoFmt.string(from: startedAt),
-            endedAt: isoFmt.string(from: endedAt),
-            attendees: attendees,
+            scheduledStart: event.map { isoFmt.string(from: $0.startDate) },
+            scheduledEnd: event.map { isoFmt.string(from: $0.endDate) },
+            actualStart: isoFmt.string(from: startedAt),
+            actualEnd: isoFmt.string(from: endedAt),
+            joinedLate: joinedLate,
+            elapsedAtStartSeconds: joinedLate == true ? elapsed : nil,
+            attendees: (event?.attendees ?? []).map(\.transcriptPerson),
             language: nil
         )
     }
@@ -1163,13 +1265,14 @@ extension AppDelegate {
                 let isoFmt = ISO8601DateFormatter()
                 let dayFmt = DateFormatter()
                 dayFmt.dateFormat = "yyyy-MM-dd"
+                let now = Date()
                 return TranscriptContext(
                     title: "Resumed session \(dir.url.lastPathComponent)",
-                    date: dayFmt.string(from: Date()),
+                    date: dayFmt.string(from: now),
                     engine: "elevenlabs",
                     audioRelativePaths: ["mic.m4a", "system.m4a"],
-                    startedAt: isoFmt.string(from: Date()),
-                    endedAt: isoFmt.string(from: Date()),
+                    actualStart: isoFmt.string(from: now),
+                    actualEnd: isoFmt.string(from: now),
                     attendees: [],
                     language: nil
                 )

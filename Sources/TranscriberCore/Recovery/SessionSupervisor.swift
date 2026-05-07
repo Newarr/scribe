@@ -204,8 +204,15 @@ public actor SessionSupervisor {
             date: base.date,
             engine: base.engine,
             audioRelativePaths: paths,
-            startedAt: base.startedAt,
-            endedAt: base.endedAt,
+            scheduledStart: base.scheduledStart,
+            scheduledEnd: base.scheduledEnd,
+            actualStart: base.actualStart,
+            actualEnd: base.actualEnd,
+            organizer: base.organizer,
+            location: base.location,
+            calendarEventID: base.calendarEventID,
+            joinedLate: base.joinedLate,
+            elapsedAtStartSeconds: base.elapsedAtStartSeconds,
             attendees: base.attendees,
             language: base.language
         )

@@ -1,0 +1,76 @@
+{
+  "assertions": {
+    "VAL-TOKENS-001": { "status": "pending" },
+    "VAL-TOKENS-002": { "status": "pending" },
+    "VAL-TOKENS-003": { "status": "pending" },
+    "VAL-TOKENS-004": { "status": "pending" },
+    "VAL-TOKENS-005": { "status": "pending" },
+    "VAL-TOKENS-006": { "status": "pending" },
+
+    "VAL-POPOVER-001": { "status": "pending" },
+    "VAL-POPOVER-002": { "status": "pending" },
+    "VAL-POPOVER-003": { "status": "pending" },
+    "VAL-POPOVER-004": { "status": "pending" },
+    "VAL-POPOVER-005": { "status": "pending" },
+    "VAL-POPOVER-006": { "status": "pending" },
+    "VAL-POPOVER-007": { "status": "pending" },
+
+    "VAL-IDLE-001": { "status": "pending" },
+    "VAL-IDLE-002": { "status": "pending" },
+    "VAL-IDLE-003": { "status": "pending" },
+    "VAL-IDLE-004": { "status": "pending" },
+    "VAL-IDLE-005": { "status": "pending" },
+
+    "VAL-RECORDING-001": { "status": "pending" },
+    "VAL-RECORDING-002": { "status": "pending" },
+    "VAL-RECORDING-003": { "status": "pending" },
+    "VAL-RECORDING-004": { "status": "pending" },
+    "VAL-RECORDING-005": { "status": "pending" },
+    "VAL-RECORDING-006": { "status": "pending" },
+    "VAL-RECORDING-007": { "status": "pending" },
+
+    "VAL-TRANSCRIPT-001": { "status": "pending" },
+    "VAL-TRANSCRIPT-002": { "status": "pending" },
+    "VAL-TRANSCRIPT-003": { "status": "pending" },
+    "VAL-TRANSCRIPT-004": { "status": "pending" },
+    "VAL-TRANSCRIPT-005": { "status": "pending" },
+    "VAL-TRANSCRIPT-006": { "status": "pending" },
+    "VAL-TRANSCRIPT-007": { "status": "pending" },
+    "VAL-TRANSCRIPT-008": { "status": "pending" },
+
+    "VAL-SETTINGS-WINDOW-001": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-002": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-003": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-004": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-005": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-006": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-007": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-008": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-009": { "status": "pending" },
+    "VAL-SETTINGS-WINDOW-010": { "status": "pending" },
+
+    "VAL-HUD-001": { "status": "pending" },
+    "VAL-HUD-002": { "status": "pending" },
+    "VAL-HUD-003": { "status": "pending" },
+    "VAL-HUD-004": { "status": "pending" },
+
+    "VAL-TOAST-001": { "status": "pending" },
+    "VAL-TOAST-002": { "status": "pending" },
+    "VAL-TOAST-003": { "status": "pending" },
+
+    "VAL-MENUBAR-001": { "status": "pending" },
+    "VAL-MENUBAR-002": { "status": "pending" },
+    "VAL-MENUBAR-003": { "status": "pending" },
+    "VAL-MENUBAR-004": { "status": "pending" },
+
+    "VAL-CROSS-001": { "status": "pending" },
+    "VAL-CROSS-002": { "status": "pending" },
+    "VAL-CROSS-003": { "status": "pending" },
+    "VAL-CROSS-004": { "status": "pending" },
+    "VAL-CROSS-005": { "status": "pending" },
+    "VAL-CROSS-006": { "status": "pending" },
+    "VAL-CROSS-007": { "status": "pending" },
+    "VAL-CROSS-008": { "status": "pending" },
+    "VAL-CROSS-009": { "status": "pending" }
+  }
+}

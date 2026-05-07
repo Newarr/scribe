@@ -150,7 +150,7 @@ Session claim:
 - Auto-stop guard: enabled.
 - End-detection grace period: 30 seconds.
 - Stop prompt timeout: 10 seconds.
-- `Keep Recording` snooze: escalates 3 / 9 / 27 minutes per session click count. Audio activity resets the silence detector and renders the snooze inert until the next silence stretch. Hard ceiling: regardless of snooze count, force-prompt at scheduled-end + 4 hours.
+- `Keep Recording` snooze: flat 15 minutes for v1. Audio activity resets the silence detector and renders the snooze inert until the next silence stretch. Hard ceiling: force-prompt at scheduled-end + 4 hours.
 - Audio retention: keep until manually deleted. No background auto-delete in v1.
 - Notifications: `UNUserNotificationCenter` permission requested during onboarding. Without it the redundant-channel pattern collapses; the menu-bar `Setup Required` state fires.
 
@@ -205,9 +205,9 @@ At meeting start:
 - Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start dominates the politeness cost of the interruption.
 - Two buttons only: `Start Recording` (primary) and `Not now` (secondary). Both standard and late-join prompts use the same two-button shape so the cognitive surface is constant.
 - Below the buttons: a small `More options ▾` disclosure that hides the rare suppression flows. Closed by default. When opened, exposes:
-  - `Stop asking about this meeting` — suppresses the recurring calendar series indefinitely (keys on recurrence-series ID).
+  - `Stop asking about this meeting` — suppresses the recurring calendar series indefinitely (keys on recurrence-series ID). (Later work.)
   - `Stop detecting [App] for 30 minutes` — app-level suppression that defends against false-positive process detection.
-- Suppressed meetings are managed in Settings → Quiet Meetings, where users can re-enable any series they previously suppressed.
+- Suppressed meetings are managed in Settings → Quiet Meetings, where users can re-enable any series they previously suppressed. (Later work.)
 - The modal's window must set `NSWindow.sharingType = .none`.
 - Position the modal on the screen containing the active meeting-app window, not the keyWindow's screen.
 - Audible cue is OFF by default; user-configurable in Settings.
@@ -275,7 +275,7 @@ Recents section (in the menu bar's main popover, not the active-recording popove
 
 - Last 5 saved sessions, sourced from `outputRoot/` by mtime.
 - Each item shows: title, duration, time-of-day or relative day (`12:34 today`, `Yesterday`, `Tue`).
-- Inline actions per item: `Open Folder`, `Open Transcript`. Failed sessions also show `Retry`.
+- Inline actions per item: `Open Folder`, `Open Transcript`. Failed sessions also show `Retry`. (Later work.)
 - 5 items only — past that is a history UI, which v1 does not ship.
 - No `Delete audio` action here; bulk audio management lives in Settings → Storage.
 
@@ -401,7 +401,7 @@ Stop prompt:
 - The HUD's window must set `NSWindow.sharingType = .none`.
 - If user does nothing, stop automatically when countdown reaches 0.
 - If audio resumes during grace or countdown, cancel the stop flow silently and suppress re-prompt for at least 60 seconds.
-- If user clicks `Keep Recording`, escalating snooze: 3 / 9 / 27 minutes per session click count.
+- If user clicks `Keep Recording`, snooze end detection for 15 minutes.
 
 False-stop guard:
 
@@ -446,7 +446,7 @@ Cohere lifecycle:
 
 Engine failure:
 
-- A failed cloud transcription (timeout, 401, 429, 5xx after retries) writes a `status: failed` transcript per the Markdown Contract and surfaces a `Retry` affordance on the failed session in the menu-bar Recents popover.
+- A failed cloud transcription (timeout, 401, 429, 5xx after retries) writes a `status: failed` transcript per the Markdown Contract and surfaces a `Retry` affordance on the failed session in the menu-bar Recents popover. (Retry surface is later work.)
 - The user may switch engines manually (Settings → Engine) and re-trigger transcription on the saved audio. Both engines must be ready for this to be a one-click move; that's the reason Cohere is staged during onboarding rather than on first need.
 
 ## Output and Storage
@@ -639,7 +639,7 @@ ElevenLabs returned a timeout after 2 retries.
 - Or transcribe outside Scribe: open `audio.m4a` in any other tool.
 ```
 
-Retry must be one-click from the menu-bar Recents popover for any failed session within the last 24 hours, not just the most recent.
+Retry should become one-click from the menu-bar Recents popover for any failed session within the last 24 hours, not just the most recent. This retry surface is later work.
 
 ### metadata.json sidecar
 
@@ -752,7 +752,7 @@ These IDs are kept as a stable trail; the resolution lives in the relevant secti
 
 - `q_skip_semantics` — resolved by the two-button + `More options ▾` model in [Start Prompt](#start-prompt).
 - `q_late_join_prompt` — resolved by [Calendar Watcher → Late-join](#calendar-watcher) and the same Start Prompt model.
-- `q_keep_recording_snooze_minutes` — resolved by 3 / 9 / 27 escalation in [End Guard](#end-guard) (note: code currently ships flat 15 min; see Known Code-vs-Spec Drift).
+- `q_keep_recording_snooze_minutes` — resolved as a flat 15-minute snooze in [End Guard](#end-guard).
 - `q_synced_folder_warning` — resolved by per-provider-class detection in [Output and Storage](#output-and-storage).
 - `q_audio_retention` — resolved by keep-until-deleted + Settings → Storage panel in [Output and Storage](#output-and-storage).
 - `q_transcription_retry_policy` — resolved by 60s / 5min / 30min, 4 total attempts, with persisted `status: retrying` for cross-launch resume. See [Transcription](#transcription).
@@ -772,16 +772,10 @@ These IDs are kept as a stable trail; the resolution lives in the relevant secti
 These items are unresolved drift between SPEC.md and the rc1 implementation. They are NOT spec changes — the spec captures the intended behavior and the code needs to align. Recommended landing order at the bottom.
 
 - **Output root drift.** Spec says default is `~/Scribe/`. Code (`AppDelegate.defaultSettingsFallback`) defaults to `~/Documents/Scribe/`. The spec's choice is deliberate (avoids iCloud Desktop & Documents sync collisions). **Code action:** change default to `~/Scribe/`.
-- **`Keep Recording` snooze drift.** Spec says 3 / 9 / 27 escalating per session click count. Code (`EndGuard.Config.snoozeDuration`) ships a flat 15 min. **Code action:** add a per-session click counter and switch to 3/9/27 logic.
-- **Frontmatter richness drift.** Spec defines an 11-field frontmatter (`scheduled_start`, `scheduled_end`, `actual_end`, `organizer`, `location`, `calendar_event_id`, `joined_late`, `elapsed_at_start_seconds`) and forbids the `schema` field. Code (`TranscriptWriter` + `TranscriptContext`) emits a subset and ships `schema: transcriber/v1`. **Code action:** expand `TranscriptContext` to carry the full set; remove `schema` from `transcript.md` (the sidecar `metadata.json` keeps its `schema` field). Meeting URLs are explicitly NOT stored — the calendar-event mapping must drop them before they reach `TranscriptContext`.
-- **Attendee shape drift.** Spec stores attendees and organizer as structured `{name, email}` objects. Code (`CalendarEvent.Attendee`) only carries `name` + `isCurrentUser`; `TranscriptContext.attendees` is a flat `[String]` of wikilink-formatted names; `MetadataJSONWriter.Metadata.attendees` is a flat `[String]`. **Code action:** add `email: String?` to `CalendarEvent.Attendee`; source from EventKit's `EKParticipant.url` (mailto-prefixed); thread email through `TranscriptContext` and both writers as `{name, email}` objects in YAML and JSON.
-- **Transcript body shape drift.** Spec says each speaker block renders as `### [HH:MM:SS] Speaker A` (H3 + full timestamp). Code emits `**Name** [MM:SS]: text` (bold name + minutes-only timestamp). **Code action:** switch the body writer to H3 headings with HH:MM:SS.
 - **Start-prompt button shape drift.** Spec: two buttons (`Start Recording` / `Not now`) plus a `More options ▾` disclosure exposing `Stop asking about this meeting` (recurring-series suppress, keys on recurrence-series ID) AND `Stop detecting [App] for 30 minutes`. Code (`StartPromptCoordinator.swift`): three flat buttons (`Start recording` / `Not now` / `Stop detecting [App] for 30 min`); the `More options` disclosure and the recurring-series suppress are entirely absent. **Code action:** collapse to two buttons + disclosure; persist suppressed-series IDs (likely under the `transcriber.settings.v1` JSON blob).
 - **Quiet Meetings settings panel missing.** Spec: `Settings → Quiet Meetings` lists suppressed recurring series with a `Re-enable` action per series. Code: no UI, no persistence. Depends on the start-prompt button shape change above. **Code action:** add the Settings panel and the read/write surface backing it.
-- **`joined_late` / `elapsed_at_start_seconds` not emitted.** Code: `TranscriptContext` doesn't carry these fields; `TranscriptWriter` doesn't emit them. Spec: late-joined sessions write both. **Code action:** thread the late-join detection result into `TranscriptContext`; the writer additions are 4 lines.
-- **Settings → Storage panel missing.** Spec: panel shows total Scribe audio size on disk with `Reveal in Finder` and `Delete all audio (keep transcripts)` (behind confirmation). Pre-record disk-space warning if free disk is below ~1 GB at recording start. Post-record audio size visible in the saved notification. Code: none of this exists. **Code action:** Settings panel + pre-record disk check + audio-size in saved notification body.
 
-Recommended landing order: **`joined_late` emission → button shape collapse → Quiet Meetings panel → Storage panel.** Rationale: `joined_late` is isolated and low-risk; the Quiet Meetings panel depends on the button-shape change because it needs something to persist; Storage panel is the largest piece of new UI work and can land last.
+Recommended landing order: **button shape collapse → Quiet Meetings panel → Recents inline actions/Retry**. Rationale: the Quiet Meetings panel depends on the button-shape change because it needs something to persist; Recents Retry depends on the failed-session action surface.
 
 When any of the above lands in code, delete the corresponding bullet here.
 
@@ -797,15 +791,15 @@ When any of the above lands in code, delete the corresponding bullet here.
 - Default output root is `~/Scribe/`, not `~/Documents/Scribe/`.
 - Required permissions block recording loudly. Recommended permissions only show the `Setup Required` badge.
 - Auto-stop fires after the end-guard timeout if `Keep Recording` is not clicked.
-- `Keep Recording` snoozes 3 / 9 / 27 minutes per session click count.
+- `Keep Recording` snoozes for 15 minutes.
 - Both standard and late-join prompts present exactly two buttons: `Start Recording` and `Not now`. The `More options ▾` disclosure is closed by default and exposes meeting-suppress and app-suppress.
-- Suppressed recurring meetings appear in Settings → Quiet Meetings with a `Re-enable` action per series.
+- Suppressed recurring meetings appear in Settings → Quiet Meetings with a `Re-enable` action per series. (Later work.)
 - Late-join prompt fires only if at least 10 minutes remain on the scheduled event or a meeting app is currently in-call.
 - Late-joined sessions write `joined_late: true` and `elapsed_at_start_seconds`; `scheduled_start` and `actual_start` already carry the timestamps.
 - Stop prompt is a floating HUD; it does not steal focus.
 - Menu bar icon shows live `MIC` and `SYS` indicators next to elapsed time during Recording. They dim/amber when their channel is silent for >5 seconds.
 - Active-recording popover opens with a Privacy Status block at top showing destination path, captured sources, exclusions, and full engine label.
-- Recents popover shows at most 5 saved sessions, with `Open Folder` / `Open Transcript` and (for failed sessions) `Retry`.
+- Recents popover shows at most 5 saved sessions, with `Open Folder` / `Open Transcript` and (for failed sessions) `Retry`. (Later work.)
 - Saved success fires a transient notification and a brief menu-bar `Saved` glyph; no persistent in-app toast.
 - Cohere downloads in the background during onboarding regardless of which engine the user picks.
 - No silent fallback between engines.
@@ -862,7 +856,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 - `More options ▾` is closed by default.
 - `Stop asking about this meeting` adds the recurring series to the suppress list.
 - `Stop detecting [App] for 30 minutes` suppresses the triggering app for 30 minutes.
-- Settings → Quiet Meetings lists suppressed series; `Re-enable` reverses suppression.
+- Settings → Quiet Meetings lists suppressed series; `Re-enable` reverses suppression. (Later work.)
 - Late-join prompt presents the same two buttons and the same disclosure.
 - Notification fires in parallel with the modal; menu-bar glyph flips to `Meeting detected`.
 - Modal does not appear in shared screen video.
@@ -879,7 +873,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 - Scheduled end + silence triggers stop prompt.
 - Audio resumes during grace or countdown — stop flow cancels; re-prompt suppressed for 60 seconds.
 - Countdown auto-stops if ignored.
-- 1st / 2nd / 3rd `Keep Recording` snoozes 3 / 9 / 27 minutes.
+- `Keep Recording` snoozes for 15 minutes.
 - Force-prompt fires at 4 hours past scheduled end regardless of snooze.
 - `Stop Now` finalizes immediately.
 - Stop prompt HUD does not pull focus.
@@ -889,7 +883,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 
 - Success path produces transcript and the .md has no `status` field.
 - 401 / 429 / timeout / partial each produce the documented failure transcript shape.
-- Failed session retries one-click from the Recents popover.
+- Failed session retries one-click from the Recents popover. (Later work.)
 - Engine switch (Settings → Engine) re-triggers transcription on saved audio without silent fallback.
 - Failure transcript includes a `## What you can do` body section.
 
@@ -904,7 +898,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 - Switching from Dropbox to Google Drive re-warns; subdir within Dropbox does not.
 - Pre-record disk-space warning fires below ~1 GB free.
 - Mid-recording disk-full fails safely without losing already-captured audio where possible.
-- Recents popover shows at most 5 sessions; failed items expose `Retry`.
+- Recents popover shows at most 5 sessions; failed items expose `Retry`. (Later work.)
 - Settings → Storage shows total audio size; `Delete all audio (keep transcripts)` requires confirmation.
 
 **Markdown Contract**

@@ -12,7 +12,7 @@ final class TranscriptFrontmatterReaderTests: XCTestCase {
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon]]", "[[Faris]]"],
+            attendees: [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")],
             language: "en"
         )
         try TranscriptWriter.writePending(at: tmp, context: context)
@@ -22,7 +22,7 @@ final class TranscriptFrontmatterReaderTests: XCTestCase {
         XCTAssertEqual(parsed?.status, .pending)
         XCTAssertEqual(parsed?.context.title, "1:1 with Faris")
         XCTAssertEqual(parsed?.context.audioRelativePaths, ["mic.m4a", "system.m4a"])
-        XCTAssertEqual(parsed?.context.attendees, ["[[Szymon]]", "[[Faris]]"])
+        XCTAssertEqual(parsed?.context.attendees, [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")])
         XCTAssertEqual(parsed?.context.language, "en")
         XCTAssertEqual(parsed?.attempts, 0)
     }
@@ -74,6 +74,42 @@ final class TranscriptFrontmatterReaderTests: XCTestCase {
     func testReturnsNilForMalformed() {
         XCTAssertNil(TranscriptFrontmatterReader.readFromString("# no frontmatter"))
         XCTAssertNil(TranscriptFrontmatterReader.readFromString("---\nstatus: pending\nno end"))
-        XCTAssertNil(TranscriptFrontmatterReader.readFromString("---\ntitle: missing status\n---"))
+        XCTAssertEqual(TranscriptFrontmatterReader.readFromString("---\ntitle: success has no status\n---")?.status, .complete)
+    }
+
+    // MARK: - readStatusAndAttemptsStreaming
+
+    private func writeTempFile(_ content: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".md")
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testStreamingParsesValidStatusAndAttempts() throws {
+        let url = try writeTempFile("---\nstatus: retrying\nattempts: 2\n---\n\nbody\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: url)
+        XCTAssertEqual(result?.status, .retrying)
+        XCTAssertEqual(result?.attempts, 2)
+    }
+
+    func testStreamingStatuslessFrontmatterIsComplete() throws {
+        let url = try writeTempFile("---\ntitle: Done\n---\n\nbody\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let result = TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: url)
+        XCTAssertEqual(result?.status, .complete)
+        XCTAssertEqual(result?.attempts, 0)
+    }
+
+    func testStreamingReturnsNilForUnknownStatus() throws {
+        let url = try writeTempFile("---\nstatus: half-baked\n---\n\nbody\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertNil(TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: url))
+    }
+
+    func testStreamingReturnsNilForUnterminatedFrontmatter() throws {
+        let url = try writeTempFile("---\nstatus: pending\nno end marker\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertNil(TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: url))
     }
 }

@@ -37,7 +37,7 @@ public enum TranscriptFrontmatterReader {
         var lineBuffer = Data()
         var lineCount = 0
         var sawOpener = false
-        var status: TranscriptStatus?
+        var statusRaw: String?
         var attempts = 0
 
         let chunkSize = 256
@@ -57,15 +57,19 @@ public enum TranscriptFrontmatterReader {
                     return nil
                 }
                 if line == "---" {
-                    // Closing delimiter — return whatever we found.
-                    guard let s = status else { return nil }
-                    return (s, attempts)
+                    // Closing delimiter — distinguish missing status (statusless
+                    // success: .complete) from present-but-unrecognized status
+                    // (malformed: nil), matching TranscriptStatusReader.
+                    if let raw = statusRaw {
+                        guard let parsed = TranscriptStatus(rawValue: raw) else { return nil }
+                        return (parsed, attempts)
+                    }
+                    return (.complete, attempts)
                 }
                 if line.hasPrefix("status:") {
-                    let v = String(line.dropFirst("status:".count))
+                    statusRaw = String(line.dropFirst("status:".count))
                         .trimmingCharacters(in: .whitespaces)
                         .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    status = TranscriptStatus(rawValue: v)
                 }
                 if line.hasPrefix("attempts:") {
                     let v = String(line.dropFirst("attempts:".count))
@@ -94,7 +98,8 @@ public enum TranscriptFrontmatterReader {
         var inFrontmatter = true
         var fields: [String: String] = [:]
         var audioPaths: [String] = []
-        var attendees: [String] = []
+        var attendees: [TranscriptPerson] = []
+        var organizer: TranscriptPerson?
         var i = 1
         var foundEnd = false
 
@@ -126,14 +131,41 @@ public enum TranscriptFrontmatterReader {
                 i += 1
                 while i < lines.count {
                     let item = lines[i]
-                    if item.hasPrefix("  - ") {
-                        attendees.append(String(item.dropFirst(4))
-                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
+                    if item.hasPrefix("  - name:") {
+                        let name = value(after: "  - name:", in: item)
+                        var email: String?
+                        if i + 1 < lines.count, lines[i + 1].hasPrefix("    email:") {
+                            email = value(after: "    email:", in: lines[i + 1])
+                            i += 1
+                        }
+                        attendees.append(TranscriptPerson(name: name, email: email))
+                        i += 1
+                    } else if item.hasPrefix("  - ") {
+                        attendees.append(TranscriptPerson(name: value(after: "  - ", in: item)))
                         i += 1
                     } else {
                         break
                     }
                 }
+                continue
+            }
+            if trimmed == "organizer:" {
+                var name = ""
+                var email: String?
+                i += 1
+                while i < lines.count {
+                    let item = lines[i]
+                    if item.hasPrefix("  name:") {
+                        name = value(after: "  name:", in: item)
+                        i += 1
+                    } else if item.hasPrefix("  email:") {
+                        email = value(after: "  email:", in: item)
+                        i += 1
+                    } else {
+                        break
+                    }
+                }
+                if !name.isEmpty { organizer = TranscriptPerson(name: name, email: email) }
                 continue
             }
 
@@ -148,8 +180,13 @@ public enum TranscriptFrontmatterReader {
         }
         guard foundEnd else { return nil }
 
-        guard let statusRaw = fields["status"],
-              let status = TranscriptStatus(rawValue: statusRaw) else { return nil }
+        let status: TranscriptStatus
+        if let statusRaw = fields["status"] {
+            guard let parsed = TranscriptStatus(rawValue: statusRaw) else { return nil }
+            status = parsed
+        } else {
+            status = .complete
+        }
 
         // `audio:` may have been a single inline value (single-track case).
         if audioPaths.isEmpty, let single = fields["audio"], !single.isEmpty {
@@ -161,12 +198,27 @@ public enum TranscriptFrontmatterReader {
             date: fields["date"] ?? "",
             engine: fields["engine"] ?? "elevenlabs",
             audioRelativePaths: audioPaths,
-            startedAt: fields["started_at"] ?? "",
-            endedAt: fields["ended_at"] ?? "",
+            scheduledStart: fields["scheduled_start"],
+            scheduledEnd: fields["scheduled_end"],
+            actualStart: fields["actual_start"],
+            actualEnd: fields["actual_end"],
+            startedAt: fields["started_at"],
+            endedAt: fields["ended_at"],
+            organizer: organizer,
+            location: fields["location"],
+            calendarEventID: fields["calendar_event_id"],
+            joinedLate: fields["joined_late"].flatMap(Bool.init),
+            elapsedAtStartSeconds: fields["elapsed_at_start_seconds"].flatMap(Int.init),
             attendees: attendees,
             language: fields["language"]
         )
         let attempts = fields["attempts"].flatMap(Int.init) ?? 0
         return Frontmatter(status: status, context: context, attempts: attempts)
+    }
+
+    private static func value(after prefix: String, in line: String) -> String {
+        String(line.dropFirst(prefix.count))
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
     }
 }

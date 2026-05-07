@@ -117,7 +117,7 @@ final class TranscriptionWorkerTests: XCTestCase {
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon Sypniewicz]]", "[[Faris Riaz]]"],
+            attendees: [TranscriptPerson(name: "Szymon Sypniewicz"), TranscriptPerson(name: "Faris Riaz")],
             language: "en"
         )
         let engine = FakeEngine(responses: [
@@ -182,7 +182,7 @@ final class TranscriptionWorkerTests: XCTestCase {
         _ = await worker2.run()
         let parsed = TranscriptFrontmatterReader.read(at: dir2.transcript)
         XCTAssertNotNil(parsed)
-        XCTAssertEqual(parsed?.context.attendees, ["[[Szymon Sypniewicz]]", "[[Faris Riaz]]"])
+        XCTAssertEqual(parsed?.context.attendees, [TranscriptPerson(name: "Szymon Sypniewicz"), TranscriptPerson(name: "Faris Riaz")])
         XCTAssertEqual(parsed?.context.language, "en")
     }
 

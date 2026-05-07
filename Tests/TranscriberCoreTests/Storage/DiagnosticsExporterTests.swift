@@ -88,7 +88,7 @@ final class DiagnosticsExporterTests: XCTestCase {
             audioRelativePaths: ctx.audioRelativePaths,
             startedAt: ctx.startedAt,
             endedAt: ctx.endedAt,
-            attendees: ["[[Faris-Sentinel-Riaz]]", "[[Other-Sentinel-Person]]"],
+            attendees: [TranscriptPerson(name: "Faris-Sentinel-Riaz"), TranscriptPerson(name: "Other-Sentinel-Person")],
             language: ctx.language
         )
         try TranscriptWriter.writePending(at: dir.transcript, context: ctx)

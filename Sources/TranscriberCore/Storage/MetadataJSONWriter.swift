@@ -16,9 +16,18 @@ public enum MetadataJSONWriter {
         public let engine: String
         public let language: String?
         public let audio: String
+        public let scheduled_start: String?
+        public let scheduled_end: String?
+        public let actual_start: String
+        public let actual_end: String
         public let started_at: String
         public let ended_at: String
-        public let attendees: [String]
+        public let organizer: TranscriptPerson?
+        public let location: String?
+        public let calendar_event_id: String?
+        public let joined_late: Bool?
+        public let elapsed_at_start_seconds: Int?
+        public let attendees: [TranscriptPerson]
         /// Spec line 117 / D2: `succeeded` when the AEC pre-pass
         /// produced a cleaned mic file, `failed` when AEC was attempted
         /// and failed, or absent (nil) when the session predates AEC
@@ -39,8 +48,17 @@ public enum MetadataJSONWriter {
             self.engine = context.engine
             self.language = context.language
             self.audio = audio
+            self.scheduled_start = context.scheduledStart
+            self.scheduled_end = context.scheduledEnd
+            self.actual_start = context.actualStart
+            self.actual_end = context.actualEnd
             self.started_at = context.startedAt
             self.ended_at = context.endedAt
+            self.organizer = context.organizer
+            self.location = context.location
+            self.calendar_event_id = context.calendarEventID
+            self.joined_late = context.joinedLate
+            self.elapsed_at_start_seconds = context.elapsedAtStartSeconds
             self.attendees = context.attendees
             self.aec_status = aecStatus?.rawValue
         }

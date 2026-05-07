@@ -18,7 +18,7 @@ final class TranscriptWriterTests: XCTestCase {
             audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon]]", "[[Faris]]"],
+            attendees: [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")],
             language: nil
         )
 
@@ -36,7 +36,7 @@ final class TranscriptWriterTests: XCTestCase {
             title: "Faris Sync", date: "2026-04-29",
             engine: "elevenlabs", audioRelativePaths: ["audio.m4a"],
             startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon Sypniewicz]]", "[[Faris Riaz]]"],
+            attendees: [TranscriptPerson(name: "Szymon Sypniewicz"), TranscriptPerson(name: "Faris Riaz")],
             language: "en"
         )
         try TranscriptWriter.writePending(at: url, context: context)
@@ -49,10 +49,12 @@ final class TranscriptWriterTests: XCTestCase {
         try TranscriptWriter.writeComplete(at: url, context: context, utterances: utterances, speakerMapping: mapping)
 
         let content = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(content.contains("status: complete"))
+        XCTAssertFalse(content.contains("status: complete"))
+        XCTAssertFalse(content.contains("schema:"))
         XCTAssertTrue(content.contains("language: en"))
-        XCTAssertTrue(content.contains("**Szymon Sypniewicz** [00:00]: Hi"))
-        XCTAssertTrue(content.contains("**Faris Riaz** [00:01]: Hello"))
+        XCTAssertTrue(content.contains("attendees:\n  - name: \"Szymon Sypniewicz\"\n  - name: \"Faris Riaz\""))
+        XCTAssertTrue(content.contains("### [00:00:00] Szymon Sypniewicz\n\nHi"))
+        XCTAssertTrue(content.contains("### [00:00:01] Faris Riaz\n\nHello"))
     }
 
     func testFailedTranscriptStillValid() throws {

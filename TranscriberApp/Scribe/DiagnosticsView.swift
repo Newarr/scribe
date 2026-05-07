@@ -165,6 +165,7 @@ private struct DiagnosticsView: View {
             }
             .keyboardShortcut(.defaultAction)
             .buttonStyle(PrimaryButtonStyle())
+            .hoverSheen()
             .disabled(exporting || refreshing)
         }
         .padding(.horizontal, 18)

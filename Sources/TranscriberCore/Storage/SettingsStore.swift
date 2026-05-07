@@ -21,6 +21,7 @@ public struct UserDefaultsBox: @unchecked Sendable {
 public struct SessionSettings: Sendable, Equatable, Codable {
     public var outputRoot: URL
     public var engineMode: EngineMode
+    public var appearanceTheme: AppearanceTheme
     /// Spec line 102: default OFF means raw mic.m4a + system.m4a are
     /// DELETED after audio.m4a is mixed. Set true only for users who
     /// want to inspect the per-channel originals.
@@ -38,19 +39,21 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     public init(
         outputRoot: URL,
         engineMode: EngineMode,
+        appearanceTheme: AppearanceTheme = .system,
         keepRawStreams: Bool,
         aecEnabled: Bool,
         privacyAcknowledged: Bool
     ) {
         self.outputRoot = outputRoot
         self.engineMode = engineMode
+        self.appearanceTheme = appearanceTheme
         self.keepRawStreams = keepRawStreams
         self.aecEnabled = aecEnabled
         self.privacyAcknowledged = privacyAcknowledged
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged
+        case outputRoot, engineMode, appearanceTheme, keepRawStreams, aecEnabled, privacyAcknowledged
     }
 
     /// Decoder permits older blob formats that omit `privacyAcknowledged`
@@ -60,10 +63,17 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.outputRoot = try c.decode(URL.self, forKey: .outputRoot)
         self.engineMode = try c.decode(EngineMode.self, forKey: .engineMode)
+        self.appearanceTheme = try c.decodeIfPresent(AppearanceTheme.self, forKey: .appearanceTheme) ?? .system
         self.keepRawStreams = try c.decode(Bool.self, forKey: .keepRawStreams)
         self.aecEnabled = try c.decode(Bool.self, forKey: .aecEnabled)
         self.privacyAcknowledged = try c.decodeIfPresent(Bool.self, forKey: .privacyAcknowledged) ?? false
     }
+}
+
+public enum AppearanceTheme: String, Sendable, Equatable, Codable, CaseIterable {
+    case system
+    case light
+    case dark
 }
 
 /// Settings backing store. UserDefaults under the hood; tests can
@@ -95,6 +105,7 @@ public actor SettingsStore {
     public struct Defaults: Sendable {
         public var outputRoot: URL
         public var engineMode: EngineMode
+        public var appearanceTheme: AppearanceTheme
         public var keepRawStreams: Bool
         public var aecEnabled: Bool
         public var privacyAcknowledged: Bool
@@ -102,12 +113,14 @@ public actor SettingsStore {
         public init(
             outputRoot: URL,
             engineMode: EngineMode = .cloud,
+            appearanceTheme: AppearanceTheme = .system,
             keepRawStreams: Bool = false,  // spec line 102
             aecEnabled: Bool = true,        // D2
             privacyAcknowledged: Bool = false  // spec line 348
         ) {
             self.outputRoot = outputRoot
             self.engineMode = engineMode
+            self.appearanceTheme = appearanceTheme
             self.keepRawStreams = keepRawStreams
             self.aecEnabled = aecEnabled
             self.privacyAcknowledged = privacyAcknowledged
@@ -199,6 +212,7 @@ private extension SettingsStore.Defaults {
         SessionSettings(
             outputRoot: outputRoot,
             engineMode: engineMode,
+            appearanceTheme: appearanceTheme,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
             privacyAcknowledged: privacyAcknowledged
@@ -226,6 +240,7 @@ public enum SettingsSnapshotReader {
         return SessionSettings(
             outputRoot: fallback.outputRoot,
             engineMode: fallback.engineMode,
+            appearanceTheme: fallback.appearanceTheme,
             keepRawStreams: fallback.keepRawStreams,
             aecEnabled: fallback.aecEnabled,
             privacyAcknowledged: fallback.privacyAcknowledged

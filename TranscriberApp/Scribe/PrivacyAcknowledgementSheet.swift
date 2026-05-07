@@ -143,6 +143,7 @@ private struct PrivacyAcknowledgementView: View {
                 }
                 .keyboardShortcut(.return, modifiers: [])
                 .buttonStyle(PrimaryButtonStyle())
+                .hoverSheen()
             }
         }
         .padding(.horizontal, 40)

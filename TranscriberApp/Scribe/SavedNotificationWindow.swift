@@ -122,6 +122,10 @@ private struct SavedNotificationView: View {
     let onPauseAutoDismiss: @MainActor () -> Void
     let onResumeAutoDismiss: @MainActor () -> Void
     @State private var hovering: Bool = false
+    /// Drives the entrance fade + slide. Spec page-level transition
+    /// is "200ms fade + 8px translate-y"; we ease in from the right
+    /// edge instead since the panel anchors top-right.
+    @State private var didAppear: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -149,6 +153,10 @@ private struct SavedNotificationView: View {
         .padding(.vertical, 14)
         .frame(width: 360, height: 130, alignment: .topLeading)
         .glassBackground()
+        .opacity(didAppear ? 1 : 0)
+        .offset(x: didAppear ? 0 : 12)
+        .animation(.easeOut(duration: 0.22), value: didAppear)
+        .onAppear { didAppear = true }
         .onHover { isHovering in
             hovering = isHovering
             if isHovering { onPauseAutoDismiss() } else { onResumeAutoDismiss() }

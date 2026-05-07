@@ -133,7 +133,7 @@ final class SessionSupervisorTests: XCTestCase {
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
-            attendees: ["[[Szymon]]", "[[Faris]]"],
+            attendees: [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")],
             language: "en"
         )
         try TranscriptWriter.writePending(at: dir.transcript, context: originalContext)
@@ -149,7 +149,7 @@ final class SessionSupervisorTests: XCTestCase {
             workerFactory: { d, ctx in
                 // Worker should receive the ORIGINAL context, not the placeholder.
                 XCTAssertEqual(ctx.title, "1:1 with Faris")
-                XCTAssertEqual(ctx.attendees, ["[[Szymon]]", "[[Faris]]"])
+                XCTAssertEqual(ctx.attendees, [TranscriptPerson(name: "Szymon"), TranscriptPerson(name: "Faris")])
                 XCTAssertEqual(ctx.language, "en")
                 return Self.makeWorker(dir: d, responses: [.success(Self.makeResponse())])
             }

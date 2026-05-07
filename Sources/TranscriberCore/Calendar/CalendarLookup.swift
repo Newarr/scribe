@@ -77,13 +77,10 @@ public final class CalendarLookup: Sendable {
     }
 
     private static func makeEvent(from ek: EKEvent) -> CalendarEvent {
-        let attendees: [CalendarEvent.Attendee] = (ek.attendees ?? []).compactMap { participant in
-            // Spec line 115 forbids attendee emails from leaving the device unless the
-            // user explicitly opts in. EKParticipant.url is typically `mailto:`, so if
-            // there's no display name we drop the participant rather than fall back
-            // to the email. Anonymous attendees just don't get mapped to a speaker.
+        let attendees: [CalendarEvent.Attendee] = (ek.attendees ?? []).compactMap { participant -> CalendarEvent.Attendee? in
             guard let name = participant.name, !name.isEmpty else { return nil }
-            return .init(name: name, isCurrentUser: participant.isCurrentUser)
+            let email = mailtoEmail(from: participant.url)
+            return .init(name: name, email: email, isCurrentUser: participant.isCurrentUser)
         }
         return CalendarEvent(
             title: ek.title ?? "(untitled)",
@@ -91,5 +88,12 @@ public final class CalendarLookup: Sendable {
             endDate: ek.endDate,
             attendees: attendees
         )
+    }
+
+    private static func mailtoEmail(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "mailto" else { return nil }
+        let raw = String(url.absoluteString.dropFirst("mailto:".count))
+        let email = raw.removingPercentEncoding ?? raw
+        return email.isEmpty ? nil : email
     }
 }

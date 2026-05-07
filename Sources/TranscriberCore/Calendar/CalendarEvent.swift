@@ -3,11 +3,17 @@ import Foundation
 public struct CalendarEvent: Sendable, Equatable {
     public struct Attendee: Sendable, Equatable {
         public let name: String
+        public let email: String?
         public let isCurrentUser: Bool
 
-        public init(name: String, isCurrentUser: Bool) {
+        public init(name: String, email: String? = nil, isCurrentUser: Bool) {
             self.name = name
+            self.email = email
             self.isCurrentUser = isCurrentUser
+        }
+
+        public var transcriptPerson: TranscriptPerson {
+            TranscriptPerson(name: name, email: email)
         }
     }
 

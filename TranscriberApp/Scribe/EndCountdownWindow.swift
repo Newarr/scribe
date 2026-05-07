@@ -95,6 +95,10 @@ final class EndCountdownModel: ObservableObject {
 
 private struct EndCountdownView: View {
     @ObservedObject var model: EndCountdownModel
+    /// Drives the entrance fade + 6pt slide-in. The countdown HUD
+    /// is centered on screen, so a short top-down slide reads
+    /// faster than a side slide.
+    @State private var didAppear: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
@@ -130,10 +134,15 @@ private struct EndCountdownView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(PrimaryButtonStyle())
+                .hoverSheen()
             }
         }
         .padding(20)
         .frame(width: 360, height: 220)
         .glassBackground()
+        .opacity(didAppear ? 1 : 0)
+        .offset(y: didAppear ? 0 : -8)
+        .animation(.easeOut(duration: 0.22), value: didAppear)
+        .onAppear { didAppear = true }
     }
 }

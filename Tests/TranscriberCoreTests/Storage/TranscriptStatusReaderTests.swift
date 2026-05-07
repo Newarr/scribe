@@ -34,6 +34,10 @@ final class TranscriptStatusReaderTests: XCTestCase {
         XCTAssertNil(TranscriptStatusReader.readFromString("---\nstatus: half-baked\n---\n"))
     }
 
+    func testStatuslessFrontmatterIsComplete() {
+        XCTAssertEqual(TranscriptStatusReader.readFromString("---\ntitle: Done\n---\n\n# Done"), .complete)
+    }
+
     /// Round-trip: TranscriptWriter.writePending must produce a file the reader
     /// classifies as .pending. Catches drift between writer output and reader input.
     func testWriterOutputIsReadable() throws {

@@ -166,8 +166,15 @@ public actor TranscriptionWorker {
                     audioRelativePaths: canonicalAudioPath.isEmpty
                         ? context.audioRelativePaths
                         : [canonicalAudioPath],
-                    startedAt: context.startedAt,
-                    endedAt: context.endedAt,
+                    scheduledStart: context.scheduledStart,
+                    scheduledEnd: context.scheduledEnd,
+                    actualStart: context.actualStart,
+                    actualEnd: context.actualEnd,
+                    organizer: context.organizer,
+                    location: context.location,
+                    calendarEventID: context.calendarEventID,
+                    joinedLate: context.joinedLate,
+                    elapsedAtStartSeconds: context.elapsedAtStartSeconds,
                     attendees: context.attendees,
                     language: response.detectedLanguage
                 )
@@ -247,25 +254,8 @@ public actor TranscriptionWorker {
         // including language + attendees, so a relaunch during the backoff
         // doesn't lose the calendar-enriched metadata that was on the original
         // pending transcript (codex slice-7 final-review P2.2).
-        var lines: [String] = ["---", "schema: transcriber/v1", "status: retrying"]
-        lines.append("title: \"\(Self.yamlEscape(context.title))\"")
-        lines.append("date: \(context.date)")
-        lines.append("engine: \(context.engine)")
-        if let lang = context.language { lines.append("language: \(lang)") }
-        if context.audioRelativePaths.count == 1 {
-            lines.append("audio: \"\(Self.yamlEscape(context.audioRelativePaths[0]))\"")
-        } else {
-            lines.append("audio:")
-            for p in context.audioRelativePaths { lines.append("  - \"\(Self.yamlEscape(p))\"") }
-        }
-        lines.append("started_at: \(context.startedAt)")
-        lines.append("ended_at: \(context.endedAt)")
-        if !context.attendees.isEmpty {
-            lines.append("attendees:")
-            for a in context.attendees { lines.append("  - \"\(Self.yamlEscape(a))\"") }
-        }
-        lines.append("attempts: \(failedAttempts)")
-        lines.append("---")
+        var lines = TranscriptWriter.frontmatter(status: "retrying", context: context, attempts: failedAttempts)
+            .components(separatedBy: "\n")
         lines.append("")
         lines.append("# \(context.title)")
         lines.append("")
@@ -297,8 +287,15 @@ public actor TranscriptionWorker {
             date: context.date,
             engine: context.engine,
             audioRelativePaths: audioPaths,
-            startedAt: context.startedAt,
-            endedAt: context.endedAt,
+            scheduledStart: context.scheduledStart,
+            scheduledEnd: context.scheduledEnd,
+            actualStart: context.actualStart,
+            actualEnd: context.actualEnd,
+            organizer: context.organizer,
+            location: context.location,
+            calendarEventID: context.calendarEventID,
+            joinedLate: context.joinedLate,
+            elapsedAtStartSeconds: context.elapsedAtStartSeconds,
             attendees: context.attendees,
             language: context.language
         )
@@ -442,15 +439,6 @@ public actor TranscriptionWorker {
             Log.engine.error("metadata.json write failed: \(String(describing: error), privacy: .public)")
             return false
         }
-    }
-
-    /// Same escape rules as TranscriptWriter.yamlEscape — duplicated here
-    /// because writeRetrying is built inline rather than via the writer.
-    private static func yamlEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\n", with: " ")
-         .replacingOccurrences(of: "\r", with: " ")
     }
 
     /// Classifies whether an error from the engine should retry. Transient:

@@ -10,6 +10,7 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
 TranscriberApp/.dd/
+TranscriberApp/.dd-release/
 
 # macOS
 .DS_Store

@@ -19,6 +19,7 @@
 		58FA6F896CE30C27264BF0D7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3711DECCD9B3CE4D5706D0B9 /* AppDelegate.swift */; };
 		69D35C9D594B8F1F1EB96A53 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C6B78097708D59228C8C65 /* SettingsWindow.swift */; };
 		8877FAD6AC64AD127C558876 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 58A882D385FAA4B8E18A3F86 /* InterVariable.ttf */; };
+		9CD0F558E5365D845331221D /* AppearanceTheme+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */; };
 		AC05914D15CD5ED7E54877EB /* InterVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */; };
 		AEAA426E81A7A6BBCAA85455 /* RecordingMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 030D0A67E77F17BEE72A9129 /* RecordingMenu.swift */; };
 		AFE235F52485B1F5D7F52259 /* EndCountdownWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57A418554CCA692B873FA2E4 /* EndCountdownWindow.swift */; };
@@ -50,6 +51,7 @@
 		58A882D385FAA4B8E18A3F86 /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyAcknowledgementSheet.swift; sourceTree = "<group>"; };
 		71044992EBA5AF0C0CFA48D2 /* JetBrainsMonoVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMonoVariable.ttf; sourceTree = "<group>"; };
+		9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppearanceTheme+App.swift"; sourceTree = "<group>"; };
 		A24F32984A71E09395513545 /* GeistVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = GeistVariable.ttf; sourceTree = "<group>"; };
 		AC557FEA1022E74AC7FB2AAB /* JetBrainsMono-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "JetBrainsMono-OFL.txt"; sourceTree = "<group>"; };
 		B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionRecoveryView.swift; sourceTree = "<group>"; };
@@ -111,6 +113,7 @@
 			isa = PBXGroup;
 			children = (
 				3711DECCD9B3CE4D5706D0B9 /* AppDelegate.swift */,
+				9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */,
 				0D9B56D3A82F894C60EF067C /* Assets.xcassets */,
 				D529955956249F0700BFFD73 /* DesignSystem.swift */,
 				D288AA87854E67BA12387175 /* DiagnosticsView.swift */,
@@ -223,6 +226,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				58FA6F896CE30C27264BF0D7 /* AppDelegate.swift in Sources */,
+				9CD0F558E5365D845331221D /* AppearanceTheme+App.swift in Sources */,
 				C88C5DC6D949DB3B9964300E /* DesignSystem.swift in Sources */,
 				09D39AB01C40DFE6902AD567 /* DiagnosticsView.swift in Sources */,
 				AFE235F52485B1F5D7F52259 /* EndCountdownWindow.swift in Sources */,

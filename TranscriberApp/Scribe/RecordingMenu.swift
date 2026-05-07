@@ -69,6 +69,10 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         didSet { model.outcomeFolderURL = outcomeFolderURL }
     }
 
+    var appearanceTheme: AppearanceTheme = .system {
+        didSet { model.appearanceTheme = appearanceTheme }
+    }
+
     let popover: NSPopover
     private let onAction: (Action) -> Void
     private let model: RecordingMenuModel
@@ -83,6 +87,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         let popover = NSPopover()
         self.popover = popover
         super.init()
+        model.appearanceTheme = appearanceTheme
         popover.delegate = self
         popover.behavior = .transient
         // Size driven by the SwiftUI body's `.frame(width:)` +
@@ -115,6 +120,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
     /// Status update hook (preserves the old API).
     func rebuild(for status: SessionStatus) {
         model.status = status
+        applyDebugMenuFixtureIfNeeded()
     }
 
     /// Presents the popover anchored to `button`. AppDelegate calls
@@ -129,6 +135,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         // view so this stays cheap; the enumerator only touches
         // frontmatter, never bodies.
         model.refreshRecents(under: outputRoot)
+        applyDebugMenuFixtureIfNeeded()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Codex UX-4: confidential UI. NSPopover hosts a backing
         // window; opt it out of screen-share captures.
@@ -190,6 +197,25 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         }
         close()
     }
+
+    private func applyDebugMenuFixtureIfNeeded() {
+        #if DEBUG
+        guard let raw = ProcessInfo.processInfo.environment["SCRIBE_DEBUG_MENU_STATE"]?.lowercased() else { return }
+        switch raw {
+        case "idle":
+            model.status = .idle
+        case "recording":
+            model.status = .recording
+            model.elapsedSeconds = max(model.elapsedSeconds, 76)
+            model.recordingSourceLabel = model.recordingSourceLabel == "Recording" ? "Zoom · Design review" : model.recordingSourceLabel
+            model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
+        case "failed":
+            model.status = .failed
+        default:
+            break
+        }
+        #endif
+    }
 }
 
 @MainActor
@@ -215,6 +241,7 @@ final class RecordingMenuModel: ObservableObject {
     /// strip below the waveform.
     @Published var outcomeFolderName: String? = nil
     @Published var outcomeFolderURL: URL? = nil
+    @Published var appearanceTheme: AppearanceTheme = .system
 
     init(status: SessionStatus) {
         self.status = status
@@ -227,127 +254,100 @@ final class RecordingMenuModel: ObservableObject {
 }
 
 private struct RecordingPopoverContent: View {
-    // TEMPORARY DEVELOPMENT PLACEHOLDER ONLY. This light mock is not close
-    // to the final end-user menu UI; it exists so we can inspect broad
-    // spacing, status, and action direction while the real surface is designed.
-    // The state-switching tab bar below is dev-only scaffolding and must be
-    // removed before the user-facing implementation ships.
     @ObservedObject var model: RecordingMenuModel
     let onAction: (RecordingMenu.Action) -> Void
 
     private let menuWidth: CGFloat = 420
     @SwiftUI.State private var didAppear: Bool = false
-
-    private var selectedTab: SurfaceTab {
-        switch model.status {
-        case .recording, .stopping, .starting, .finalized:
-            return .recording
-        case .failed:
-            return .transcript
-        case .idle:
-            return .idle
-        }
-    }
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let palette = RecordingPopoverPalette(colorScheme: colorScheme)
         VStack(spacing: 0) {
-            header
-            Divider().background(LightPopover.line)
-            tabBar
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-            content
+            header(palette: palette)
+            Rectangle()
+                .fill(palette.line)
+                .frame(height: 1)
+            content(palette: palette)
         }
-        .background(LightPopover.surface)
+        .background(palette.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(LightPopover.line, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(palette.line, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: SwiftUI.Color.black.opacity(0.16), radius: 18, x: 0, y: 8)
+        .overlay(alignment: .top) {
+            LinearGradient(
+                colors: [SwiftUI.Color.clear, palette.specular, SwiftUI.Color.clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 1)
+            .padding(.horizontal, 18)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: palette.shadow, radius: 18, x: 0, y: 8)
         .frame(width: menuWidth)
         .fixedSize(horizontal: false, vertical: true)
         .opacity(didAppear ? 1 : 0)
         .offset(y: didAppear ? 0 : -6)
         .animation(.easeOut(duration: 0.18), value: didAppear)
         .onAppear { didAppear = true }
-        .preferredColorScheme(.light)
+        .preferredColorScheme(model.appearanceTheme.preferredColorScheme)
     }
 
-    private var header: some View {
+    private func header(palette: RecordingPopoverPalette) -> some View {
         HStack(spacing: 12) {
             BrandMark(size: 14)
-                .foregroundStyle(SwiftUI.Color.black)
+                .foregroundStyle(palette.text)
             Text("scribe")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(LightPopover.text)
+                .font(DS.Font.subheading)
+                .foregroundStyle(palette.text)
             Spacer()
-            LightStatusBadge(
+            StatusBadge(
                 text: headerStatusText,
-                color: headerStatusColor
+                color: headerStatusColor(palette: palette)
             )
+            Button {
+                onAction(.openSettings)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(IconButtonStyle(palette: palette))
+            .help("Open Settings")
         }
         .padding(.horizontal, 16)
-        .frame(height: 44)
-    }
-
-    private var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(SurfaceTab.allCases) { tab in
-                Button {
-                    if tab == .settings { onAction(.openSettings) }
-                } label: {
-                    Text(tab.title)
-                        .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .regular))
-                        .foregroundStyle(selectedTab == tab ? LightPopover.text : LightPopover.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 32)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(selectedTab == tab ? SwiftUI.Color.white : SwiftUI.Color.clear)
-                                .shadow(color: selectedTab == tab ? SwiftUI.Color.black.opacity(0.11) : .clear, radius: 3, x: 0, y: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(LightPopover.controlFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(LightPopover.line, lineWidth: 1)
-        )
+        .frame(height: 46)
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(palette: RecordingPopoverPalette) -> some View {
         switch model.status {
         case .recording, .stopping, .starting, .finalized:
-            recordingLayout
+            recordingLayout(palette: palette)
         case .failed:
-            transcriptLayout
+            failedLayout(palette: palette)
         case .idle:
-            idleLayout
+            idleLayout(palette: palette)
         }
     }
 
-    private var idleLayout: some View {
+    private func idleLayout(palette: RecordingPopoverPalette) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 Circle()
-                    .fill(model.setupNeedsAttention ? LightPopover.warning : LightPopover.ready)
+                    .fill(model.setupNeedsAttention ? palette.warning : palette.ready)
                     .frame(width: 8, height: 8)
                     .padding(.top, 6)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(model.setupNeedsAttention ? "Setup needs attention" : "Ready when you are.")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(LightPopover.text)
+                        .font(DS.Font.heading)
+                        .foregroundStyle(palette.text)
                     Text(model.setupNeedsAttention ? "Open setup to grant missing permissions." : "Scribe is watching for calls. Start manually any time.")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(LightPopover.secondaryText)
+                        .font(DS.Font.bodySmall)
+                        .foregroundStyle(palette.secondaryText)
                 }
                 Spacer()
             }
@@ -360,81 +360,101 @@ private struct RecordingPopoverContent: View {
                     }
                 }
                 .padding(6)
-                .background(LightPopover.controlFill.opacity(0.7))
+                .background(palette.controlFill)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(palette.line, lineWidth: 1)
+                )
             }
             HStack {
+                if model.setupNeedsAttention {
+                    Button("Check setup") { onAction(.openSetupRequired) }
+                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                }
                 Spacer()
                 Button("Record now") { onAction(.record) }
                     .keyboardShortcut("r", modifiers: [.command])
-                    .buttonStyle(LightPrimaryButtonStyle())
+                    .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 18)
+        .padding(.vertical, 16)
     }
 
-    private var recordingLayout: some View {
-        VStack(alignment: .leading, spacing: 18) {
+    private func recordingLayout(palette: RecordingPopoverPalette) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle().fill(LightPopover.live).frame(width: 8, height: 8)
+                Circle().fill(palette.live).frame(width: 8, height: 8)
                 Text(model.recordingSourceLabel)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(LightPopover.text)
+                    .font(DS.Font.heading)
+                    .foregroundStyle(palette.text)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text("via Zoom")
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(LightPopover.secondaryText)
                 Spacer()
                 Text(timeString(model.elapsedSeconds))
-                    .font(.system(size: 20, weight: .regular, design: .monospaced))
-                    .foregroundStyle(LightPopover.text)
+                    .font(SwiftUI.Font.custom(DS.monoFamily, size: 19).weight(.regular))
+                    .foregroundStyle(palette.text)
                     .monospacedDigit()
             }
-            HeroWaveform()
+            AnimatedWaveform(palette: palette)
                 .frame(height: 148)
             Text("Recording locally · saved when you stop")
-                .font(.system(size: 16, weight: .regular))
-                .foregroundStyle(LightPopover.secondaryText)
+                .font(DS.Font.body)
+                .foregroundStyle(palette.secondaryText)
+            if let folder = model.outcomeFolderName {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12, weight: .medium))
+                    Text(folder)
+                        .font(DS.Font.monoSmall)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(palette.tertiaryText)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(palette.controlFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(palette.line, lineWidth: 1)
+                )
+            }
             HStack {
                 Spacer()
-                Button("Pause") {}
-                    .buttonStyle(LightGhostButtonStyle())
                 Button("Stop") { onAction(.stop) }
                     .keyboardShortcut("s", modifiers: [.command])
-                    .buttonStyle(LightSecondaryButtonStyle())
+                    .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 24)
+        .padding(.vertical, 16)
     }
 
-    private var transcriptLayout: some View {
+    private func failedLayout(palette: RecordingPopoverPalette) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(LightPopover.warning)
-                Text("Audio is intact.")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(LightPopover.text)
+                    .foregroundStyle(palette.warning)
+                Text("Transcription failed")
+                    .font(DS.Font.heading)
+                    .foregroundStyle(palette.text)
             }
             Text("Transcription failed, but the recording remains on disk and can be retried.")
-                .font(.system(size: 15))
-                .foregroundStyle(LightPopover.secondaryText)
+                .font(DS.Font.bodySmall)
+                .foregroundStyle(palette.secondaryText)
             HStack {
                 Spacer()
                 Button("Retry") { onAction(.record) }
-                    .buttonStyle(LightPrimaryButtonStyle())
+                    .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 24)
-    }
-
-    private var emptyWave: some View {
-        HeroWaveform()
-            .frame(height: 96)
+        .padding(.vertical, 18)
     }
 
     private var headerStatusText: String {
@@ -447,12 +467,12 @@ private struct RecordingPopoverContent: View {
         }
     }
 
-    private var headerStatusColor: SwiftUI.Color {
+    private func headerStatusColor(palette: RecordingPopoverPalette) -> SwiftUI.Color {
         switch model.status {
-        case .recording, .stopping: return LightPopover.live
-        case .failed: return LightPopover.warning
-        case .idle: return model.setupNeedsAttention ? LightPopover.warning : LightPopover.ready
-        default: return LightPopover.secondaryText
+        case .recording, .stopping: return palette.live
+        case .failed: return palette.warning
+        case .idle: return model.setupNeedsAttention ? palette.warning : palette.ready
+        default: return palette.secondaryText
         }
     }
 
@@ -465,31 +485,66 @@ private struct RecordingPopoverContent: View {
     }
 }
 
-private enum SurfaceTab: CaseIterable, Identifiable {
-    case idle, recording, transcript, settings
-    var id: Self { self }
-    var title: String {
-        switch self {
-        case .idle: return "Idle"
-        case .recording: return "Recording"
-        case .transcript: return "Transcript"
-        case .settings: return "Settings"
-        }
+private struct RecordingPopoverPalette {
+    let colorScheme: ColorScheme
+
+    var surface: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.86)
+            : SwiftUI.Color(red: 0.965, green: 0.956, blue: 0.946).opacity(0.94)
     }
+
+    var controlFill: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color.white.opacity(0.045)
+            : SwiftUI.Color.black.opacity(0.045)
+    }
+
+    var hoverFill: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color.white.opacity(0.055)
+            : SwiftUI.Color.black.opacity(0.055)
+    }
+
+    var line: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color.white.opacity(0.10)
+            : SwiftUI.Color.black.opacity(0.10)
+    }
+
+    var specular: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color.white.opacity(0.22)
+            : SwiftUI.Color.white.opacity(0.74)
+    }
+
+    var text: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color(red: 0.96, green: 0.96, blue: 0.96)
+            : SwiftUI.Color(red: 0.07, green: 0.07, blue: 0.075)
+    }
+
+    var secondaryText: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color(red: 0.72, green: 0.72, blue: 0.72)
+            : SwiftUI.Color(red: 0.38, green: 0.36, blue: 0.35)
+    }
+
+    var tertiaryText: SwiftUI.Color {
+        colorScheme == .dark
+            ? SwiftUI.Color(red: 0.48, green: 0.48, blue: 0.48)
+            : SwiftUI.Color(red: 0.50, green: 0.48, blue: 0.46)
+    }
+
+    var live: SwiftUI.Color { SwiftUI.Color(red: 0.923, green: 0.369, blue: 0.272) }
+    var ready: SwiftUI.Color { SwiftUI.Color(red: 0.353, green: 0.771, blue: 0.464) }
+    var warning: SwiftUI.Color { SwiftUI.Color(red: 0.967, green: 0.721, blue: 0.241) }
+    var shadow: SwiftUI.Color { SwiftUI.Color.black.opacity(colorScheme == .dark ? 0.42 : 0.18) }
+    var waveformBar: SwiftUI.Color { colorScheme == .dark ? SwiftUI.Color.white : SwiftUI.Color.black }
+    var buttonTextOnPrimary: SwiftUI.Color { SwiftUI.Color.white }
 }
 
-private enum LightPopover {
-    static let surface = SwiftUI.Color(red: 0.965, green: 0.950, blue: 0.940)
-    static let controlFill = SwiftUI.Color(red: 0.900, green: 0.875, blue: 0.860)
-    static let line = SwiftUI.Color.black.opacity(0.10)
-    static let text = SwiftUI.Color(red: 0.07, green: 0.07, blue: 0.075)
-    static let secondaryText = SwiftUI.Color(red: 0.38, green: 0.36, blue: 0.35)
-    static let live = SwiftUI.Color(red: 0.82, green: 0.31, blue: 0.24)
-    static let ready = SwiftUI.Color(red: 0.38, green: 0.67, blue: 0.44)
-    static let warning = SwiftUI.Color(red: 0.83, green: 0.55, blue: 0.16)
-}
-
-private struct LightStatusBadge: View {
+private struct StatusBadge: View {
     let text: String
     let color: SwiftUI.Color
     var body: some View {
@@ -503,69 +558,109 @@ private struct LightStatusBadge: View {
     }
 }
 
-private struct HeroWaveform: View {
+private struct AnimatedWaveform: View {
+    let palette: RecordingPopoverPalette
+
     private let amplitudes: [CGFloat] = [
-        0.18,0.20,0.22,0.18,0.26,0.42,0.46,0.54,0.42,0.72,0.96,0.64,0.55,0.60,0.42,0.30,
-        0.26,0.30,0.44,0.36,0.25,0.30,0.36,0.48,0.62,0.45,0.58,0.50,0.46,0.50,0.80,0.70,
-        0.62,0.42,0.38,0.32,0.25,0.20,0.16
+        0.18, 0.20, 0.23, 0.19, 0.26, 0.37, 0.45, 0.52, 0.42, 0.70, 0.92, 0.64, 0.55, 0.61,
+        0.44, 0.31, 0.27, 0.30, 0.43, 0.36, 0.25, 0.29, 0.37, 0.49, 0.62, 0.46, 0.59, 0.51,
+        0.47, 0.53, 0.81, 0.72, 0.63, 0.44, 0.38, 0.33, 0.26, 0.22, 0.18, 0.27, 0.34, 0.48,
+        0.74, 0.88, 0.58, 0.42, 0.35, 0.29, 0.21, 0.18, 0.22, 0.31, 0.39, 0.28, 0.22, 0.18
     ]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 4) {
-            ForEach(amplitudes.indices, id: \.self) { i in
-                Capsule()
-                    .fill(barColor(at: i))
-                    .frame(width: 5, height: 128 * amplitudes[i])
+        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(amplitudes.indices, id: \.self) { i in
+                    let delay = Double(i) * 0.075
+                    let lift = (sin((t * 3.1) + delay) + 1) * 0.18
+                    let height = max(10, 128 * min(1.0, amplitudes[i] + lift))
+                    Capsule()
+                        .fill(palette.waveformBar.opacity(barOpacity(at: i)))
+                        .frame(width: 4, height: height)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.00),
+                        .init(color: .black, location: 0.09),
+                        .init(color: .black, location: 0.91),
+                        .init(color: .clear, location: 1.00)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
         }
-        .frame(maxWidth: .infinity)
         .background(
             LinearGradient(
-                colors: [SwiftUI.Color.white.opacity(0.0), SwiftUI.Color.white.opacity(0.70), SwiftUI.Color.white.opacity(0.0)],
+                colors: [SwiftUI.Color.clear, palette.controlFill, SwiftUI.Color.clear],
                 startPoint: .leading,
                 endPoint: .trailing
             )
         )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    private func barColor(at index: Int) -> SwiftUI.Color {
+    private func barOpacity(at index: Int) -> Double {
         let edge = min(index, amplitudes.count - 1 - index)
-        let opacity = edge < 4 ? 0.18 + Double(edge) * 0.12 : 0.62
-        return SwiftUI.Color.black.opacity(opacity)
+        return edge < 5 ? 0.16 + Double(edge) * 0.10 : 0.68
     }
 }
 
-private struct LightPrimaryButtonStyle: ButtonStyle {
+private struct PrimaryPopoverButtonStyle: ButtonStyle {
+    let palette: RecordingPopoverPalette
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(SwiftUI.Color.white)
+            .font(DS.Font.button)
+            .foregroundStyle(palette.buttonTextOnPrimary)
             .padding(.horizontal, 15)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 9).fill(LightPopover.text.opacity(configuration.isPressed ? 0.82 : 1)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(palette.live.opacity(configuration.isPressed ? 0.82 : 1)))
     }
 }
 
-private struct LightSecondaryButtonStyle: ButtonStyle {
+private struct SecondaryPopoverButtonStyle: ButtonStyle {
+    let palette: RecordingPopoverPalette
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(LightPopover.text)
+            .font(DS.Font.button)
+            .foregroundStyle(palette.text)
             .padding(.horizontal, 15)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 9).fill(SwiftUI.Color.white.opacity(configuration.isPressed ? 0.72 : 0.92)))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(LightPopover.line, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(palette.controlFill.opacity(configuration.isPressed ? 1.35 : 1)))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(palette.line, lineWidth: 1))
     }
 }
 
-private struct LightGhostButtonStyle: ButtonStyle {
+private struct GhostPopoverButtonStyle: ButtonStyle {
+    let palette: RecordingPopoverPalette
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(LightPopover.text)
+            .font(DS.Font.button)
+            .foregroundStyle(palette.text)
             .padding(.horizontal, 16)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 9).fill(SwiftUI.Color.black.opacity(configuration.isPressed ? 0.05 : 0)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(configuration.isPressed ? palette.hoverFill : SwiftUI.Color.clear))
+    }
+}
+
+private struct IconButtonStyle: ButtonStyle {
+    let palette: RecordingPopoverPalette
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(configuration.isPressed ? palette.text : palette.secondaryText)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(configuration.isPressed ? palette.controlFill : SwiftUI.Color.clear)
+            )
     }
 }
 
@@ -578,35 +673,37 @@ private struct LightGhostButtonStyle: ButtonStyle {
 private struct MenuRow: View {
     let entry: SessionFolderEnumerator.Entry
     @State private var hovering: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let palette = RecordingPopoverPalette(colorScheme: colorScheme)
         Button(action: openTranscript) {
             HStack(alignment: .center, spacing: 10) {
-                badge
+                badge(palette: palette)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.title)
                         .font(DS.Font.bodySmall)
-                        .foregroundStyle(DS.Color.foreground)
+                        .foregroundStyle(palette.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Text(subline)
                         .font(DS.Font.monoSmall)
                         .tracking(0.3)
-                        .foregroundStyle(DS.Color.foregroundTertiary)
+                        .foregroundStyle(palette.tertiaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Text(relativeTime)
                     .font(DS.Font.monoSmall)
                     .tracking(0.6)
-                    .foregroundStyle(DS.Color.foregroundTertiary)
+                    .foregroundStyle(palette.tertiaryText)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering ? DS.Color.backgroundOverlay : SwiftUI.Color.clear)
+                    .fill(hovering ? palette.hoverFill : SwiftUI.Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -626,13 +723,13 @@ private struct MenuRow: View {
     /// M for Meet, etc. Inferred from the title's first letter (best
     /// effort; opaque enough for the empty / unknown case). Reference:
     /// `.integ-row .mark` is 24x24, 5pt radius, mono 11/600.
-    private var badge: some View {
+    private func badge(palette: RecordingPopoverPalette) -> some View {
         RoundedRectangle(cornerRadius: 5)
-            .fill(DS.Color.backgroundMuted)
+            .fill(palette.controlFill)
             .overlay(
                 Text(initial)
                     .font(SwiftUI.Font.custom(DS.monoFamily, size: 11).weight(.semibold))
-                    .foregroundStyle(DS.Color.foregroundSecondary)
+                    .foregroundStyle(palette.secondaryText)
             )
             .frame(width: 24, height: 24)
     }

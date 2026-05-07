@@ -31,7 +31,8 @@ public enum TranscriptStatusReader {
                 statusValue = v
             }
         }
-        guard foundEnd, let raw = statusValue else { return nil }
+        guard foundEnd else { return nil }
+        guard let raw = statusValue else { return .complete }
         return TranscriptStatus(rawValue: raw)
     }
 }
