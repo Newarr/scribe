@@ -20,7 +20,7 @@ import TranscriberCore
 /// surface so AppDelegate's call sites don't change. The popover hosts
 /// a SwiftUI body backed by `RecordingMenuModel`.
 @MainActor
-final class RecordingMenu {
+final class RecordingMenu: NSObject, NSPopoverDelegate {
     enum Action {
         case record, stop, quit, openSettings, openSetupRequired, openDiagnostics
     }
@@ -72,12 +72,18 @@ final class RecordingMenu {
     let popover: NSPopover
     private let onAction: (Action) -> Void
     private let model: RecordingMenuModel
+    private weak var anchorButton: NSStatusBarButton?
+    private var localMouseDownMonitor: Any?
+    private var globalMouseDownMonitor: Any?
 
     init(onAction: @escaping (Action) -> Void) {
         self.onAction = onAction
         let model = RecordingMenuModel(status: .idle)
         self.model = model
         let popover = NSPopover()
+        self.popover = popover
+        super.init()
+        popover.delegate = self
         popover.behavior = .transient
         // Size driven by the SwiftUI body's `.frame(width:)` +
         // `.fixedSize(horizontal: false, vertical: true)`. Leaving
@@ -97,8 +103,13 @@ final class RecordingMenu {
             onAction: onAction
         ))
         popover.contentViewController = host
-        self.popover = popover
         rebuild(for: .idle)
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            removeOutsideClickMonitors()
+        }
     }
 
     /// Status update hook (preserves the old API).
@@ -111,7 +122,7 @@ final class RecordingMenu {
     /// `NSStatusItem.menu` auto-presentation no longer applies.
     func show(from button: NSStatusBarButton) {
         if popover.isShown {
-            popover.performClose(nil)
+            close()
             return
         }
         // Refresh recents on each open. NSPopover caches the host
@@ -122,10 +133,62 @@ final class RecordingMenu {
         // Codex UX-4: confidential UI. NSPopover hosts a backing
         // window; opt it out of screen-share captures.
         popover.contentViewController?.view.window?.sharingType = WindowChromeSharing.confidential
+        anchorButton = button
+        installOutsideClickMonitors()
     }
 
     func close() {
         popover.performClose(nil)
+        removeOutsideClickMonitors()
+    }
+
+    nonisolated func popoverDidClose(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            self?.removeOutsideClickMonitors()
+        }
+    }
+
+    private func installOutsideClickMonitors() {
+        removeOutsideClickMonitors()
+        let mouseEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        localMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseEvents) { [weak self] event in
+            MainActor.assumeIsolated {
+                self?.closeIfClickIsOutsidePopover(event)
+            }
+            return event
+        }
+        globalMouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseEvents) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.close()
+            }
+        }
+    }
+
+    private func removeOutsideClickMonitors() {
+        if let localMouseDownMonitor {
+            NSEvent.removeMonitor(localMouseDownMonitor)
+            self.localMouseDownMonitor = nil
+        }
+        if let globalMouseDownMonitor {
+            NSEvent.removeMonitor(globalMouseDownMonitor)
+            self.globalMouseDownMonitor = nil
+        }
+    }
+
+    private func closeIfClickIsOutsidePopover(_ event: NSEvent) {
+        guard popover.isShown else {
+            removeOutsideClickMonitors()
+            return
+        }
+        if event.window === popover.contentViewController?.view.window {
+            return
+        }
+        if let button = anchorButton,
+           event.window === button.window,
+           button.bounds.contains(button.convert(event.locationInWindow, from: nil)) {
+            return
+        }
+        close()
     }
 }
 
@@ -664,4 +727,3 @@ final class StatusItemClickTarget: NSObject {
         delegate?.show(from: button)
     }
 }
-
