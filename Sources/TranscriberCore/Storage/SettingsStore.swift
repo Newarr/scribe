@@ -14,6 +14,33 @@ public struct UserDefaultsBox: @unchecked Sendable {
     public static let standard = UserDefaultsBox(.standard)
 }
 
+public enum AppearanceTheme: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case system
+    case light
+    case dark
+}
+
+public enum ShortcutModifier: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
+    case command
+    case shift
+    case option
+    case control
+}
+
+public struct KeyboardShortcutSetting: Sendable, Equatable, Hashable, Codable {
+    public var key: String
+    public var keyCode: UInt16
+    public var modifiers: [ShortcutModifier]
+
+    public init(key: String, keyCode: UInt16, modifiers: [ShortcutModifier]) {
+        self.key = key.uppercased()
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+
+    public static let defaultStartStop = KeyboardShortcutSetting(key: "S", keyCode: 1, modifiers: [.command, .shift])
+}
+
 /// Snapshot of all settings that drive a session's runtime behavior.
 /// The supervisor / capture session / worker take this snapshot at start
 /// and don't poll back into the store mid-session — settings changes
@@ -35,6 +62,9 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     /// leaves the device (cloud engine only) before the first recording.
     /// One-way flag — once true, never written back to false by the app.
     public var privacyAcknowledged: Bool
+    public var launchAtLogin: Bool
+    public var showInMenuBar: Bool
+    public var startStopShortcut: KeyboardShortcutSetting
 
     public init(
         outputRoot: URL,
@@ -42,7 +72,10 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         appearanceTheme: AppearanceTheme = .system,
         keepRawStreams: Bool,
         aecEnabled: Bool,
-        privacyAcknowledged: Bool
+        privacyAcknowledged: Bool,
+        launchAtLogin: Bool = false,
+        showInMenuBar: Bool = true,
+        startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
     ) {
         self.outputRoot = outputRoot
         self.engineMode = engineMode
@@ -50,10 +83,14 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.keepRawStreams = keepRawStreams
         self.aecEnabled = aecEnabled
         self.privacyAcknowledged = privacyAcknowledged
+        self.appearanceTheme = appearanceTheme
+        self.launchAtLogin = launchAtLogin
+        self.showInMenuBar = showInMenuBar
+        self.startStopShortcut = startStopShortcut
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputRoot, engineMode, appearanceTheme, keepRawStreams, aecEnabled, privacyAcknowledged
+        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged, appearanceTheme, launchAtLogin, showInMenuBar, startStopShortcut
     }
 
     /// Decoder permits older blob formats that omit `privacyAcknowledged`
@@ -67,13 +104,10 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.keepRawStreams = try c.decode(Bool.self, forKey: .keepRawStreams)
         self.aecEnabled = try c.decode(Bool.self, forKey: .aecEnabled)
         self.privacyAcknowledged = try c.decodeIfPresent(Bool.self, forKey: .privacyAcknowledged) ?? false
+        self.launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        self.showInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showInMenuBar) ?? true
+        self.startStopShortcut = try c.decodeIfPresent(KeyboardShortcutSetting.self, forKey: .startStopShortcut) ?? .defaultStartStop
     }
-}
-
-public enum AppearanceTheme: String, Sendable, Equatable, Codable, CaseIterable {
-    case system
-    case light
-    case dark
 }
 
 /// Settings backing store. UserDefaults under the hood; tests can
@@ -100,6 +134,10 @@ public actor SettingsStore {
         case engineMode = "transcriber.engineMode"
         case keepRawStreams = "transcriber.keepRawStreams"
         case aecEnabled = "transcriber.aecEnabled"
+        case appearanceTheme = "transcriber.appearanceTheme"
+        case launchAtLogin = "transcriber.launchAtLogin"
+        case showInMenuBar = "transcriber.showInMenuBar"
+        case startStopShortcut = "transcriber.startStopShortcut"
     }
 
     public struct Defaults: Sendable {
@@ -109,6 +147,9 @@ public actor SettingsStore {
         public var keepRawStreams: Bool
         public var aecEnabled: Bool
         public var privacyAcknowledged: Bool
+        public var launchAtLogin: Bool
+        public var showInMenuBar: Bool
+        public var startStopShortcut: KeyboardShortcutSetting
 
         public init(
             outputRoot: URL,
@@ -116,7 +157,10 @@ public actor SettingsStore {
             appearanceTheme: AppearanceTheme = .system,
             keepRawStreams: Bool = false,  // spec line 102
             aecEnabled: Bool = true,        // D2
-            privacyAcknowledged: Bool = false  // spec line 348
+            privacyAcknowledged: Bool = false,  // spec line 348
+            launchAtLogin: Bool = false,
+            showInMenuBar: Bool = true,
+            startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
         ) {
             self.outputRoot = outputRoot
             self.engineMode = engineMode
@@ -124,6 +168,10 @@ public actor SettingsStore {
             self.keepRawStreams = keepRawStreams
             self.aecEnabled = aecEnabled
             self.privacyAcknowledged = privacyAcknowledged
+            self.appearanceTheme = appearanceTheme
+            self.launchAtLogin = launchAtLogin
+            self.showInMenuBar = showInMenuBar
+            self.startStopShortcut = startStopShortcut
         }
     }
 
@@ -177,6 +225,30 @@ public actor SettingsStore {
         try? commit(current)
     }
 
+    public func setAppearanceTheme(_ theme: AppearanceTheme) {
+        var current = snapshot()
+        current.appearanceTheme = theme
+        try? commit(current)
+    }
+
+    public func setLaunchAtLogin(_ on: Bool) {
+        var current = snapshot()
+        current.launchAtLogin = on
+        try? commit(current)
+    }
+
+    public func setShowInMenuBar(_ on: Bool) {
+        var current = snapshot()
+        current.showInMenuBar = on
+        try? commit(current)
+    }
+
+    public func setStartStopShortcut(_ shortcut: KeyboardShortcutSetting) {
+        var current = snapshot()
+        current.startStopShortcut = shortcut
+        try? commit(current)
+    }
+
     /// Atomic multi-key commit. Phase η Settings UI calls this after
     /// the user clicks Save so the resulting on-disk state never
     /// contains a partial mix of old + new fields.
@@ -215,7 +287,10 @@ private extension SettingsStore.Defaults {
             appearanceTheme: appearanceTheme,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
-            privacyAcknowledged: privacyAcknowledged
+            privacyAcknowledged: privacyAcknowledged,
+            launchAtLogin: launchAtLogin,
+            showInMenuBar: showInMenuBar,
+            startStopShortcut: startStopShortcut
         )
     }
 }
@@ -243,7 +318,10 @@ public enum SettingsSnapshotReader {
             appearanceTheme: fallback.appearanceTheme,
             keepRawStreams: fallback.keepRawStreams,
             aecEnabled: fallback.aecEnabled,
-            privacyAcknowledged: fallback.privacyAcknowledged
+            privacyAcknowledged: fallback.privacyAcknowledged,
+            launchAtLogin: fallback.launchAtLogin,
+            showInMenuBar: fallback.showInMenuBar,
+            startStopShortcut: fallback.startStopShortcut
         )
     }
 }

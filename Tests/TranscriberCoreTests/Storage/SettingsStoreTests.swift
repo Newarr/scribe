@@ -42,6 +42,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.keepRawStreams, false, "spec line 102 default OFF")
         XCTAssertEqual(snap.aecEnabled, true, "D2 default ON")
         XCTAssertEqual(snap.privacyAcknowledged, false, "spec line 348: first launch must re-prompt")
+        XCTAssertEqual(snap.appearanceTheme, .system)
+        XCTAssertEqual(snap.launchAtLogin, false)
+        XCTAssertEqual(snap.showInMenuBar, true)
+        XCTAssertEqual(snap.startStopShortcut, .defaultStartStop)
     }
 
     func testPrivacyAckIsRoundTripped() async throws {
@@ -111,6 +115,10 @@ final class SettingsStoreTests: XCTestCase {
         let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: root))
         let snap = await store.snapshot()
         XCTAssertEqual(snap.privacyAcknowledged, false, "missing privacy ack key must decode as not-acked")
+        XCTAssertEqual(snap.appearanceTheme, .system, "older blobs missing appearanceTheme should follow macOS")
+        XCTAssertEqual(snap.launchAtLogin, false, "older blobs missing launchAtLogin should not opt users in")
+        XCTAssertEqual(snap.showInMenuBar, true, "older blobs missing showInMenuBar should keep the app accessible")
+        XCTAssertEqual(snap.startStopShortcut, .defaultStartStop)
         XCTAssertEqual(snap.engineMode, .cloud, "non-missing fields must still decode normally")
     }
 
@@ -126,12 +134,21 @@ final class SettingsStoreTests: XCTestCase {
         await store.setEngineMode(.local)
         await store.setKeepRawStreams(true)
         await store.setAECEnabled(false)
+        await store.setAppearanceTheme(.light)
+        await store.setLaunchAtLogin(true)
+        await store.setShowInMenuBar(false)
+        let shortcut = KeyboardShortcutSetting(key: "R", keyCode: 15, modifiers: [.command, .option])
+        await store.setStartStopShortcut(shortcut)
 
         let snap = await store.snapshot()
         XCTAssertEqual(snap.outputRoot, altRoot)
         XCTAssertEqual(snap.engineMode, .local)
         XCTAssertEqual(snap.keepRawStreams, true)
         XCTAssertEqual(snap.aecEnabled, false)
+        XCTAssertEqual(snap.appearanceTheme, .light)
+        XCTAssertEqual(snap.launchAtLogin, true)
+        XCTAssertEqual(snap.showInMenuBar, false)
+        XCTAssertEqual(snap.startStopShortcut, shortcut)
     }
 
     func testCommitWritesAllKeysAtomically() async throws {
@@ -227,7 +244,11 @@ final class SettingsStoreTests: XCTestCase {
                 engineMode: .local,
                 keepRawStreams: true,
                 aecEnabled: false,
-                privacyAcknowledged: true
+                privacyAcknowledged: true,
+                appearanceTheme: .dark,
+                launchAtLogin: true,
+                showInMenuBar: false,
+                startStopShortcut: KeyboardShortcutSetting(key: "R", keyCode: 15, modifiers: [.control])
             )
         )
         let snap = await store.snapshot()
@@ -235,6 +256,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.keepRawStreams, true)
         XCTAssertEqual(snap.aecEnabled, false)
         XCTAssertEqual(snap.privacyAcknowledged, true)
+        XCTAssertEqual(snap.appearanceTheme, .dark)
+        XCTAssertEqual(snap.launchAtLogin, true)
+        XCTAssertEqual(snap.showInMenuBar, false)
+        XCTAssertEqual(snap.startStopShortcut, KeyboardShortcutSetting(key: "R", keyCode: 15, modifiers: [.control]))
     }
 
     func testSyncReaderObservesStoreCommit() async throws {
