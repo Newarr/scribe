@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01C3E6BB038B69F93DDBF257 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = E1389DD3A1C02E91BD83F963 /* AppIcon.icon */; };
 		09D39AB01C40DFE6902AD567 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288AA87854E67BA12387175 /* DiagnosticsView.swift */; };
 		0C259DA1AECD94AE49A3FA58 /* GeistVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 18EBB27FDC7B355AA673489A /* GeistVariable-Italic.ttf */; };
 		0C272D89A8C312C5F159B8C9 /* PermissionRecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */; };
@@ -59,6 +60,7 @@
 		D288AA87854E67BA12387175 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		D529955956249F0700BFFD73 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		D8B6D8B78285F246A1264A86 /* GeistMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
+		E1389DD3A1C02E91BD83F963 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		E1AD54C2365F26003491870B /* GeistMonoVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = GeistMonoVariable.ttf; sourceTree = "<group>"; };
 		E5F59C608909E8E52F4CC15A /* Inter-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Inter-LICENSE.txt"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -114,6 +116,7 @@
 			children = (
 				3711DECCD9B3CE4D5706D0B9 /* AppDelegate.swift */,
 				9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */,
+				E1389DD3A1C02E91BD83F963 /* AppIcon.icon */,
 				0D9B56D3A82F894C60EF067C /* Assets.xcassets */,
 				D529955956249F0700BFFD73 /* DesignSystem.swift */,
 				D288AA87854E67BA12387175 /* DiagnosticsView.swift */,
@@ -203,6 +206,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				01C3E6BB038B69F93DDBF257 /* AppIcon.icon in Resources */,
 				F6EB18EEAA041A038DFC5752 /* Assets.xcassets in Resources */,
 				2309E1022B0975FCBE460DC9 /* Geist-OFL.txt in Resources */,
 				EF5D4FEAEFA414739B13C991 /* GeistMonoVariable-Italic.ttf in Resources */,
