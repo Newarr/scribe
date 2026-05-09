@@ -533,10 +533,11 @@ private struct FidelityWindowSurface: View {
 
     var body: some View {
         ZStack {
-            base
+            glassTint
             topRightGlow
             topLeftGlow
             bottomVignette
+            clarityVeil
         }
         .overlay(alignment: .top) {
             LinearGradient(
@@ -551,14 +552,17 @@ private struct FidelityWindowSurface: View {
 
     private var isLight: Bool { colorScheme == .light }
 
-    private var base: SwiftUI.Color {
-        isLight ? SwiftUI.Color(red: 0.96, green: 0.97, blue: 0.98) : SwiftUI.Color(red: 0.028, green: 0.004, blue: 0.010)
+    private var glassTint: SwiftUI.Color {
+        let tint = isLight
+            ? SwiftUI.Color(red: 0.96, green: 0.97, blue: 0.98)
+            : SwiftUI.Color(red: 0.028, green: 0.004, blue: 0.010)
+        return tint.opacity(isLight ? 0.80 : 0.90)
     }
 
     private var topRightGlow: RadialGradient {
         RadialGradient(
             colors: [
-                isLight ? SwiftUI.Color(red: 0.86, green: 0.92, blue: 0.98).opacity(0.94) : SwiftUI.Color(red: 0.30, green: 0.05, blue: 0.10).opacity(0.78),
+                isLight ? SwiftUI.Color(red: 0.86, green: 0.92, blue: 0.98).opacity(0.56) : SwiftUI.Color(red: 0.30, green: 0.05, blue: 0.10).opacity(0.46),
                 SwiftUI.Color.clear
             ],
             center: UnitPoint(x: 0.75, y: 0.06),
@@ -570,7 +574,7 @@ private struct FidelityWindowSurface: View {
     private var topLeftGlow: RadialGradient {
         RadialGradient(
             colors: [
-                isLight ? SwiftUI.Color(red: 1.0, green: 0.88, blue: 0.84).opacity(0.70) : SwiftUI.Color(red: 0.36, green: 0.11, blue: 0.07).opacity(0.58),
+                isLight ? SwiftUI.Color(red: 1.0, green: 0.88, blue: 0.84).opacity(0.40) : SwiftUI.Color(red: 0.36, green: 0.11, blue: 0.07).opacity(0.34),
                 SwiftUI.Color.clear
             ],
             center: UnitPoint(x: 0.03, y: 0.01),
@@ -582,7 +586,7 @@ private struct FidelityWindowSurface: View {
     private var bottomVignette: RadialGradient {
         RadialGradient(
             colors: [
-                isLight ? SwiftUI.Color.white.opacity(0.42) : SwiftUI.Color.black.opacity(0.82),
+                isLight ? SwiftUI.Color.white.opacity(0.24) : SwiftUI.Color.black.opacity(0.46),
                 SwiftUI.Color.clear
             ],
             center: UnitPoint(x: 0.50, y: 1.02),
@@ -591,11 +595,21 @@ private struct FidelityWindowSurface: View {
         )
     }
 
+    private var clarityVeil: LinearGradient {
+        LinearGradient(
+            colors: [
+                isLight ? SwiftUI.Color.white.opacity(0.12) : SwiftUI.Color.white.opacity(0.012),
+                isLight ? SwiftUI.Color.white.opacity(0.08) : SwiftUI.Color.black.opacity(0.32)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     private var topHairline: SwiftUI.Color {
         isLight ? SwiftUI.Color.white.opacity(0.60) : SwiftUI.Color.white.opacity(0.20)
     }
 }
-
 private struct FidelityDivider: View {
     var body: some View {
         Rectangle()
