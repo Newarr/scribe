@@ -12,6 +12,8 @@ public enum SessionFolderEnumerator {
         public let status: TranscriptStatus
         public let createdAt: Date
         public let durationSeconds: Int?
+        public let hasSavedAudio: Bool
+        public let engineIdentifier: String?
     }
 
     /// Returns up to `limit` recent session entries, newest first.
@@ -48,7 +50,18 @@ public enum SessionFolderEnumerator {
             if entries.count >= limit { break }
             let dir = SessionDirectory(url: candidate.url)
             guard fm.fileExists(atPath: dir.transcript.path) else { continue }
+            let savedAudioExists = fm.fileExists(atPath: dir.url.appendingPathComponent("audio.m4a").path)
             guard let frontmatter = TranscriptFrontmatterReader.read(at: dir.transcript) else {
+                if savedAudioExists { entries.append(Entry(
+                    directory: candidate.url,
+                    transcript: dir.transcript,
+                    title: candidate.url.lastPathComponent,
+                    status: .failed,
+                    createdAt: candidate.modified,
+                    durationSeconds: nil,
+                    hasSavedAudio: true,
+                    engineIdentifier: nil
+                )) }
                 continue
             }
             let title = frontmatter.context.title.isEmpty
@@ -60,7 +73,9 @@ public enum SessionFolderEnumerator {
                 title: title,
                 status: frontmatter.status,
                 createdAt: candidate.modified,
-                durationSeconds: nil // populated by caller if it has the audio metadata
+                durationSeconds: nil, // populated by caller if it has the audio metadata
+                hasSavedAudio: savedAudioExists,
+                engineIdentifier: frontmatter.context.engine
             ))
         }
         return entries

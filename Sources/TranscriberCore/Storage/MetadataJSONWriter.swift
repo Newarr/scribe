@@ -34,12 +34,19 @@ public enum MetadataJSONWriter {
         /// integration. Codex rc1-final P1.3: rc1 always writes
         /// "failed" because the AEC backend is research-gated.
         public let aec_status: String?
+        public let error_code: String?
+        public let error_message: String?
+        public let retry_count: Int?
+        public let attempt_count: Int?
+        public let audio_duration_seconds: Int?
+        public let audio_size_bytes: Int?
 
         public init(
             status: TranscriptStatus,
             context: TranscriptContext,
             audio: String,
-            aecStatus: AECStatus? = nil
+            aecStatus: AECStatus? = nil,
+            failureDetails: TranscriptFailureDetails? = nil
         ) {
             self.schema = "transcriber/v1"
             self.status = status.rawValue
@@ -61,6 +68,12 @@ public enum MetadataJSONWriter {
             self.elapsed_at_start_seconds = context.elapsedAtStartSeconds
             self.attendees = context.attendees
             self.aec_status = aecStatus?.rawValue
+            self.error_code = failureDetails?.errorCode
+            self.error_message = failureDetails?.errorMessage
+            self.retry_count = failureDetails?.retryCount
+            self.attempt_count = failureDetails?.attemptCount
+            self.audio_duration_seconds = failureDetails?.audioDurationSeconds
+            self.audio_size_bytes = failureDetails?.audioSizeBytes
         }
     }
 

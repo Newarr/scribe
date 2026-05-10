@@ -10,6 +10,44 @@ public struct TranscriptPerson: Sendable, Codable, Equatable {
     }
 }
 
+
+public struct TranscriptFailureDetails: Sendable, Equatable {
+    public let errorCode: String
+    public let errorMessage: String
+    public let retryCount: Int
+    public let attemptCount: Int
+    public let audioDurationSeconds: Int?
+    public let audioSizeBytes: Int?
+
+    public init(
+        errorCode: String = "transcription_failed",
+        errorMessage: String,
+        retryCount: Int = 0,
+        attemptCount: Int = 1,
+        audioDurationSeconds: Int? = nil,
+        audioSizeBytes: Int? = nil
+    ) {
+        self.errorCode = Self.boundedCode(errorCode)
+        self.errorMessage = Self.boundedMessage(errorMessage)
+        self.retryCount = max(0, retryCount)
+        self.attemptCount = max(1, attemptCount)
+        self.audioDurationSeconds = audioDurationSeconds
+        self.audioSizeBytes = audioSizeBytes
+    }
+
+    public static func boundedCode(_ raw: String) -> String {
+        let allowed = raw.lowercased().map { ch in
+            (ch.isLetter || ch.isNumber || ch == "_" || ch == "-") ? ch : "_"
+        }
+        let collapsed = String(allowed).trimmingCharacters(in: CharacterSet(charactersIn: "_-"))
+        return String((collapsed.isEmpty ? "transcription_failed" : collapsed).prefix(80))
+    }
+
+    public static func boundedMessage(_ raw: String) -> String {
+        PersistedErrorRedactor.redact(raw)
+    }
+}
+
 public struct TranscriptContext: Sendable {
     public let title: String
     public let date: String          // YYYY-MM-DD
@@ -102,31 +140,34 @@ public enum TranscriptWriter {
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    public static func writeFailed(at url: URL, context c: TranscriptContext, errorMessage: String) throws {
+    public static func writeFailed(
+        at url: URL,
+        context c: TranscriptContext,
+        errorMessage: String,
+        details providedDetails: TranscriptFailureDetails? = nil
+    ) throws {
+        let details = providedDetails ?? TranscriptFailureDetails(errorMessage: errorMessage)
         let audioRef = audioReferenceList(c.audioRelativePaths)
+        let audioSummary = failureAudioSummary(paths: c.audioRelativePaths, duration: details.audioDurationSeconds, size: details.audioSizeBytes)
         let body = """
-        \(frontmatter(status: "failed", context: c))
+        \(frontmatter(status: "failed", context: c, failureDetails: details))
 
-        # Transcription failed
+        # Transcription Failed
 
-        Your recording is safe. The audio is saved as \(audioRef) inside this folder.
+        Audio is saved at \(audioRef)\(audioSummary). The recording itself is intact and complete; only transcription failed.
 
-        This was the transcript for `\(c.title)`.
+        \(engineDisplayName(c.engine)) returned `\(details.errorCode)` after \(details.retryCount) retries. \(details.errorMessage)
 
         ## What you can do
 
-        - **Retry:** Delete this `transcript.md` and relaunch Scribe. The supervisor scan picks it up and tries again.
-        - **Use the audio elsewhere:** Drop \(audioRef) into another transcription tool. The recording is a normal mono AAC m4a.
-        - **Get help:** Open Scribe → Diagnostics… → Export… and share the JSON file.
-
-        ---
-
-        Engine error: `\(errorMessage)`
+        - Retry from the Scribe menu bar: click the icon, then `Retry` next to this session.
+        - Or transcribe locally: Settings → Engine → Cohere (local), then retry.
+        - Or transcribe outside Scribe: open \(audioRef) in any other tool.
         """
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    public static func frontmatter(status: String?, context c: TranscriptContext, attempts: Int? = nil) -> String {
+    public static func frontmatter(status: String?, context c: TranscriptContext, attempts: Int? = nil, failureDetails: TranscriptFailureDetails? = nil) -> String {
         var lines: [String] = ["---"]
         if let status { lines.append("status: \(status)") }
         lines.append("title: \"\(yamlEscape(c.title))\"")
@@ -159,6 +200,14 @@ public enum TranscriptWriter {
             for attendee in c.attendees { appendListPerson(attendee, to: &lines) }
         }
         if let attempts { lines.append("attempts: \(attempts)") }
+        if let failureDetails {
+            lines.append("error_code: \"\(yamlEscape(failureDetails.errorCode))\"")
+            lines.append("error_message: \"\(yamlEscape(failureDetails.errorMessage))\"")
+            lines.append("retry_count: \(failureDetails.retryCount)")
+            lines.append("attempt_count: \(failureDetails.attemptCount)")
+            lines.append("audio_duration_seconds: \(failureDetails.audioDurationSeconds.map(String.init) ?? "")")
+            lines.append("audio_size_bytes: \(failureDetails.audioSizeBytes.map(String.init) ?? "")")
+        }
         lines.append("---")
         return lines.joined(separator: "\n")
     }
@@ -182,6 +231,33 @@ public enum TranscriptWriter {
         lines.append("  - name: \"\(yamlEscape(person.name))\"")
         if let email = person.email, !email.isEmpty {
             lines.append("    email: \"\(yamlEscape(email))\"")
+        }
+    }
+
+
+    private static func failureAudioSummary(paths: [String], duration: Int?, size: Int?) -> String {
+        var parts: [String] = []
+        if let size { parts.append(formatBytes(size)) }
+        if let duration { parts.append(formatDuration(duration)) }
+        guard !parts.isEmpty, !paths.isEmpty else { return "" }
+        return " (" + parts.joined(separator: ", ") + ")"
+    }
+
+    private static func formatBytes(_ bytes: Int) -> String {
+        if bytes >= 1_000_000 { return "\(bytes / 1_000_000) MB" }
+        if bytes >= 1_000 { return "\(bytes / 1_000) KB" }
+        return "\(bytes) bytes"
+    }
+
+    private static func formatDuration(_ seconds: Int) -> String {
+        String(format: "%02d:%02d duration", seconds / 60, seconds % 60)
+    }
+
+    private static func engineDisplayName(_ engine: String) -> String {
+        switch engine {
+        case "elevenlabs": return "ElevenLabs"
+        case "cohere": return "Cohere"
+        default: return "The transcription engine"
         }
     }
 

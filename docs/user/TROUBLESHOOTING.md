@@ -14,7 +14,8 @@ Common causes:
 
 - **Microphone access denied** — System Settings → Privacy & Security → Microphone, enable Scribe.
 - **Screen & System Audio Recording denied** (label is "Screen & System Audio Recording" on macOS 15+, may show as "Screen Recording" on older versions) — System Settings → Privacy & Security, enable Scribe, then **restart the app** (the entitlement is checked at process start).
-- **ElevenLabs API key missing** (cloud mode) — Settings → Engine, paste your key.
+- **ElevenLabs API key missing** (Cloud mode) — Settings → Engine, paste your key.
+- **Cohere model not ready** (Local mode) — Settings → Engine shows the Local card status and a repair action. Local cannot start until the pinned model is verified and MLX is available; Scribe does not silently switch to Cloud.
 - **Output folder unwritable** — Settings → Output, pick a different folder, or fix the permissions on the current one.
 - **Output folder in synced storage** — only a warning, not a blocker. The folder shows a yellow warning if it looks like iCloud Drive, Dropbox, Google Drive, OneDrive, or Box. Recording into synced storage can race the cloud sync and corrupt audio mid-write. Recommended: move the folder to local-only storage.
 
@@ -35,9 +36,9 @@ If the issue persists, check `~/Library/Logs/Scribe/` for the most recent captur
 
 The session went to `pending` or `retrying` and the worker hasn't completed. Open Diagnostics and look at the "Recent sessions" section:
 
-- **Pending count > 0** — a worker is still running. Cloud mode uploads the audio to ElevenLabs; long meetings can take minutes for the engine to process. Wait or check `~/Library/Logs/Scribe/`.
-- **Retrying count > 0** — the engine returned a transient error (rate limit, network blip). The worker is in a backoff loop. Retries are bounded; if they exhaust, the session moves to `failed` and the supervisor will skip it on next scan.
-- **Failed count > 0** — terminal failure. Open the session folder; the `transcript.md` body explains the reason. If the failure was transient (e.g. network), you can re-trigger by deleting the failed transcript and relaunching the app — the supervisor will re-attempt.
+- **Pending count > 0** — a worker is still running. Cloud mode uploads the audio to ElevenLabs; Local mode runs Cohere on your Mac. Long meetings can take minutes for either engine to process. Wait or check `~/Library/Logs/Scribe/`.
+- **Retrying count > 0** — the selected engine returned a transient error (rate limit/network for Cloud, recoverable setup/runtime interruption for Local). The worker is in a bounded backoff loop.
+- **Failed count > 0** — terminal failure. Open the session folder; the `transcript.md` body explains the reason and `audio.m4a` remains the retryable asset. Use the Recents `Retry`/`Repair` action after fixing the selected engine; do not delete artifacts to force recovery.
 
 ### Orphaned with audio (no transcript)
 
@@ -76,6 +77,20 @@ The mix recipe in `AudioFinalizer` is power-preserving (single-active sides pass
 
 True LUFS-based normalization (target -16 LUFS / -1 dBTP) is documented as deferred to V1.1 in `docs/spec/SPEC.md` § Audio normalization.
 
+## Local Cohere repair
+
+Local mode depends on a verified Cohere/MLX model cache and a supported MLX runtime. Settings → Engine and Setup Required identify the state and the repair action.
+
+- **Not downloaded** — click Retry/Download in Settings → Engine. Scribe downloads only the pinned `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` artifacts.
+- **Downloading** — progress is observable. Engine-dependent actions wait until verification completes; Local is not selectable while only `.partial` files exist.
+- **Verification failed / corrupt cache** — click Retry. Scribe removes or supersedes failed partial artifacts, redownloads the pinned artifacts, and verifies integrity before enabling Local.
+- **Low disk** — free space for the model plus partial/write overhead, then click Retry. Scribe blocks unsafe downloads before writing final cache files.
+- **Unsupported MLX/runtime** — Local cannot run on this Mac/runtime. Select Cloud explicitly if you want ElevenLabs; Scribe will not switch automatically.
+- **Removed cache** — if you used Remove Local Model, Local becomes unavailable until redownloaded. Existing `~/Scribe/` sessions, `audio.m4a`, `transcript.md`, and `metadata.json` are untouched.
+- **Failed Local session** — keep the session folder intact. Retry reuses saved `audio.m4a` in the same folder when the model is ready; if the model is unavailable, the action opens Local setup/repair instead of Cloud.
+
+No repair state silently changes engines. Local → Cloud and Cloud → Local are explicit Settings choices, and in-flight sessions keep the engine selected at recording start.
+
 ## Diagnostics export
 
 `~/Library/Logs/Scribe/diagnostics-<timestamp>.json` contains:
@@ -83,7 +98,7 @@ True LUFS-based normalization (target -16 LUFS / -1 dBTP) is documented as defer
 - App version + export timestamp.
 - Settings (engine mode, raw-stream policy, AEC enable, privacy ack, **HMAC-hashed** output root, writability flag).
 - Permission states (granted / denied / notDetermined).
-- Engine readiness (cloud-key state: configured / missing / unreadable; local binary + model presence in local mode).
+- Engine readiness (cloud-key state: configured / missing / unreadable; Local model status, pinned model ID, cache-exists boolean, MLX availability, selected-engine readiness, active/recent session engine provenance, and bounded/redacted last download error).
 - Session aggregate counts (total, pending, retrying, complete, failed, unknown, orphaned-with-audio, total-retries).
 
 The export does NOT contain transcript bodies, attendee names, calendar event titles, audio bytes, the API key value, or raw paths. Safe to share with support.
@@ -96,13 +111,11 @@ Subsystem `com.szymonsypniewicz.transcriber`. Useful categories:
 - `category:engine` — transcription worker, retry behavior, engine errors.
 - `category:calendar` — calendar permission requests, event lookups, store-changed refreshes.
 
-## Known limitations (V1.0-rc1)
+## Known limitations (V1.0)
 
 These are not bugs but documented gaps that will close in later releases:
 
 - AEC is not implemented; use headphones for dual-speaker calls.
-- Local engine binary is not bundled; cloud mode is the only working engine in rc1.
-- Whisper-tiny language detection is not implemented; the engine auto-detects.
 - BS.1770 LUFS normalization is approximated as RMS; see SPEC § Audio normalization.
 - Process-mic-release detection is not available; bidirectional silence at 30s is the only end-of-call signal.
 - Real audio-activity detection (process-by-process) is not implemented; presence-based dwell triggers the start prompt.

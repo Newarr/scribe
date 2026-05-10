@@ -67,6 +67,13 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("claim.json")
     }
 
+    /// Start-time durable session provenance written before capture starts.
+    /// Recovery reads this when transcript.md does not exist yet (for
+    /// active-capture crash/orphan sessions).
+    public var startManifest: URL {
+        url.appendingPathComponent("session.json")
+    }
+
     public var transcript: URL {
         url.appendingPathComponent("transcript.md")
     }

@@ -53,4 +53,80 @@ final class MetadataJSONWriterTests: XCTestCase {
         let decoded = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: data)
         XCTAssertNil(decoded.language)
     }
+
+    func testFailedMetadataIncludesFailureDetails() throws {
+        let details = TranscriptFailureDetails(
+            errorCode: "elevenlabs_timeout",
+            errorMessage: "Job did not complete within 90s",
+            retryCount: 2,
+            attemptCount: 3,
+            audioDurationSeconds: 3291,
+            audioSizeBytes: 52_840_192
+        )
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: makeContext(),
+            audio: "audio.m4a",
+            failureDetails: details
+        )
+        XCTAssertEqual(metadata.error_code, "elevenlabs_timeout")
+        XCTAssertEqual(metadata.error_message, "Job did not complete within 90s")
+        XCTAssertEqual(metadata.retry_count, 2)
+        XCTAssertEqual(metadata.attempt_count, 3)
+        XCTAssertEqual(metadata.audio_duration_seconds, 3291)
+        XCTAssertEqual(metadata.audio_size_bytes, 52_840_192)
+    }
+
+
+    func testFailedMetadataUsesSharedSignedURLTokenRedaction() throws {
+        let details = TranscriptFailureDetails(
+            errorCode: "provider_error",
+            errorMessage: "GET https://cdn.example.com/private/audio.m4a?signature=SECRET&token=abc failed for /Users/alice/Scribe/audio.m4a; Authorization=Bearer super-secret",
+            retryCount: 3,
+            attemptCount: 4,
+            audioDurationSeconds: nil,
+            audioSizeBytes: nil
+        )
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: makeContext(),
+            audio: "audio.m4a",
+            failureDetails: details
+        )
+        let encoded = String(data: try JSONEncoder().encode(metadata), encoding: .utf8) ?? ""
+        XCTAssertEqual(metadata.error_message, PersistedErrorRedactor.redact("GET https://cdn.example.com/private/audio.m4a?signature=SECRET&token=abc failed for /Users/alice/Scribe/audio.m4a; Authorization=Bearer super-secret"))
+        XCTAssertFalse(encoded.contains("cdn.example.com"), encoded)
+        XCTAssertFalse(encoded.contains("signature=SECRET"), encoded)
+        XCTAssertFalse(encoded.contains("token=abc"), encoded)
+        XCTAssertFalse(encoded.contains("/Users/alice"), encoded)
+        XCTAssertFalse(encoded.contains("super-secret"), encoded)
+        XCTAssertEqual(metadata.retry_count, 3)
+        XCTAssertEqual(metadata.attempt_count, 4)
+    }
+
+
+    func testFailedMetadataRedactsAuthorizationBearerHeaderFormsBeforeGenericKeyValueRedaction() throws {
+        let raw = "Provider returned Authorization=Bearer abc123 and Authorization: Bearer def456 plus bearer ghi789 and X-API-Key = jkl012"
+        let details = TranscriptFailureDetails(
+            errorCode: "provider_error",
+            errorMessage: raw,
+            retryCount: 1,
+            attemptCount: 2,
+            audioDurationSeconds: nil,
+            audioSizeBytes: nil
+        )
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: makeContext(),
+            audio: "audio.m4a",
+            failureDetails: details
+        )
+        let encoded = String(data: try JSONEncoder().encode(metadata), encoding: .utf8) ?? ""
+        XCTAssertTrue((metadata.error_message ?? "").contains("Authorization: Bearer [redacted]"), metadata.error_message ?? "")
+        XCTAssertFalse(encoded.contains("abc123"), encoded)
+        XCTAssertFalse(encoded.contains("def456"), encoded)
+        XCTAssertFalse(encoded.contains("ghi789"), encoded)
+        XCTAssertFalse(encoded.contains("jkl012"), encoded)
+    }
+
 }

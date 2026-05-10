@@ -14,6 +14,9 @@ settings:
 packages:
   TranscriberCore:
     path: ..
+  mlx-audio-swift:
+    url: https://github.com/Blaizzy/mlx-audio-swift.git
+    revision: 7734cd1fbbe86460083c1d24199737a24cadfcc8
 targets:
   Scribe:
     type: application
@@ -37,3 +40,7 @@ targets:
     dependencies:
       - package: TranscriberCore
         product: TranscriberCore
+      - package: mlx-audio-swift
+        product: MLXAudioSTT
+      - package: mlx-audio-swift
+        product: MLXAudioCore

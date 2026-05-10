@@ -6,7 +6,8 @@ enum SyntheticSampleBuffer {
         ptsSeconds: Double,
         sampleRate: Int,
         channelCount: Int,
-        frameCount: Int
+        frameCount: Int,
+        sampleValue: Float32 = 0
     ) -> CMSampleBuffer {
         var asbd = AudioStreamBasicDescription(
             mSampleRate: Float64(sampleRate),
@@ -45,12 +46,24 @@ enum SyntheticSampleBuffer {
             flags: 0,
             blockBufferOut: &blockBuffer
         )
-        CMBlockBufferFillDataBytes(
-            with: 0,
-            blockBuffer: blockBuffer!,
-            offsetIntoDestination: 0,
-            dataLength: totalBytes
-        )
+        if sampleValue == 0 {
+            CMBlockBufferFillDataBytes(
+                with: 0,
+                blockBuffer: blockBuffer!,
+                offsetIntoDestination: 0,
+                dataLength: totalBytes
+            )
+        } else {
+            var samples = Array(repeating: sampleValue, count: frameCount * channelCount)
+            samples.withUnsafeMutableBytes { bytes in
+                CMBlockBufferReplaceDataBytes(
+                    with: bytes.baseAddress!,
+                    blockBuffer: blockBuffer!,
+                    offsetIntoDestination: 0,
+                    dataLength: totalBytes
+                )
+            }
+        }
 
         let timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: Int32(sampleRate)),

@@ -1,9 +1,9 @@
 import EventKit
 import Foundation
+import UserNotifications
 
 /// Engine selection at preflight time. Used to decide which engine readiness
-/// probe runs (cloud needs the API key; local needs the bundled binary +
-/// language-detect model).
+/// probe runs (cloud needs the API key; local needs verified native Cohere/MLX readiness).
 public enum EngineMode: String, Sendable, Codable {
     case cloud
     case local
@@ -13,22 +13,20 @@ public enum EngineMode: String, Sendable, Codable {
 /// individually addressable so `PermissionRecoveryView` can deep-link to the
 /// matching System Settings pane (Phase η).
 public enum PreflightReason: Sendable, Equatable, Hashable {
+    public static let systemAudioRequiredMessage = "System Audio is required to capture other people in calls."
+
     case microphoneDenied
     case microphoneNotDetermined
     case screenRecordingDenied
     case outputFolderUnwritable(URL)
     case outputFolderInSyncedStorage(URL, providerHint: String)
     case missingCloudAPIKey
-    /// Local engine selected but no binary path configured (Phase ο not
-    /// shipped yet, or settings out of sync). Distinct from
-    /// `missingLocalEngineBinary` so the popover can render a "local engine
-    /// not bundled in this build" message instead of a fake file path.
-    case localEngineNotConfigured
-    case missingLocalEngineBinary(URL)
-    case localLanguageModelNotConfigured
-    case missingLocalLanguageModel(URL)
+    case localModelNotVerified(modelID: String)
+    case localRuntimeUnavailable
     case calendarDeniedOptional
     case calendarNotDetermined
+    case notificationsDeniedOptional
+    case notificationsNotDetermined
 
     /// Codex rc2-audit P0 (privacy): public-safe label for log sites
     /// that need to record WHICH reason fired without exposing the
@@ -43,12 +41,12 @@ public enum PreflightReason: Sendable, Equatable, Hashable {
         case .outputFolderUnwritable: return "outputFolderUnwritable"
         case .outputFolderInSyncedStorage(_, let provider): return "outputFolderInSyncedStorage(\(provider))"
         case .missingCloudAPIKey: return "missingCloudAPIKey"
-        case .localEngineNotConfigured: return "localEngineNotConfigured"
-        case .missingLocalEngineBinary: return "missingLocalEngineBinary"
-        case .localLanguageModelNotConfigured: return "localLanguageModelNotConfigured"
-        case .missingLocalLanguageModel: return "missingLocalLanguageModel"
+        case .localModelNotVerified: return "localModelNotVerified"
+        case .localRuntimeUnavailable: return "localRuntimeUnavailable"
         case .calendarDeniedOptional: return "calendarDeniedOptional"
         case .calendarNotDetermined: return "calendarNotDetermined"
+        case .notificationsDeniedOptional: return "notificationsDeniedOptional"
+        case .notificationsNotDetermined: return "notificationsNotDetermined"
         }
     }
 }
@@ -94,6 +92,7 @@ public protocol PermissionStatusProbing: Sendable {
     /// `notDetermined` for the doctor; spec calls calendar optional and we
     /// don't second-guess EventKit's privacy split.
     func calendar() async -> PermissionStatus
+    func notifications() async -> PermissionStatus
 }
 
 /// Default probe wired to the existing PermissionsService + EventKit.
@@ -119,33 +118,70 @@ public struct DefaultPermissionStatusProbe: PermissionStatusProbing {
             return .notDetermined
         }
     }
+
+    public func notifications() async -> PermissionStatus {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return .granted
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
+        }
+    }
 }
 
 /// Engine readiness probing. Cloud mode checks the Keychain entry; local mode
-/// checks for the bundled binary + Whisper-tiny model on disk.
+/// checks native Cohere/MLX runtime support and verified model readiness.
 public protocol EngineReadinessProbing: Sendable {
     func cloudKeyAvailable() async -> Bool
-    func localEngineBinaryURL() -> URL?
-    func localLanguageModelURL() -> URL?
-    func localBinaryReady(_ url: URL) async -> Bool
-    func localModelReady(_ url: URL) async -> Bool
+    func localModelStatus() async -> LocalModelCacheStatus
+    func localModelID() -> String
 }
 
-/// Default readiness probe. Cohere binary + Whisper-tiny model paths default
-/// to nil for V1 cloud-only builds; Phase ο wires the real bundle paths.
-public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
-    private let keychain: KeychainStore
-    private let cohereBinary: URL?
-    private let whisperModel: URL?
+public extension EngineReadinessProbing {
+    func localRuntimeAvailable() async -> Bool {
+        if case .unsupported = await localModelStatus() { return false }
+        return true
+    }
+
+    func localModelVerified() async -> Bool {
+        (await localModelStatus()).isReady
+    }
+}
+
+public protocol LocalModelStatusProviding: Sendable {
+    func status() async -> LocalModelCacheStatus
+}
+
+extension LocalModelManager: LocalModelStatusProviding {}
+
+public struct LocalModelEngineReadinessProbe: EngineReadinessProbing {
+    private let cloudKeyProbe: @Sendable () async -> Bool
+    private let localModel: any LocalModelStatusProviding
+    private let modelID: String
 
     public init(
-        keychain: KeychainStore,
-        cohereBinary: URL? = nil,
-        whisperModel: URL? = nil
+        cloudKeyProbe: @escaping @Sendable () async -> Bool,
+        localModel: any LocalModelStatusProviding,
+        modelID: String = CohereMLXBackend.modelID
     ) {
+        self.cloudKeyProbe = cloudKeyProbe
+        self.localModel = localModel
+        self.modelID = modelID
+    }
+
+    public func cloudKeyAvailable() async -> Bool { await cloudKeyProbe() }
+    public func localModelStatus() async -> LocalModelCacheStatus { await localModel.status() }
+    public func localModelID() -> String { modelID }
+}
+
+/// Default readiness probe. Until the app wires an owned model manager into
+/// this probe, Local fails closed as not downloaded rather than falling back.
+public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
+    private let keychain: KeychainStore
+
+    public init(keychain: KeychainStore) {
         self.keychain = keychain
-        self.cohereBinary = cohereBinary
-        self.whisperModel = whisperModel
     }
 
     public func cloudKeyAvailable() async -> Bool {
@@ -153,16 +189,18 @@ public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
         return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    public func localEngineBinaryURL() -> URL? { cohereBinary }
-    public func localLanguageModelURL() -> URL? { whisperModel }
-
-    public func localBinaryReady(_ url: URL) async -> Bool {
-        FileManager.default.isExecutableFile(atPath: url.path)
+    public func localModelStatus() async -> LocalModelCacheStatus {
+#if arch(arm64)
+        return .notDownloaded(modelID: CohereMLXBackend.modelID)
+#else
+        return .unsupported(
+            modelID: CohereMLXBackend.modelID,
+            reason: LocalModelFailure(code: .unsupportedRuntime, message: "Local Cohere runtime is unavailable on this Mac.")
+        )
+#endif
     }
 
-    public func localModelReady(_ url: URL) async -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
-    }
+    public func localModelID() -> String { CohereMLXBackend.modelID }
 }
 
 /// Output folder probing — writability check + cloud-sync heuristic. Pulled
@@ -259,7 +297,7 @@ public actor PermissionDoctor {
         case .denied: blockers.append(.microphoneDenied)
         }
 
-        // Screen recording — required (spec line 339: no mic-only fallback).
+        // Screen/system audio — required (spec line 339: no mic-only fallback).
         if await permissions.screenRecording() != .granted {
             blockers.append(.screenRecordingDenied)
         }
@@ -284,24 +322,13 @@ public actor PermissionDoctor {
                 blockers.append(.missingCloudAPIKey)
             }
         case .local:
-            // Codex Phase α review P2.2: emit a typed sentinel reason when
-            // the build has no local-binary path configured at all (e.g. V1
-            // cloud-only builds where Phase ο hasn't shipped). Avoids
-            // showing the user a fake "Resources/cohere_transcribe_rs"
-            // path that doesn't exist on their disk.
-            if let bin = engine.localEngineBinaryURL() {
-                if await engine.localBinaryReady(bin) == false {
-                    blockers.append(.missingLocalEngineBinary(bin))
-                }
-            } else {
-                blockers.append(.localEngineNotConfigured)
-            }
-            if let model = engine.localLanguageModelURL() {
-                if await engine.localModelReady(model) == false {
-                    blockers.append(.missingLocalLanguageModel(model))
-                }
-            } else {
-                blockers.append(.localLanguageModelNotConfigured)
+            switch await engine.localModelStatus() {
+            case .verified:
+                break
+            case .unsupported:
+                blockers.append(.localRuntimeUnavailable)
+            case .notDownloaded, .downloading, .verifying, .failed:
+                blockers.append(.localModelNotVerified(modelID: engine.localModelID()))
             }
         }
 
@@ -310,6 +337,14 @@ public actor PermissionDoctor {
         case .granted: break
         case .denied: warnings.append(.calendarDeniedOptional)
         case .notDetermined: warnings.append(.calendarNotDetermined)
+        }
+
+        // Notifications — optional. Missing notification permission reduces the
+        // redundant-channel prompt pattern, but must not block manual recording.
+        switch await permissions.notifications() {
+        case .granted: break
+        case .denied: warnings.append(.notificationsDeniedOptional)
+        case .notDetermined: warnings.append(.notificationsNotDetermined)
         }
 
         return PreflightReport(blockers: blockers, warnings: warnings)

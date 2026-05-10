@@ -36,6 +36,8 @@ final class DiagnosticsExporterTests: XCTestCase {
     private func makeSnapshot(sessions: DiagnosticsSnapshot.SessionSummary) -> DiagnosticsSnapshot {
         DiagnosticsSnapshot(
             appVersion: "0.0.0-test",
+            osVersion: .init(major: 26, minor: 4, patch: 1),
+            activeCalendarSource: "appleCalendar",
             exportedAt: "2026-04-30T10:00:00Z",
             settings: .init(
                 engineMode: "cloud",
@@ -46,7 +48,17 @@ final class DiagnosticsExporterTests: XCTestCase {
                 outputRootIsWritable: true
             ),
             permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
-            engine: .init(cloudKey: "configured"),
+            engine: .init(
+                selectedEngine: "cloud",
+                selectedEngineReady: true,
+                cloudKey: "configured",
+                localModelStatus: "notDownloaded",
+                localModelID: CohereMLXBackend.modelID,
+                localCachePathExists: false,
+                mlxAvailable: true,
+                localReady: false,
+                lastDownloadError: ""
+            ),
             sessions: sessions,
             liveLevels: .init(micRMS: 0.42, systemRMS: 0.31)
         )
@@ -110,6 +122,8 @@ final class DiagnosticsExporterTests: XCTestCase {
         let summary = DiagnosticsSnapshot.SessionSummary.zero
         let snapshot = DiagnosticsSnapshot(
             appVersion: "0.0.0-test",
+            osVersion: .init(major: 26, minor: 4, patch: 1),
+            activeCalendarSource: "appleCalendar",
             exportedAt: "2026-04-30T10:00:00Z",
             settings: .init(
                 engineMode: "cloud",
@@ -120,7 +134,17 @@ final class DiagnosticsExporterTests: XCTestCase {
                 outputRootIsWritable: true
             ),
             permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
-            engine: .init(cloudKey: "configured"),  // schema: enum-string only
+            engine: .init(
+                selectedEngine: "cloud",
+                selectedEngineReady: true,
+                cloudKey: "configured",
+                localModelStatus: "notDownloaded",
+                localModelID: CohereMLXBackend.modelID,
+                localCachePathExists: false,
+                mlxAvailable: true,
+                localReady: false,
+                lastDownloadError: ""
+            ),  // schema: enum-string/key-safe fields only
             sessions: summary,
             liveLevels: nil
         )
@@ -236,7 +260,7 @@ final class DiagnosticsExporterTests: XCTestCase {
 
         // Top-level keys.
         XCTAssertEqual(Set(json.keys), [
-            "appVersion", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"
+            "appVersion", "osVersion", "activeCalendarSource", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"
         ])
 
         let settings = try XCTUnwrap(json["settings"] as? [String: Any])
@@ -248,17 +272,191 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertEqual(Set(permissions.keys), ["microphone", "screenRecording", "calendar"])
 
         let engine = try XCTUnwrap(json["engine"] as? [String: Any])
-        // localBinaryPresent + localLanguageModelPresent are nil here
-        // (cloud mode); only cloudKey appears.
-        XCTAssertEqual(Set(engine.keys), ["cloudKey"])
+        XCTAssertEqual(Set(engine.keys), [
+            "selectedEngine", "selectedEngineReady", "cloudKey", "localModelStatus",
+            "localModelID", "localCachePathExists", "mlxAvailable", "localReady", "lastDownloadError"
+        ])
 
         let sessions = try XCTUnwrap(json["sessions"] as? [String: Any])
         XCTAssertEqual(Set(sessions.keys), [
-            "total", "pending", "retrying", "complete", "failed", "unknown", "orphanedWithAudio", "totalRetries"
+            "total", "pending", "retrying", "complete", "failed", "unknown", "orphanedWithAudio", "totalRetries",
+            "cloudEngineSessions", "localEngineSessions", "unknownEngineSessions"
         ])
 
         let levels = try XCTUnwrap(json["liveLevels"] as? [String: Any])
         XCTAssertEqual(Set(levels.keys), ["micRMS", "systemRMS"])
+    }
+
+
+    func testDiagnosticsSchemaIncludesSafeOSVersionAndActiveCalendarSource() throws {
+        let snapshot = makeSnapshot(sessions: .zero)
+        let data = try DiagnosticsExporter.encode(snapshot)
+        let any = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try XCTUnwrap(any)
+        let osVersion = try XCTUnwrap(json["osVersion"] as? [String: Any])
+
+        XCTAssertEqual(osVersion["major"] as? Int, 26)
+        XCTAssertEqual(osVersion["minor"] as? Int, 4)
+        XCTAssertEqual(osVersion["patch"] as? Int, 1)
+        XCTAssertEqual(json["appVersion"] as? String, "0.0.0-test")
+        XCTAssertEqual(json["activeCalendarSource"] as? String, "appleCalendar")
+    }
+
+    func testActiveCalendarSourceNormalizationIsNonContentBearing() async throws {
+        XCTAssertEqual(DiagnosticsCollector.activeCalendarSource(calendarPermission: "granted"), "appleCalendar")
+        XCTAssertEqual(DiagnosticsCollector.activeCalendarSource(calendarPermission: "denied"), "none")
+        XCTAssertEqual(DiagnosticsCollector.activeCalendarSource(calendarPermission: "notDetermined"), "none")
+        XCTAssertEqual(DiagnosticsCollector.activeCalendarSource(calendarPermission: "unknown"), "unknown")
+    }
+
+    func testDiagnosticsSafeStateFieldsDoNotLeakCalendarOrPathSentinels() throws {
+        let snapshot = DiagnosticsSnapshot(
+            appVersion: "0.0.0-test",
+            osVersion: .init(major: 26, minor: 4, patch: 1),
+            activeCalendarSource: "appleCalendar",
+            exportedAt: "2026-04-30T10:00:00Z",
+            settings: .init(engineMode: "cloud", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: true, outputRootHash: "hash", outputRootIsWritable: true),
+            permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
+            engine: .init(selectedEngine: "cloud", selectedEngineReady: true, cloudKey: "configured", localModelStatus: "notDownloaded", localModelID: CohereMLXBackend.modelID, localCachePathExists: false, mlxAvailable: true, localReady: false, lastDownloadError: ""),
+            sessions: .zero,
+            liveLevels: nil
+        )
+        let json = String(decoding: try DiagnosticsExporter.encode(snapshot), as: UTF8.self)
+        for sentinel in ["Customer Secret Calendar Title", "Faris Sentinel", "/Users/alice", "session-folder", "sk_TEST", "keyterm"] {
+            XCTAssertFalse(json.contains(sentinel), "safe-state field leaked sentinel: \(sentinel) in \(json)")
+        }
+    }
+
+    func testLocalDiagnosticsSchemaIncludesReviewedSafeFields() throws {
+        let snapshot = makeSnapshot(sessions: .zero)
+        let data = try DiagnosticsExporter.encode(snapshot)
+        let any = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let json = try XCTUnwrap(any)
+        let engine = try XCTUnwrap(json["engine"] as? [String: Any])
+
+        XCTAssertEqual(engine["selectedEngine"] as? String, "cloud")
+        XCTAssertEqual(engine["selectedEngineReady"] as? Bool, true)
+        XCTAssertEqual(engine["localModelStatus"] as? String, "notDownloaded")
+        XCTAssertEqual(engine["localModelID"] as? String, CohereMLXBackend.modelID)
+        XCTAssertEqual(engine["localCachePathExists"] as? Bool, false)
+        XCTAssertEqual(engine["mlxAvailable"] as? Bool, true)
+        XCTAssertEqual(engine["localReady"] as? Bool, false)
+        XCTAssertEqual(engine["lastDownloadError"] as? String, "")
+    }
+
+    func testDiagnosticsEngineNormalizesLocalStatusAndReadiness() async throws {
+        let cases: [(LocalModelCacheStatus, String, Bool, Bool, Bool)] = [
+            (.notDownloaded(modelID: CohereMLXBackend.modelID), "notDownloaded", false, true, false),
+            (.downloading(modelID: CohereMLXBackend.modelID, progress: .init(completedBytes: 1, totalBytes: 10)), "downloading", false, true, false),
+            (.verifying(modelID: CohereMLXBackend.modelID), "verifying", false, true, false),
+            (.verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: root.appendingPathComponent("SECRET-CACHE-PATH"), diskUsageBytes: 1)), "verified", true, true, true),
+            (.failed(modelID: CohereMLXBackend.modelID, reason: .init(code: .downloadFailed, message: "ignored"), retryAvailable: true), "failed", false, true, false),
+            (.unsupported(modelID: CohereMLXBackend.modelID, reason: .init(code: .unsupportedRuntime, message: "ignored")), "unsupported", false, false, false)
+        ]
+        for (status, expectedStatus, expectedCache, expectedMLX, expectedReady) in cases {
+            let engine = await DiagnosticsCollector.engine(
+                mode: .local,
+                cloudProbe: { .missing },
+                engineProbe: StubEngineReadiness(status: status)
+            )
+            XCTAssertEqual(engine.localModelStatus, expectedStatus)
+            XCTAssertEqual(engine.localCachePathExists, expectedCache)
+            XCTAssertEqual(engine.mlxAvailable, expectedMLX)
+            XCTAssertEqual(engine.localReady, expectedReady)
+            XCTAssertEqual(engine.selectedEngineReady, expectedReady)
+        }
+    }
+
+    func testSelectedEngineReadinessIsIndependentForCloudAndLocal() async {
+        let verified = LocalModelCacheStatus.verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: root, diskUsageBytes: 1))
+        let cloudMissing = await DiagnosticsCollector.engine(
+            mode: .cloud,
+            cloudProbe: { .missing },
+            engineProbe: StubEngineReadiness(status: verified)
+        )
+        XCTAssertEqual(cloudMissing.selectedEngine, "cloud")
+        XCTAssertFalse(cloudMissing.selectedEngineReady, "Local readiness must not make selected Cloud ready")
+        XCTAssertTrue(cloudMissing.localReady)
+
+        let localReady = await DiagnosticsCollector.engine(
+            mode: .local,
+            cloudProbe: { .missing },
+            engineProbe: StubEngineReadiness(status: verified)
+        )
+        XCTAssertEqual(localReady.selectedEngine, "local")
+        XCTAssertTrue(localReady.selectedEngineReady)
+        XCTAssertEqual(localReady.cloudKey, "missing")
+    }
+
+    func testLocalLastDownloadErrorIsBoundedAndRedacted() async throws {
+        let raw = "Failed for /Users/alice/Library/Caches/Scribe/model.safetensors with token sk_TEST and calendar Customer Secret Agenda https://example.com?token=abc\nstack trace line"
+        let engine = await DiagnosticsCollector.engine(
+            mode: .local,
+            cloudProbe: { .configured },
+            engineProbe: StubEngineReadiness(status: .failed(
+                modelID: CohereMLXBackend.modelID,
+                reason: .init(code: .downloadFailed, message: raw),
+                retryAvailable: true
+            ))
+        )
+        let data = try DiagnosticsExporter.encode(DiagnosticsSnapshot(
+            appVersion: "0.0.0-test",
+            osVersion: .init(major: 26, minor: 4, patch: 1),
+            activeCalendarSource: "appleCalendar",
+            exportedAt: "2026-04-30T10:00:00Z",
+            settings: .init(engineMode: "local", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: true, outputRootHash: "hash", outputRootIsWritable: true),
+            permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
+            engine: engine,
+            sessions: .zero,
+            liveLevels: nil
+        ))
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual(engine.lastDownloadError, "downloadFailed")
+        for sentinel in ["/Users/alice", "Library/Caches", "model.safetensors", "sk_TEST", "Customer Secret Agenda", "example.com", "token=abc", "stack trace"] {
+            XCTAssertFalse(json.contains(sentinel), "local error sentinel must not leak: \(sentinel) in \(json)")
+        }
+    }
+
+    func testDiagnosticsSessionProvenanceCountsEnginesWithoutContent() throws {
+        try writeComplete("cloud-session", engine: "elevenlabs")
+        try writeComplete("local-session", engine: "cohere")
+        try writeComplete("mystery-session", engine: "unexpected")
+
+        let summary = DiagnosticsCollector.collectSessions(under: root)
+        XCTAssertEqual(summary.cloudEngineSessions, 1)
+        XCTAssertEqual(summary.localEngineSessions, 1)
+        XCTAssertEqual(summary.unknownEngineSessions, 1)
+
+        let data = try DiagnosticsExporter.encode(makeSnapshot(sessions: summary))
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(json.contains("cloud-session"))
+        XCTAssertFalse(json.contains("local-session"))
+        XCTAssertFalse(json.contains("mystery-session"))
+    }
+
+    func testLocalCachePathIsExposedOnlyAsExistence() async throws {
+        let sentinelPath = root.appendingPathComponent("Users/alice/Secret/Cache", isDirectory: true)
+        let engine = await DiagnosticsCollector.engine(
+            mode: .local,
+            cloudProbe: { .missing },
+            engineProbe: StubEngineReadiness(status: .verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: sentinelPath, diskUsageBytes: 123)))
+        )
+        let data = try DiagnosticsExporter.encode(DiagnosticsSnapshot(
+            appVersion: "0.0.0-test",
+            osVersion: .init(major: 26, minor: 4, patch: 1),
+            activeCalendarSource: "appleCalendar",
+            exportedAt: "2026-04-30T10:00:00Z",
+            settings: .init(engineMode: "local", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: true, outputRootHash: "hash", outputRootIsWritable: true),
+            permissions: .init(microphone: "granted", screenRecording: "granted", calendar: "granted"),
+            engine: engine,
+            sessions: .zero,
+            liveLevels: nil
+        ))
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(engine.localCachePathExists)
+        for sentinel in ["Users", "alice", "Secret"] {
+            XCTAssertFalse(json.contains(sentinel), "cache path fragment must not leak: \(sentinel) in \(json)")
+        }
     }
 
     func testCollectorCountsAudioWithoutTranscriptAsOrphaned() throws {
@@ -285,7 +483,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         XCTAssertNotNil(json)
         let topLevelKeys = Set(json!.keys)
-        let allowed: Set<String> = ["appVersion", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"]
+        let allowed: Set<String> = ["appVersion", "osVersion", "activeCalendarSource", "exportedAt", "settings", "permissions", "engine", "sessions", "liveLevels"]
         XCTAssertEqual(topLevelKeys, allowed, "any new top-level key requires explicit security review")
     }
 
@@ -297,12 +495,23 @@ final class DiagnosticsExporterTests: XCTestCase {
         try TranscriptWriter.writePending(at: dir.transcript, context: makeContext())
     }
 
-    private func writeComplete(_ name: String) throws {
+    private func writeComplete(_ name: String, engine: String = "elevenlabs") throws {
         let dir = SessionDirectory(url: root.appendingPathComponent(name, isDirectory: true))
         try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
+        var context = makeContext()
+        context = TranscriptContext(
+            title: context.title,
+            date: context.date,
+            engine: engine,
+            audioRelativePaths: context.audioRelativePaths,
+            startedAt: context.startedAt,
+            endedAt: context.endedAt,
+            attendees: context.attendees,
+            language: context.language
+        )
         try TranscriptWriter.writeComplete(
             at: dir.transcript,
-            context: makeContext(),
+            context: context,
             utterances: [.init(speaker: "speaker_0", startSeconds: 0, endSeconds: 1, text: "Hi")],
             speakerMapping: [:]
         )
@@ -335,3 +544,12 @@ final class DiagnosticsExporterTests: XCTestCase {
         try yaml.write(to: dir.transcript, atomically: true, encoding: .utf8)
     }
 }
+
+private struct StubEngineReadiness: EngineReadinessProbing {
+    let status: LocalModelCacheStatus
+
+    func cloudKeyAvailable() async -> Bool { false }
+    func localModelStatus() async -> LocalModelCacheStatus { status }
+    func localModelID() -> String { CohereMLXBackend.modelID }
+}
+

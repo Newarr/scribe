@@ -75,6 +75,200 @@ final class SessionSupervisorTests: XCTestCase {
         XCTAssertEqual(TranscriptStatusReader.read(at: dir.transcript), .complete)
     }
 
+
+    func testRelaunchRecoveryPreservesPersistedLocalEngine() async throws {
+        let dir = makeSessionDir("local-pending")
+        try Data("mic".utf8).write(to: dir.micFinal)
+        try Data("sys".utf8).write(to: dir.systemFinal)
+        let localContext = Self.makeContext("local-pending", engine: "cohere")
+        try TranscriptWriter.writePending(at: dir.transcript, context: localContext)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("placeholder", engine: "elevenlabs") },
+            workerFactory: { d, ctx in
+                XCTAssertEqual(ctx.engine, "cohere")
+                return Self.makeWorker(
+                    dir: d,
+                    context: ctx,
+                    responses: [.success(Self.makeResponse(modelID: CohereMLXBackend.modelID))],
+                    requestModelID: CohereMLXBackend.modelID
+                )
+            }
+        )
+
+        XCTAssertEqual(r.resumed, 1)
+        let parsed = TranscriptFrontmatterReader.read(at: dir.transcript)
+        XCTAssertEqual(parsed?.status, .complete)
+        XCTAssertEqual(parsed?.context.engine, "cohere")
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.engine, "cohere")
+    }
+
+    func testRelaunchRecoveryPreservesPersistedCloudEngineWhenSettingsNowLocal() async throws {
+        let dir = makeSessionDir("cloud-pending")
+        try Data("mic".utf8).write(to: dir.micFinal)
+        try Data("sys".utf8).write(to: dir.systemFinal)
+        let cloudContext = Self.makeContext("cloud-pending", engine: "elevenlabs")
+        try TranscriptWriter.writePending(at: dir.transcript, context: cloudContext)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("placeholder", engine: "cohere") },
+            workerFactory: { d, ctx in
+                XCTAssertEqual(ctx.engine, "elevenlabs")
+                return Self.makeWorker(
+                    dir: d,
+                    context: ctx,
+                    responses: [.success(Self.makeResponse(modelID: "scribe_v2"))],
+                    requestModelID: "scribe_v2"
+                )
+            }
+        )
+
+        XCTAssertEqual(r.resumed, 1)
+        let parsed = TranscriptFrontmatterReader.read(at: dir.transcript)
+        XCTAssertEqual(parsed?.status, .complete)
+        XCTAssertEqual(parsed?.context.engine, "elevenlabs")
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.engine, "elevenlabs")
+    }
+
+
+    func testOrphanNoFrontmatterUsesStartManifestLocalEvenWhenCurrentSettingsCloud() async throws {
+        let dir = makeSessionDir("orphan-local-manifest")
+        try Data("mic".utf8).write(to: dir.micPartial)
+        try Data("sys".utf8).write(to: dir.systemPartial)
+        try SessionStartManifest.write(engine: "cohere", at: dir.startManifest)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("current-settings-cloud", engine: "elevenlabs") },
+            workerFactory: { d, ctx in
+                XCTAssertEqual(ctx.engine, "cohere")
+                return Self.makeWorker(
+                    dir: d,
+                    context: ctx,
+                    responses: [.success(Self.makeResponse(modelID: CohereMLXBackend.modelID))],
+                    requestModelID: CohereMLXBackend.modelID
+                )
+            }
+        )
+
+        XCTAssertEqual(r.rescued, 1)
+        XCTAssertEqual(r.resumed, 1)
+        XCTAssertEqual(TranscriptFrontmatterReader.read(at: dir.transcript)?.context.engine, "cohere")
+    }
+
+    func testOrphanNoFrontmatterUsesStartManifestCloudEvenWhenCurrentSettingsLocal() async throws {
+        let dir = makeSessionDir("orphan-cloud-manifest")
+        try Data("mic".utf8).write(to: dir.micPartial)
+        try Data("sys".utf8).write(to: dir.systemPartial)
+        try SessionStartManifest.write(engine: "elevenlabs", at: dir.startManifest)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("current-settings-local", engine: "cohere") },
+            workerFactory: { d, ctx in
+                XCTAssertEqual(ctx.engine, "elevenlabs")
+                return Self.makeWorker(
+                    dir: d,
+                    context: ctx,
+                    responses: [.success(Self.makeResponse(modelID: "scribe_v2"))],
+                    requestModelID: "scribe_v2"
+                )
+            }
+        )
+
+        XCTAssertEqual(r.rescued, 1)
+        XCTAssertEqual(r.resumed, 1)
+        XCTAssertEqual(TranscriptFrontmatterReader.read(at: dir.transcript)?.context.engine, "elevenlabs")
+    }
+
+    func testOrphanNoFrontmatterMissingManifestFailsClosedAndDoesNotUseCurrentSettings() async throws {
+        let dir = makeSessionDir("orphan-missing-manifest")
+        try Data("mic".utf8).write(to: dir.micPartial)
+        try Data("sys".utf8).write(to: dir.systemPartial)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("current-settings-cloud", engine: "elevenlabs") },
+            workerFactory: { _, ctx in
+                XCTAssertEqual(ctx.engine, "unknown")
+                return nil
+            }
+        )
+
+        XCTAssertEqual(r.rescued, 1)
+        XCTAssertEqual(r.resumed, 0)
+        XCTAssertEqual(r.skipped, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.transcript.path), "repairable missing-provenance orphan should not be rewritten as current-settings Cloud")
+    }
+
+    func testOrphanNoFrontmatterInvalidManifestFailsClosed() async throws {
+        let dir = makeSessionDir("orphan-invalid-manifest")
+        try Data("mic".utf8).write(to: dir.micPartial)
+        try Data("sys".utf8).write(to: dir.systemPartial)
+        try Data("{\"schema\":\"scribe.session-start.v1\",\"engine\":\"bogus\",\"startedAt\":\"2026-05-09T00:00:00Z\"}".utf8).write(to: dir.startManifest)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("current-settings-local", engine: "cohere") },
+            workerFactory: { _, ctx in
+                XCTAssertEqual(ctx.engine, "unknown")
+                return nil
+            }
+        )
+
+        XCTAssertEqual(r.rescued, 1)
+        XCTAssertEqual(r.resumed, 0)
+        XCTAssertEqual(r.skipped, 1)
+    }
+
+    func testPendingStubWithoutEngineProvenanceFailsClosedAndDoesNotDispatchWorker() async throws {
+        let dir = makeSessionDir("missing-engine")
+        try Data("mic".utf8).write(to: dir.micFinal)
+        try Data("sys".utf8).write(to: dir.systemFinal)
+        let stub = """
+        ---
+        schema: transcriber/v1
+        status: pending
+        audio:
+          - mic.m4a
+          - system.m4a
+        ---
+
+        Awaiting transcription.
+        """
+        try stub.write(to: dir.transcript, atomically: true, encoding: .utf8)
+
+        let supervisor = SessionSupervisor()
+        let r = await supervisor.scanAndResume(
+            under: root,
+            contextFactory: { _ in Self.makeContext("current-settings-cloud", engine: "elevenlabs") },
+            workerFactory: { _, ctx in
+                XCTAssertEqual(ctx.engine, "unknown")
+                return nil
+            }
+        )
+
+        XCTAssertEqual(r.resumed, 0)
+        XCTAssertEqual(r.skipped, 1)
+        XCTAssertEqual(TranscriptStatusReader.read(at: dir.transcript), .pending)
+    }
+
     func testNoAudioSessionIsMarkedFailed() async throws {
         let dir = makeSessionDir("d")
 
@@ -309,11 +503,11 @@ final class SessionSupervisorTests: XCTestCase {
         return SessionDirectory(url: url)
     }
 
-    private static func makeContext(_ slug: String) -> TranscriptContext {
+    private static func makeContext(_ slug: String, engine: String = "elevenlabs") -> TranscriptContext {
         TranscriptContext(
             title: "Session \(slug)",
             date: "2026-04-29",
-            engine: "elevenlabs",
+            engine: engine,
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
@@ -322,25 +516,31 @@ final class SessionSupervisorTests: XCTestCase {
         )
     }
 
-    private static func makeResponse() -> EngineResponse {
+    private static func makeResponse(modelID: String = "scribe_v2") -> EngineResponse {
         EngineResponse(
             utterances: [.init(speaker: "speaker_0", startSeconds: 0, endSeconds: 1.0, text: "Hi")],
             detectedLanguage: "en",
-            modelID: "scribe_v2"
+            modelID: modelID
         )
     }
 
-    private static func makeWorker(dir: SessionDirectory, responses: [Result<EngineResponse, Error>]) -> TranscriptionWorker {
+    private static func makeWorker(
+        dir: SessionDirectory,
+        context: TranscriptContext? = nil,
+        responses: [Result<EngineResponse, Error>],
+        requestModelID: String = "scribe_v2"
+    ) -> TranscriptionWorker {
         let engine = FakeEngine(responses: responses)
         let request = EngineRequest(
             audioURL: dir.url.appendingPathComponent("multichannel.wav"),
             mode: .multichannel,
             languageCode: nil,
-            keyterms: []
+            keyterms: [],
+            modelID: requestModelID
         )
         return TranscriptionWorker(
             directory: dir,
-            context: makeContext("worker"),
+            context: context ?? makeContext("worker"),
             engine: engine,
             request: request,
             speakerMapping: [:],

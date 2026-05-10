@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import EventKit  // .EKEventStoreChanged notification name (codex slice-6 final-review P1)
 import ServiceManagement
+import UserNotifications
 import TranscriberCore
 
 /// Codex rc2-audit STATE-2: was @unchecked Sendable + ad-hoc
@@ -28,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentSessionDirectory: SessionDirectory?
     private var currentSessionStartedAt: Date?
     private var currentCalendarEvent: CalendarEvent?
+    private var currentSessionEngineMode: EngineMode?
+    private var currentDiagnosticsLiveLevels: DiagnosticsSnapshot.LiveLevels?
 
     /// Drives the popover's elapsed-time field while a session is
     /// active. Fires once per second; the popover formats the value
@@ -51,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // outcome (saved / failed) so the icon can transiently flash a
     // confirmation glyph after a session lands.
     private var setupNeedsAttention: Bool = false
+    private var sessionRepairPayload: SessionRepairRouting.LocalRepairPayload?
+    private var setupEngineFocus: EngineSettingsCardFocus?
     private var detectionPromptActive: Bool = false
     private var lastSavedAt: Date?
     private var lastFailureAt: Date?
@@ -76,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // applicationDidFinishLaunching (which runs on @MainActor); the
     // controllers themselves are @MainActor-isolated.
     private var privacyController: PrivacyAcknowledgementController?
+    private var onboardingController: OnboardingWindowController?
+    private var onboardingFlowController: OnboardingFlowController?
     private var settingsWindowController: SettingsWindowController?
     private var setupPopover: PermissionRecoveryPopoverController?
     private var diagnosticsWindowController: DiagnosticsWindowController?
@@ -119,6 +126,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fallback: AppDelegate.defaultSettingsFallback()
     )
 
+    private lazy var localModelManager = LocalModelManager(
+        cacheRoot: CohereMLXBackend.defaultModelCacheRoot,
+        downloader: HuggingFaceLocalModelDownloader()
+    )
+
+    private func engineReadinessProbe() -> EngineReadinessProbing {
+        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+        return LocalModelEngineReadinessProbe(
+            cloudKeyProbe: { Self.probeCloudKey(keychain: keychain) == .configured },
+            localModel: localModelManager
+        )
+    }
+
     /// Synchronous current settings (no actor hop). Reads the same
     /// single JSON blob the actor writes, so a Settings UI commit is
     /// observably consistent here.
@@ -129,14 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outputRoot: URL { settings.outputRoot }
     private static let minimumFreeDiskBytes: Int64 = 1_000_000_000
 
-    /// Phase α preflight. Engine mode is now read from settings (so a
-    /// later flip to local-mode lands the local-binary readiness check
-    /// without touching this property).
+    /// Phase α preflight. Engine mode is read from settings; Local readiness
+    /// comes from the app-owned LocalModelManager so removed/failed/unsupported
+    /// caches block production recording instead of using placeholder readiness.
     private var preflightDoctor: PermissionDoctor {
-        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
-        return PermissionDoctor(
+        PermissionDoctor(
             permissions: DefaultPermissionStatusProbe(permissions: permissions),
-            engine: DefaultEngineReadinessProbe(keychain: keychain)
+            engine: engineReadinessProbe()
         )
     }
 
@@ -196,9 +215,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let m = RecordingMenu { [weak self] action in
-            Task { @MainActor in await self?.handle(action) }
-        }
+        let m = RecordingMenu(
+            localModelStatusProvider: { [weak self] in
+                guard let self else { return .notDownloaded(modelID: CohereMLXBackend.modelID) }
+                return await self.localModelManager.status()
+            },
+            onAction: { [weak self] action in
+                Task { @MainActor in await self?.handle(action) }
+            }
+        )
         StatusItemClickTarget.shared.delegate = m
         // Raise the welcome window before opening the popover when a
         // click lands on the menu bar icon and consent is still pending.
@@ -268,6 +293,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fallback: Self.defaultSettingsFallback(),
             keychainService: Self.keychainService,
             keychainAccount: Self.keychainAccount,
+            engineReadiness: engineReadinessProbe(),
+            onRetryLocalModel: { [weak self] in
+                guard let self else { return .notDownloaded(modelID: CohereMLXBackend.modelID) }
+                return await self.localModelManager.retryDownload()
+            },
+            onClearLocalModelCache: { [weak self] in
+                guard let self else { return }
+                try await self.localModelManager.clearCache()
+            },
             onShowInMenuBarChange: { [weak self] visible in
                 self?.setMenuBarVisible(visible)
             },
@@ -303,19 +337,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func presentPrivacyAcknowledgementIfNeeded() {
         guard !settings.privacyAcknowledged else { return }
-        let controller = PrivacyAcknowledgementController { [weak self] in
-            guard let self else { return }
-            Task {
-                await self.settingsStore.setPrivacyAcknowledged(true)
-                Log.lifecycle.info("Privacy acknowledgement recorded; releasing deferred supervisor scan")
-                await MainActor.run {
-                    self.scheduleSupervisorRecovery()
+        let flowController = OnboardingFlowController(downloadStarter: localModelManager)
+        self.onboardingFlowController = flowController
+        let controller = OnboardingWindowController(
+            flowController: flowController,
+            snapshotProvider: { [weak self] in
+                guard let self else { return await Self.emptyOnboardingSnapshot() }
+                return await self.makeOnboardingResumeSnapshot()
+            },
+            cloudKeyAvailable: { [weak self] in
+                guard let self else { return false }
+                let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+                return Self.probeCloudKey(keychain: keychain) == .configured
+            },
+            requestMicrophone: { [weak self] in
+                guard let self else { return .notDetermined }
+                _ = await self.permissions.requestMicrophone()
+                return self.permissions.microphoneStatus()
+            },
+            requestCalendar: { [weak self] in
+                guard let self else { return .notDetermined }
+                _ = await self.permissions.requestCalendar()
+                return await DefaultPermissionStatusProbe(permissions: self.permissions).calendar()
+            },
+            requestNotifications: {
+                do {
+                    let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                    return granted ? .granted : .denied
+                } catch {
+                    return .denied
                 }
+            },
+            requestScreenRecording: { [weak self] in
+                guard let self else { return .notDetermined }
+                _ = await self.permissions.requestScreenRecording()
+                return await self.permissions.screenRecordingStatus()
+            },
+            selectEngine: { [weak self] engine in
+                guard let self else { return }
+                await self.settingsStore.setEngineModeIfReady(engine, readiness: self.engineReadinessProbe())
+            },
+            saveOutputFolder: { [weak self] url in
+                guard let self else { return }
+                await self.settingsStore.setOutputRoot(url)
+            },
+            runTestRecording: { [weak self] in
+                guard let self else { return false }
+                return await self.runOnboardingTestRecording()
+            },
+            onAcknowledged: { [weak self] in
+                guard let self else { return }
+                Task {
+                    await self.settingsStore.setPrivacyAcknowledged(true)
+                    Log.lifecycle.info("Onboarding completed; releasing deferred supervisor scan")
+                    await MainActor.run {
+                        self.scheduleSupervisorRecovery()
+                    }
+                }
+                self.privacyController = nil
+                self.onboardingController = nil
+                self.onboardingFlowController = nil
             }
-            self.privacyController = nil
-        }
+        )
         self.privacyController = controller
+        self.onboardingController = controller
         controller.present()
+    }
+
+
+    private static func emptyOnboardingSnapshot() async -> OnboardingResumeSnapshot {
+        OnboardingResumeSnapshot(
+            microphone: .notDetermined,
+            calendar: .notDetermined,
+            notifications: .notDetermined,
+            screenRecording: .notDetermined,
+            cloudKeyAvailable: false,
+            localModelStatus: .notDownloaded(modelID: CohereMLXBackend.modelID),
+            selectedEngine: .cloud,
+            outputFolderReady: false,
+            testRecordingComplete: false
+        )
+    }
+
+    @MainActor
+    private func makeOnboardingResumeSnapshot() async -> OnboardingResumeSnapshot {
+        let snap = settings
+        let permissionProbe = DefaultPermissionStatusProbe(permissions: permissions)
+        let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+        return OnboardingResumeSnapshot(
+            microphone: await permissionProbe.microphone(),
+            calendar: await permissionProbe.calendar(),
+            notifications: await permissionProbe.notifications(),
+            screenRecording: await permissionProbe.screenRecording(),
+            cloudKeyAvailable: Self.probeCloudKey(keychain: keychain) == .configured,
+            localModelStatus: await localModelManager.status(),
+            selectedEngine: snap.engineMode,
+            outputFolderReady: await DefaultOutputFolderProbe().isWritable(snap.outputRoot),
+            testRecordingComplete: false
+        )
     }
 
     /// Phase η P0.2 helper: kicks the orphan-session supervisor scan in
@@ -331,33 +450,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = snap.engineMode
         let resumeId = UUID()
         let resumeTask = Task { [weak self] in
-            let result = await Self.runSupervisor(under: outputRoot, keepRawStreams: keepRaw, engineMode: mode)
+            let result = await Self.runSupervisor(
+                under: outputRoot,
+                keepRawStreams: keepRaw,
+                engineMode: mode,
+                localModelStatus: { [weak self] in
+                    guard let manager = await MainActor.run(body: { self?.localModelManager }) else {
+                        return .notDownloaded(modelID: CohereMLXBackend.modelID)
+                    }
+                    return await manager.status()
+                }
+            )
             // Codex PM-review UX-31: surface a recovery notice so the
             // user knows a previously-interrupted session is being
             // re-transcribed. Silent recovery feels like the app is
             // ignoring their data.
             await self?.showRecoveryNoticeIfNeeded(result: result)
+            if result.localSetupRequired > 0 || result.missingEngineProvenance > 0 {
+                await self?.markRecoverySetupRequired(payload: result.localSetupRequiredSessions.first.map {
+                    SessionRepairRouting.LocalRepairPayload(
+                        sessionDirectory: $0,
+                        reason: "Cohere setup is required before this recovered Local session can be transcribed."
+                    )
+                })
+            }
             await self?.removeTask(id: resumeId)
         }
         inflightTasks[resumeId] = resumeTask
     }
 
     @MainActor
+    private func markRecoverySetupRequired(payload: SessionRepairRouting.LocalRepairPayload? = nil) {
+        status = .idle
+        setupNeedsAttention = true
+        sessionRepairPayload = payload
+        menu?.setupNeedsAttention = true
+        menu?.outcomeFolderURL = payload?.sessionDirectory
+        menu?.rebuild(for: status)
+        applyTrustIcon()
+    }
+
+    @MainActor
     private func showRecoveryNoticeIfNeeded(result: SessionSupervisor.ScanResult) {
-        // Only notify when there's actual recovery action; not on
-        // every launch.
-        let recovered = result.resumed + result.rescued
-        guard recovered > 0 else { return }
-        let alert = NSAlert()
-        if recovered == 1 {
-            alert.messageText = "Recovered 1 recording from before the last quit"
-            alert.informativeText = result.rescued > 0
-                ? "Audio was rescued and is being transcribed now."
-                : "Transcription is resuming now."
-        } else {
-            alert.messageText = "Recovered \(recovered) recordings from before the last quit"
-            alert.informativeText = "They're being transcribed in the background."
+        guard let notice = SessionRepairRouting.recoveryNotice(for: result) else { return }
+        if let payload = notice.localRepairPayloads.first {
+            sessionRepairPayload = payload
+            menu?.outcomeFolderURL = payload.sessionDirectory
         }
+        let alert = NSAlert()
+        alert.messageText = notice.title
+        alert.informativeText = notice.message
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Open Scribe folder")
@@ -593,6 +735,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handle(_ action: RecordingMenu.Action) async {
         switch action {
         case .record: await startRecording()
+        case .retryFailedSession: await retryFailedSession()
+        case .retryRecentFailedSession(let sessionURL): await retryFailedSession(at: sessionURL)
+        case .repairRecentFailedSession(let sessionURL):
+            markRecoverySetupRequired(payload: SessionRepairRouting.LocalRepairPayload(
+                sessionDirectory: sessionURL,
+                reason: "Saved audio is missing; open setup to repair this failed session before retrying."
+            ))
+            await presentSetupRequiredPopover()
         case .stop:   await stopRecording()
         case .quit:   NSApp.terminate(nil)
         case .openSettings:
@@ -604,13 +754,127 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+
+    @MainActor
+    private func retryFailedSession() async {
+        guard let sessionURL = menu?.outcomeFolderURL ?? mostRecentFailedSessionURL() else {
+            Log.engine.error("Failed-session retry unavailable: no failed session with saved audio")
+            status = .failed
+            menu?.outcomeFolderURL = nil
+            menu?.rebuild(for: status)
+            return
+        }
+        await retryFailedSession(at: sessionURL)
+    }
+
+    @MainActor
+    private func retryFailedSession(at sessionURL: URL) async {
+        let savedAudioURL = sessionURL.appendingPathComponent("audio.m4a")
+        guard FileManager.default.fileExists(atPath: savedAudioURL.path) else {
+            Log.engine.error("Failed-session retry unavailable: saved audio missing for selected failed session")
+            if let frontmatter = TranscriptFrontmatterReader.read(at: sessionURL.appendingPathComponent("transcript.md")),
+               frontmatter.context.engine.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).lowercased() == "cohere" {
+                markRecoverySetupRequired(payload: SessionRepairRouting.LocalRepairPayload(
+                    sessionDirectory: sessionURL,
+                    reason: "Saved audio is missing; repair this Local session before retrying."
+                ))
+            } else {
+                status = .failed
+                menu?.outcomeFolderURL = nil
+                menu?.rebuild(for: status)
+            }
+            return
+        }
+        menu?.outcomeFolderURL = sessionURL
+        status = .starting
+        menu?.rebuild(for: status)
+        let localStatus = await currentLocalModelStatus()
+        do {
+            let final = try await Self.retryFailedSession(
+                at: sessionURL,
+                localModelStatus: localStatus
+            )
+            switch final {
+            case .complete:
+                status = .finalized
+                markSavedFlash()
+            case .failed, .cancelled:
+                status = .failed
+            }
+        } catch let error as FailedSessionRetryCoordinator.RetryError {
+            Log.engine.error("Failed-session retry could not start: \(String(describing: error), privacy: .public)")
+            if case .localSetupRequired = error {
+                markRecoverySetupRequired(payload: SessionRepairRouting.LocalRepairPayload(
+                    sessionDirectory: sessionURL,
+                    reason: "Cohere setup is required before retrying this Local session."
+                ))
+            } else {
+                status = .failed
+            }
+        } catch {
+            Log.engine.error("Failed-session retry could not start: \(String(describing: error), privacy: .public)")
+            status = .failed
+        }
+        menu?.rebuild(for: status)
+    }
+
+    @MainActor
+    private func mostRecentFailedSessionURL() -> URL? {
+        SessionFolderEnumerator.recents(under: outputRoot, limit: 5)
+            .first { entry in
+                entry.status == .failed
+                    && FileManager.default.fileExists(atPath: entry.directory.appendingPathComponent("audio.m4a").path)
+            }?
+            .directory
+    }
+
+    @MainActor
+    private func currentLocalModelStatus() async -> LocalModelCacheStatus {
+        await localModelManager.status()
+    }
+
+    nonisolated static func retryFailedSession(
+        at sessionURL: URL,
+        localModelStatus: LocalModelCacheStatus,
+        engineFactory: (@Sendable (EngineMode) -> TranscriptionEngine)? = nil
+    ) async throws -> TranscriptionWorker.FinalState {
+        try await FailedSessionRetryCoordinator.retry(
+            sessionDirectory: sessionURL,
+            engineFactory: { mode in
+                if let engine = engineFactory?(mode) { return engine }
+                return EngineSelector.makeEngine(
+                    for: mode,
+                    cloudAPIKey: {
+                        (try? KeychainStore(service: keychainService, account: keychainAccount).read()) ?? ""
+                    }
+                )
+            },
+            localModelStatus: localModelStatus
+        )
+    }
+
     /// User-triggered Setup Required popover. Re-runs the audit so the
     /// UI reflects whichever permissions have been fixed since the last
     /// record attempt.
     @MainActor
     private func presentSetupRequiredPopover() async {
-        let snap = settings
-        let report = await preflightDoctor.audit(outputRoot: snap.outputRoot, engineMode: snap.engineMode)
+        let report: PreflightReport
+        let payload = sessionRepairPayload
+        if let payload {
+            report = SessionRepairRouting.setupReport(for: payload)
+        } else {
+            let snap = settings
+            report = await preflightDoctor.audit(outputRoot: snap.outputRoot, engineMode: snap.engineMode)
+        }
+        showSetupRequiredPopover(report: report, sessionRepairPayload: payload)
+    }
+
+    @MainActor
+    private func showSetupRequiredPopover(
+        report: PreflightReport,
+        sessionRepairPayload payload: SessionRepairRouting.LocalRepairPayload?
+    ) {
+        setupEngineFocus = setupRequiredEngineFocus(report: report, sessionRepairPayload: payload)
         let steps = PermissionRemediation.steps(from: report)
         guard let anchor = statusItem?.button, let popover = setupPopover else { return }
         popover.show(
@@ -620,6 +884,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] in
             Task { await self?.presentSetupRequiredPopover() }
         }
+    }
+
+    @MainActor
+    private func setupRequiredEngineFocus(
+        report: PreflightReport,
+        sessionRepairPayload payload: SessionRepairRouting.LocalRepairPayload?
+    ) -> EngineSettingsCardFocus? {
+        SessionRepairRouting.engineSettingsFocus(for: payload)
+            ?? report.blockers.compactMap { EngineSettingsNavigation.focus(for: $0) }.first
     }
 
     /// Builds the inline-action handler set the popover hands to its
@@ -667,7 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenInAppSettings: { [weak self] in
                 guard let self else { return }
                 self.setupPopover?.close()
-                self.settingsWindowController?.show()
+                self.settingsWindowController?.show(focus: self.setupEngineFocus)
             }
         )
     }
@@ -768,7 +1041,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func startRecording() async {
+    private func runOnboardingTestRecording() async -> Bool {
+        let route = OnboardingTestRecordingRoute(
+            snapshot: { [weak self] in
+                guard let self else { return await Self.emptyOnboardingSnapshot() }
+                return await self.makeOnboardingResumeSnapshot()
+            },
+            starter: AppOnboardingTestRecordingStarter(start: { [weak self] allowPendingPrivacyAcknowledgementForOnboardingTest in
+                guard let self else { return false }
+                await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)
+                guard self.status == .recording else { return false }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self.stopRecording()
+                return true
+            })
+        )
+        return await route.run()
+    }
+
+    @MainActor
+    private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async {
         // Codex P2 fix: claim .starting before any await so concurrent
         // detection candidates (or a menu Record + a candidate firing
         // simultaneously) can't pass the handleDetectionCandidate guard
@@ -784,10 +1076,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Phase η spec line 348: recording is gated on privacy ack.
         // If the sheet was dismissed via cmd-q without acknowledging,
         // re-present it instead of starting the engine.
-        guard settings.privacyAcknowledged else {
+        guard settings.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest else {
             Log.lifecycle.info("startRecording blocked: privacy acknowledgement pending")
             presentPrivacyAcknowledgementIfNeeded()
             return
+        }
+        if allowPendingPrivacyAcknowledgementForOnboardingTest && !settings.privacyAcknowledged {
+            Log.lifecycle.info("startRecording proceeding for consented onboarding test recording before final privacy acknowledgement")
         }
 
         self.status = .starting
@@ -837,16 +1132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.setupNeedsAttention = true
             menu?.rebuild(for: status)
             applyTrustIcon()
-            let steps = PermissionRemediation.steps(from: report)
-            if let anchor = statusItem?.button, let popover = setupPopover {
-                popover.show(
-                    steps: steps,
-                    anchor: anchor,
-                    actions: makePopoverActions()
-                ) { [weak self] in
-                    Task { await self?.presentSetupRequiredPopover() }
-                }
-            }
+            self.sessionRepairPayload = nil
+            showSetupRequiredPopover(report: report, sessionRepairPayload: nil)
             return
         case .allowWithWarnings(let reasons):
             Log.lifecycle.info("startRecording proceeding with warnings: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
@@ -868,10 +1155,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let stream = SCKDualOutputStream(sampleRate: 48000, channelCount: 1)
             let mic = SCKAudioCaptureSource(kind: .microphone, stream: stream)
             let sys = SCKAudioCaptureSource(kind: .system, stream: stream)
-            let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+            let sessionEngineMode = snapshot.engineMode
+            let session = try CaptureSession(
+                directory: dir,
+                mic: mic,
+                system: sys,
+                sampleRate: 48000,
+                channelCount: 1,
+                sessionEngineIdentifier: sessionEngineMode.sessionEngineIdentifier,
+                liveLevelHandler: { [weak self] stream, rms in
+                    Task { @MainActor [weak self] in
+                        self?.recordLiveAudioLevel(stream: stream, rms: rms)
+                    }
+                }
+            )
             self.session = session
             self.currentSessionDirectory = dir
             self.currentSessionStartedAt = Date()
+            self.currentSessionEngineMode = sessionEngineMode
+            menu?.sessionEngineMode = sessionEngineMode
+            self.currentDiagnosticsLiveLevels = nil
 
             // Slice 6: prefer the watcher cache (already populated, no
             // EventKit round-trip on the start path). Fall back to the
@@ -907,13 +1210,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.currentSessionDirectory = nil
             self.currentSessionStartedAt = nil
             self.currentCalendarEvent = nil
+            self.currentSessionEngineMode = nil
+            self.currentDiagnosticsLiveLevels = nil
             stopElapsedTickTimer()
             menu?.outcomeFolderName = nil
             menu?.outcomeFolderURL = nil
+            menu?.sessionEngineMode = .cloud
             menu?.recordingSourceLabel = "Recording"
             menu?.elapsedSeconds = 0
             menu?.rebuild(for: status)
             applyTrustIcon()
+        }
+    }
+
+    @MainActor
+    private func recordLiveAudioLevel(stream: PTSCollector.StreamID, rms: Float) {
+        let safeRMS = Double(min(max(rms, 0), 1))
+        let existing = currentDiagnosticsLiveLevels
+        switch stream {
+        case .mic:
+            currentDiagnosticsLiveLevels = .init(micRMS: safeRMS, systemRMS: existing?.systemRMS)
+            menu?.micLevel = Float(safeRMS)
+        case .system:
+            currentDiagnosticsLiveLevels = .init(micRMS: existing?.micRMS, systemRMS: safeRMS)
+            menu?.systemLevel = Float(safeRMS)
         }
     }
 
@@ -955,6 +1275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let endedAt = Date()
         let started = currentSessionStartedAt ?? endedAt
         let event = currentCalendarEvent
+        let sessionEngineMode = currentSessionEngineMode ?? settings.engineMode
 
         var stopSucceeded = false
         do {
@@ -969,9 +1290,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.currentSessionDirectory = nil
         self.currentSessionStartedAt = nil
         self.currentCalendarEvent = nil
+        self.currentSessionEngineMode = nil
+        self.currentDiagnosticsLiveLevels = nil
         stopElapsedTickTimer()
         menu?.outcomeFolderName = nil
         menu?.outcomeFolderURL = nil
+        menu?.sessionEngineMode = sessionEngineMode
         menu?.recordingSourceLabel = "Recording"
         menu?.elapsedSeconds = 0
         menu?.rebuild(for: status)
@@ -987,17 +1311,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event)
+        let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: sessionEngineMode)
         do {
             try TranscriptWriter.writePending(at: dir.transcript, context: context)
         } catch {
             Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
         }
 
-        let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams, engineMode: settings.engineMode)
+        let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams, engineMode: sessionEngineMode)
         let id = UUID()
         let durationSeconds = Int(endedAt.timeIntervalSince(started))
-        let engineLabel = settings.engineMode == .cloud ? "ElevenLabs" : "Local"
+        let engineLabel = sessionEngineMode == .cloud ? "ElevenLabs" : "Cohere"
         let task = Task { [weak self] in
             let outcome = await worker.run()
             await MainActor.run {
@@ -1009,6 +1333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.menu?.rebuild(for: self.status)
                 switch outcome {
                 case .complete:
+                    self.menu?.sessionEngineMode = .cloud
                     self.markSavedFlash()
                     self.presentSavedNotification(
                         dir: dir,
@@ -1017,9 +1342,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         engineLabel: engineLabel
                     )
                 case .failed(let reason):
+                    self.menu?.sessionEngineMode = .cloud
                     Log.engine.error("Worker terminated with failure: \(reason, privacy: .public)")
                     self.markFailureFlash()
                 case .cancelled:
+                    self.menu?.sessionEngineMode = .cloud
                     // App was quit / session forcibly aborted. Don't
                     // flash either success or failure; just settle
                     // back to idle.
@@ -1041,7 +1368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let title = event?.title ?? "Manual recording"
         let sizeBytes = totalAudioBytes(in: dir)
         let summary = SavedNotificationWindowController.Summary(
-            title: title,
+            title: "\(title) · transcript saved",
             durationSeconds: durationSeconds,
             sizeBytes: sizeBytes,
             engineLabel: engineLabel,
@@ -1065,6 +1392,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return total
+    }
+}
+
+private struct AppOnboardingTestRecordingStarter: OnboardingRecordingRouteStarting {
+    let start: @MainActor @Sendable (Bool) async -> Bool
+
+    func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool) async -> Bool {
+        await start(allowPendingPrivacyAcknowledgementForOnboardingTest)
     }
 }
 
@@ -1206,13 +1541,13 @@ extension AppDelegate {
         let isoFmt = ISO8601DateFormatter()
 
         // Async probes. These match the preflight audit's source of
-        // truth (DefaultPermissionStatusProbe / DefaultEngineReadinessProbe /
+        // truth (DefaultPermissionStatusProbe / app-owned LocalModelManager readiness /
         // DefaultOutputFolderProbe), so what the user sees in
         // Diagnostics is what the gate at record-time will see.
         let permProbe = DefaultPermissionStatusProbe(permissions: permissions)
         let folderProbe = DefaultOutputFolderProbe()
         let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
-        let engineProbe = DefaultEngineReadinessProbe(keychain: keychain)
+        let engineProbe = engineReadinessProbe()
         // Codex rc2-audit PRIVACY-2: distinguish keychain-unreadable
         // from "configured." If unreadable, surface a fixed sentinel
         // in outputRootHash rather than a phantom-keyed hash that
@@ -1234,8 +1569,12 @@ extension AppDelegate {
             engineProbe: engineProbe
         )
 
+        let permissionsView = await permsView
+
         return await DiagnosticsSnapshot(
             appVersion: BuildInfo.version,
+            osVersion: .init(ProcessInfo.processInfo.operatingSystemVersion),
+            activeCalendarSource: DiagnosticsCollector.activeCalendarSource(calendarPermission: permissionsView.calendar),
             exportedAt: isoFmt.string(from: Date()),
             settings: .init(
                 engineMode: snap.engineMode.rawValue,
@@ -1245,10 +1584,10 @@ extension AppDelegate {
                 outputRootHash: outputRootHash,
                 outputRootIsWritable: outputWritable
             ),
-            permissions: permsView,
+            permissions: permissionsView,
             engine: engineView,
             sessions: DiagnosticsCollector.collectSessions(under: snap.outputRoot),
-            liveLevels: nil  // wired in Phase ξ once AEC pipeline lands
+            liveLevels: currentDiagnosticsLiveLevels
         )
     }
 
@@ -1272,10 +1611,22 @@ extension AppDelegate {
     nonisolated static func emptyDiagnosticsSnapshot() -> DiagnosticsSnapshot {
         DiagnosticsSnapshot(
             appVersion: BuildInfo.version,
+            osVersion: .init(ProcessInfo.processInfo.operatingSystemVersion),
+            activeCalendarSource: "unknown",
             exportedAt: ISO8601DateFormatter().string(from: Date()),
             settings: .init(engineMode: "cloud", keepRawStreams: false, aecEnabled: true, privacyAcknowledged: false, outputRootHash: "", outputRootIsWritable: false),
             permissions: .init(microphone: "unknown", screenRecording: "unknown", calendar: "unknown"),
-            engine: .init(cloudKey: "missing"),
+            engine: .init(
+                selectedEngine: "cloud",
+                selectedEngineReady: false,
+                cloudKey: "missing",
+                localModelStatus: "notDownloaded",
+                localModelID: CohereMLXBackend.modelID,
+                localCachePathExists: false,
+                mlxAvailable: true,
+                localReady: false,
+                lastDownloadError: ""
+            ),
             sessions: .zero,
             liveLevels: nil
         )
@@ -1324,7 +1675,8 @@ extension AppDelegate {
         dir: SessionDirectory,
         startedAt: Date,
         endedAt: Date,
-        event: CalendarEvent?
+        event: CalendarEvent?,
+        engineMode: EngineMode = .cloud
     ) -> TranscriptContext {
         let isoFmt = ISO8601DateFormatter()
         let dayFmt = DateFormatter()
@@ -1335,7 +1687,7 @@ extension AppDelegate {
         return TranscriptContext(
             title: title,
             date: dayFmt.string(from: startedAt),
-            engine: "elevenlabs",
+            engine: engineMode.sessionEngineIdentifier,
             audioRelativePaths: ["mic.m4a", "system.m4a"],
             scheduledStart: event.map { isoFmt.string(from: $0.startDate) },
             scheduledEnd: event.map { isoFmt.string(from: $0.endDate) },
@@ -1353,7 +1705,8 @@ extension AppDelegate {
         context: TranscriptContext,
         event: CalendarEvent?,
         keepRawStreams: Bool = false,
-        engineMode: EngineMode = .cloud
+        engineMode: EngineMode = .cloud,
+        engineOverride: TranscriptionEngine? = nil
     ) -> TranscriptionWorker {
         // Pre-AEC default: single-channel diarized (slice 2 path).
         //
@@ -1377,7 +1730,7 @@ extension AppDelegate {
         // future flip to local mode lands the Cohere subprocess
         // backend without touching this site. Cloud mode reads the API
         // key lazily; local mode ignores it.
-        let backend = EngineSelector.makeEngine(
+        let backend = engineOverride ?? EngineSelector.makeEngine(
             for: engineMode,
             cloudAPIKey: { (try? keychain.read()) ?? "" }
         )
@@ -1386,7 +1739,8 @@ extension AppDelegate {
             audioURL: canonicalAudioURL,
             mode: .singleChannelDiarized(numSpeakers: 2),
             languageCode: nil,
-            keyterms: keyterms
+            keyterms: keyterms,
+            modelID: engineMode == .local ? CohereMLXBackend.modelID : "scribe_v2"
         )
         // SpeakerMappingBuilder returns empty for single-channel diarized
         // because diarization clusters voices by acoustic features, not by
@@ -1418,7 +1772,22 @@ extension AppDelegate {
     }
 
     @discardableResult
-    nonisolated static func runSupervisor(under root: URL, keepRawStreams: Bool = false, engineMode: EngineMode = .cloud) async -> SessionSupervisor.ScanResult {
+    nonisolated static func runSupervisor(
+        under root: URL,
+        keepRawStreams: Bool = false,
+        engineMode: EngineMode = .cloud,
+        workerFactory overrideWorkerFactory: SessionSupervisor.WorkerFactory? = nil,
+        engineFactory: (@Sendable (EngineMode) -> TranscriptionEngine)? = nil,
+        localModelStatus: (@Sendable () async -> LocalModelCacheStatus)? = nil
+    ) async -> SessionSupervisor.ScanResult {
+        let localStatusProvider: @Sendable () async -> LocalModelCacheStatus = localModelStatus ?? {
+            let manager = LocalModelManager(
+                cacheRoot: CohereMLXBackend.defaultModelCacheRoot,
+                downloader: HuggingFaceLocalModelDownloader()
+            )
+            return await manager.status()
+        }
+        let localStatus = await localStatusProvider()
         let supervisor = SessionSupervisor()
         let result = await supervisor.scanAndResume(
             under: root,
@@ -1431,7 +1800,7 @@ extension AppDelegate {
                 return TranscriptContext(
                     title: "Resumed session \(dir.url.lastPathComponent)",
                     date: dayFmt.string(from: now),
-                    engine: "elevenlabs",
+                    engine: "unknown",
                     audioRelativePaths: ["mic.m4a", "system.m4a"],
                     actualStart: isoFmt.string(from: now),
                     actualEnd: isoFmt.string(from: now),
@@ -1440,7 +1809,32 @@ extension AppDelegate {
                 )
             },
             workerFactory: { dir, ctx in
-                makeWorker(dir: dir, context: ctx, event: nil, keepRawStreams: keepRawStreams, engineMode: engineMode)
+                if let overrideWorkerFactory {
+                    return overrideWorkerFactory(dir, ctx)
+                }
+                let provenance = RecoveryEngineProvenance.resolve(
+                    sessionEngineIdentifier: ctx.engine,
+                    localModelStatus: localStatus
+                )
+                guard let persistedEngineMode = provenance.engineMode else {
+                    switch provenance {
+                    case .localSetupRequired:
+                        Log.engine.warning("supervisor: local session \(dir.url.lastPathComponent, privacy: .public) requires Cohere setup before recovery; leaving pending")
+                    case .missingOrInvalid:
+                        Log.engine.error("supervisor: session \(dir.url.lastPathComponent, privacy: .public) has missing engine provenance; leaving recoverable for repair")
+                    case .cloud, .localReady:
+                        break
+                    }
+                    return nil
+                }
+                return makeWorker(
+                    dir: dir,
+                    context: ctx,
+                    event: nil,
+                    keepRawStreams: keepRawStreams,
+                    engineMode: persistedEngineMode,
+                    engineOverride: engineFactory?(persistedEngineMode)
+                )
             }
         )
         // Codex Phase ζ P1.2: include partialAudioMarkedFailed +
@@ -1448,5 +1842,23 @@ extension AppDelegate {
         // not just the v0 fields.
         Log.lifecycle.info("Supervisor scan: resumed=\(result.resumed, privacy: .public), rescued=\(result.rescued, privacy: .public), markedFailed=\(result.markedFailed, privacy: .public), partialAudioMarkedFailed=\(result.partialAudioMarkedFailed, privacy: .public), recoveryDeferred=\(result.recoveryDeferred, privacy: .public), totalFailed=\(result.totalFailed, privacy: .public), skipped=\(result.skipped, privacy: .public)")
         return result
+    }
+}
+
+
+private extension EngineMode {
+    var sessionEngineIdentifier: String {
+        switch self {
+        case .cloud: return "elevenlabs"
+        case .local: return "cohere"
+        }
+    }
+
+    init?(sessionEngineIdentifier: String) {
+        switch sessionEngineIdentifier.lowercased() {
+        case "elevenlabs": self = .cloud
+        case "cohere": self = .local
+        default: return nil
+        }
     }
 }

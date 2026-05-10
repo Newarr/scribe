@@ -22,7 +22,15 @@ import TranscriberCore
 @MainActor
 final class RecordingMenu: NSObject, NSPopoverDelegate {
     enum Action {
-        case record, stop, quit, openSettings, openSetupRequired, openDiagnostics
+        case record
+        case retryFailedSession
+        case retryRecentFailedSession(URL)
+        case repairRecentFailedSession(URL)
+        case stop
+        case quit
+        case openSettings
+        case openSetupRequired
+        case openDiagnostics
     }
 
     /// Codex PM-review UX-7 (preserved): "Setup Required…" vs
@@ -57,6 +65,14 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         didSet { model.recordingSourceLabel = recordingSourceLabel }
     }
 
+    var micLevel: Float = 0 {
+        didSet { model.micLevel = micLevel }
+    }
+
+    var systemLevel: Float = 0 {
+        didSet { model.systemLevel = systemLevel }
+    }
+
     /// Where the saved transcript will land. AppDelegate sets this
     /// when a session starts so the recording surface's outcome
     /// strip can show the user the destination folder name. Nil
@@ -73,14 +89,25 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         didSet { model.appearanceTheme = appearanceTheme }
     }
 
+    /// Session-start engine snapshot for active recording/finalizing UI.
+    /// Settings changes after start must not relabel the in-flight session.
+    var sessionEngineMode: EngineMode = .cloud {
+        didSet { model.sessionEngineMode = sessionEngineMode }
+    }
+
     let popover: NSPopover
     private let onAction: (Action) -> Void
+    private let localModelStatusProvider: () async -> LocalModelCacheStatus
     private let model: RecordingMenuModel
     private weak var anchorButton: NSStatusBarButton?
     private var localMouseDownMonitor: Any?
     private var globalMouseDownMonitor: Any?
 
-    init(onAction: @escaping (Action) -> Void) {
+    init(
+        localModelStatusProvider: @escaping () async -> LocalModelCacheStatus = { .notDownloaded(modelID: CohereMLXBackend.modelID) },
+        onAction: @escaping (Action) -> Void
+    ) {
+        self.localModelStatusProvider = localModelStatusProvider
         self.onAction = onAction
         let model = RecordingMenuModel(status: .idle)
         self.model = model
@@ -135,6 +162,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         // view so this stays cheap; the enumerator only touches
         // frontmatter, never bodies.
         model.refreshRecents(under: outputRoot)
+        refreshRecentActionsReadiness()
         applyDebugMenuFixtureIfNeeded()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         // Codex UX-4: confidential UI. NSPopover hosts a backing
@@ -154,6 +182,20 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
             self?.removeOutsideClickMonitors()
         }
     }
+    private func refreshRecentActionsReadiness() {
+        let entries = model.recents
+        guard entries.contains(where: { $0.status == .failed && $0.hasSavedAudio && $0.engineIdentifier?.lowercased() == "cohere" }) else {
+            model.localModelReadyForRetry = true
+            return
+        }
+        model.localModelReadyForRetry = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let status = await self.localModelStatusProvider()
+            self.model.localModelReadyForRetry = status.isReady
+        }
+    }
+
 
     private func installOutsideClickMonitors() {
         removeOutsideClickMonitors()
@@ -242,6 +284,8 @@ final class RecordingMenuModel: ObservableObject {
     @Published var outcomeFolderName: String? = nil
     @Published var outcomeFolderURL: URL? = nil
     @Published var appearanceTheme: AppearanceTheme = .system
+    @Published var sessionEngineMode: EngineMode = .cloud
+    @Published var localModelReadyForRetry: Bool? = nil
 
     init(status: SessionStatus) {
         self.status = status
@@ -356,7 +400,16 @@ private struct RecordingPopoverContent: View {
             } else {
                 VStack(spacing: 1) {
                     ForEach(model.recents, id: \.directory) { entry in
-                        MenuRow(entry: entry)
+                        MenuRow(
+                            entry: entry,
+                            onRetry: { sessionURL in
+                                onAction(.retryRecentFailedSession(sessionURL))
+                            },
+                            onRepair: { sessionURL in
+                                onAction(.repairRecentFailedSession(sessionURL))
+                            },
+                            localModelReadyForRetry: model.localModelReadyForRetry
+                        )
                     }
                 }
                 .padding(6)
@@ -397,9 +450,10 @@ private struct RecordingPopoverContent: View {
                     .foregroundStyle(palette.text)
                     .monospacedDigit()
             }
+            privacyStatusBlock(palette: palette)
             AnimatedWaveform(palette: palette)
-                .frame(height: 148)
-            Text("Recording locally · saved when you stop")
+                .frame(height: 118)
+            Text(activeStatusCopy)
                 .font(DS.Font.body)
                 .foregroundStyle(palette.secondaryText)
             if let folder = model.outcomeFolderName {
@@ -425,14 +479,75 @@ private struct RecordingPopoverContent: View {
                 )
             }
             HStack {
+                if model.outcomeFolderURL != nil {
+                    Button("Open folder") { openActiveFolder() }
+                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                }
                 Spacer()
-                Button("Stop") { onAction(.stop) }
+                Button("Stop now") { onAction(.stop) }
                     .keyboardShortcut("s", modifiers: [.command])
                     .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
+    }
+
+    private func privacyStatusBlock(palette: RecordingPopoverPalette) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            privacyLine("Audio: local" + destinationSuffix)
+            privacyLine("Captured: mic + system audio · no video, no screenshots")
+            privacyLine("Engine: \(engineDisplayName)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(palette.controlFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(palette.line, lineWidth: 1)
+        )
+    }
+
+    private func privacyLine(_ text: String) -> some View {
+        Text(text)
+            .font(DS.Font.monoSmall)
+            .tracking(0.4)
+            .foregroundStyle(DS.Color.foregroundSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
+    private var destinationSuffix: String {
+        guard let folder = model.outcomeFolderName, !folder.isEmpty else { return "" }
+        return " · ~/Scribe/\(folder)/"
+    }
+
+    private var engineDisplayName: String {
+        switch model.sessionEngineMode {
+        case .cloud: return "ElevenLabs (cloud)"
+        case .local: return "Cohere (local)"
+        }
+    }
+
+    private var activeStatusCopy: String {
+        switch (model.status, model.sessionEngineMode) {
+        case (.finalized, .local):
+            return "Finalizing audio for Cohere transcription on this Mac."
+        case (.finalized, .cloud):
+            return "Finalizing audio for ElevenLabs transcription."
+        case (_, .local):
+            return "Recording locally · Cohere will transcribe on this Mac."
+        case (_, .cloud):
+            return "Recording locally · ElevenLabs will transcribe after you stop."
+        }
+    }
+
+    private func openActiveFolder() {
+        if let url = model.outcomeFolderURL { NSWorkspace.shared.open(url) }
     }
 
     private func failedLayout(palette: RecordingPopoverPalette) -> some View {
@@ -449,8 +564,13 @@ private struct RecordingPopoverContent: View {
                 .foregroundStyle(palette.secondaryText)
             HStack {
                 Spacer()
-                Button("Retry") { onAction(.record) }
-                    .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+                if model.outcomeFolderURL != nil {
+                    Button("Retry") { onAction(.retryFailedSession) }
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+                } else {
+                    Button("Open setup") { onAction(.openSetupRequired) }
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -672,6 +792,9 @@ private struct IconButtonStyle: ButtonStyle {
 /// have them and they were creating row clutter).
 private struct MenuRow: View {
     let entry: SessionFolderEnumerator.Entry
+    let onRetry: (URL) -> Void
+    let onRepair: (URL) -> Void
+    let localModelReadyForRetry: Bool?
     @State private var hovering: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -693,6 +816,23 @@ private struct MenuRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                switch SessionRepairRouting.recentAction(for: entry, localModelReady: localModelReadyForRetry) {
+                case .retry(let sessionDirectory):
+                    Button("Retry") { onRetry(sessionDirectory) }
+                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                        .controlSize(.small)
+                case .repair(let payload):
+                    Button("Repair") { onRepair(payload.sessionDirectory) }
+                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                        .controlSize(.small)
+                case .loading:
+                    Button("Checking…") {}
+                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                        .controlSize(.small)
+                        .disabled(true)
+                case .none:
+                    EmptyView()
+                }
                 Text(relativeTime)
                     .font(DS.Font.monoSmall)
                     .tracking(0.6)
@@ -712,6 +852,17 @@ private struct MenuRow: View {
         .contextMenu {
             Button("Open transcript") { openTranscript() }
             Button("Open folder") { NSWorkspace.shared.open(entry.directory) }
+            switch SessionRepairRouting.recentAction(for: entry, localModelReady: localModelReadyForRetry) {
+            case .retry(let sessionDirectory):
+                Button("Retry failed session") { onRetry(sessionDirectory) }
+            case .repair(let payload):
+                Button("Repair failed session") { onRepair(payload.sessionDirectory) }
+            case .loading:
+                Button("Checking local model…") {}
+                    .disabled(true)
+            case .none:
+                EmptyView()
+            }
         }
     }
 
@@ -748,7 +899,7 @@ private struct MenuRow: View {
         case .complete: return "saved"
         case .pending: return "pending"
         case .retrying: return "retrying"
-        case .failed: return "failed"
+        case .failed: return entry.hasSavedAudio ? "failed · audio saved" : "failed · repair needed"
         }
     }
 

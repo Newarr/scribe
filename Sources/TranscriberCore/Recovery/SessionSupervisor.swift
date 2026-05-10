@@ -5,7 +5,7 @@ import Foundation
 /// `retrying` (or any session whose audio was rescued from `.partial` files).
 /// Sessions with no audio at all are stamped `failed` so they don't loop forever.
 public actor SessionSupervisor {
-    public typealias WorkerFactory = @Sendable (SessionDirectory, TranscriptContext) -> TranscriptionWorker
+    public typealias WorkerFactory = @Sendable (SessionDirectory, TranscriptContext) -> TranscriptionWorker?
     public typealias ContextFactory = @Sendable (SessionDirectory) -> TranscriptContext
 
     public struct ScanResult: Equatable, Sendable {
@@ -24,6 +24,14 @@ public actor SessionSupervisor {
         /// count against `markedFailed` because the session isn't
         /// terminal.
         public var recoveryDeferred: Int = 0
+        /// Persisted Local sessions whose Cohere model/runtime is not ready.
+        /// They remain pending and should surface Setup Required / repair UI.
+        public var localSetupRequired: Int = 0
+        /// Session-specific persisted Local directories that need Cohere setup/repair.
+        public var localSetupRequiredSessions: [URL] = []
+        /// Sessions with missing/invalid durable engine provenance. They fail
+        /// closed instead of using current Settings or an implicit Cloud engine.
+        public var missingEngineProvenance: Int = 0
 
         /// Convenience: every transcript this scan terminally marked
         /// failed. Codex Phase ζ P1.2 — keeps callers from off-by-one
@@ -108,7 +116,7 @@ public actor SessionSupervisor {
                 // Codex Phase ζ P0.2: rebuild the context with the
                 // correct audioRelativePaths so frontmatter + body
                 // match reality (don't promise files that aren't there).
-                let baseContext = existing?.context ?? contextFactory(dir)
+                let baseContext = Self.recoveryContext(existing: existing, dir: dir, contextFactory: contextFactory)
                 let survivingFile = stream == .mic ? dir.micFinal : dir.systemFinal
                 let context = Self.contextOverridingAudio(
                     base: baseContext,
@@ -134,7 +142,7 @@ public actor SessionSupervisor {
                 // Codex Phase ζ P0.2: same fix — rebuild context with
                 // empty audioRelativePaths so the failed transcript
                 // doesn't promise files that don't exist.
-                let baseContext = existing?.context ?? contextFactory(dir)
+                let baseContext = Self.recoveryContext(existing: existing, dir: dir, contextFactory: contextFactory)
                 let context = Self.contextOverridingAudio(base: baseContext, paths: [])
                 do {
                     try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: "Session audio is missing. The capture session may have been interrupted before any audio was written.")
@@ -149,8 +157,20 @@ public actor SessionSupervisor {
             // orphans) — prefer the on-disk context (carries title +
             // attendees + language from the original session) over the
             // placeholder factory.
-            let context = existing?.context ?? contextFactory(dir)
-            let worker = workerFactory(dir, context)
+            let context = Self.recoveryContext(existing: existing, dir: dir, contextFactory: contextFactory)
+            guard let worker = workerFactory(dir, context) else {
+                switch context.engine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+                case "cohere":
+                    result.localSetupRequired += 1
+                    result.localSetupRequiredSessions.append(dir.url)
+                case "elevenlabs":
+                    break
+                default:
+                    result.missingEngineProvenance += 1
+                }
+                result.skipped += 1
+                continue
+            }
             workers.append(worker)
             result.resumed += 1
         }
@@ -188,6 +208,42 @@ public actor SessionSupervisor {
                 }
             }
         }
+    }
+
+    private static func recoveryContext(
+        existing: TranscriptFrontmatterReader.Frontmatter?,
+        dir: SessionDirectory,
+        contextFactory: ContextFactory
+    ) -> TranscriptContext {
+        if let existing { return existing.context }
+        let base = contextFactory(dir)
+        guard let manifest = SessionStartManifest.read(at: dir.startManifest) else {
+            return contextOverridingEngine(base: base, engine: "unknown")
+        }
+        return contextOverridingEngine(base: base, engine: manifest.engine)
+    }
+
+    private static func contextOverridingEngine(
+        base: TranscriptContext,
+        engine: String
+    ) -> TranscriptContext {
+        TranscriptContext(
+            title: base.title,
+            date: base.date,
+            engine: engine,
+            audioRelativePaths: base.audioRelativePaths,
+            scheduledStart: base.scheduledStart,
+            scheduledEnd: base.scheduledEnd,
+            actualStart: base.actualStart,
+            actualEnd: base.actualEnd,
+            organizer: base.organizer,
+            location: base.location,
+            calendarEventID: base.calendarEventID,
+            joinedLate: base.joinedLate,
+            elapsedAtStartSeconds: base.elapsedAtStartSeconds,
+            attendees: base.attendees,
+            language: base.language
+        )
     }
 
     /// Codex Phase ζ P0.2: when writing a failed transcript for a

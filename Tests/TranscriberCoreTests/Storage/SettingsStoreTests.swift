@@ -288,4 +288,70 @@ final class SettingsStoreTests: XCTestCase {
         )
         XCTAssertEqual(syncSnap, target)
     }
+    func testEngineSelectionRefusesUnavailableLocalAndPreservesPriorEngine() async throws {
+        let current = EngineMode.cloud
+        let unavailableStates: [LocalModelCacheStatus] = [
+            .notDownloaded(modelID: CohereMLXBackend.modelID),
+            .downloading(modelID: CohereMLXBackend.modelID, progress: .init(completedBytes: 1, totalBytes: 10)),
+            .verifying(modelID: CohereMLXBackend.modelID),
+            .failed(modelID: CohereMLXBackend.modelID, reason: .init(code: .verificationFailed, message: "bad cache"), retryAvailable: true),
+            .unsupported(modelID: CohereMLXBackend.modelID, reason: .init(code: .unsupportedRuntime, message: "unsupported"))
+        ]
+
+        for status in unavailableStates {
+            let attempt = await EngineSelectionPolicy.evaluate(
+                requested: .local,
+                current: current,
+                readiness: StubReadiness(cloudKey: true, localStatus: status)
+            )
+            XCTAssertFalse(attempt.accepted, "Local must not be selectable for \(status)")
+            XCTAssertEqual(attempt.selectedEngineMode, current)
+            XCTAssertNotNil(attempt.repairReason)
+        }
+    }
+
+    func testEngineSelectionAcceptsVerifiedLocalWithoutRestart() async throws {
+        let verified = LocalModelCacheStatus.verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: tempDir(), diskUsageBytes: 1))
+        let attempt = await EngineSelectionPolicy.evaluate(
+            requested: .local,
+            current: .cloud,
+            readiness: StubReadiness(cloudKey: false, localStatus: verified)
+        )
+        XCTAssertTrue(attempt.accepted)
+        XCTAssertEqual(attempt.selectedEngineMode, .local)
+        XCTAssertNil(attempt.repairReason)
+    }
+
+    func testStoreSetEngineModeIfReadyDoesNotPersistRejectedLocal() async throws {
+        let suite = try makeSuite()
+        let root = tempDir()
+        let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: root, engineMode: .cloud))
+
+        let rejected = await store.setEngineModeIfReady(.local, readiness: StubReadiness(
+            cloudKey: true,
+            localStatus: .failed(modelID: CohereMLXBackend.modelID, reason: .init(code: .verificationFailed, message: "removed"), retryAvailable: true)
+        ))
+        XCTAssertFalse(rejected.accepted)
+        let rejectedSnapshot = await store.snapshot()
+        XCTAssertEqual(rejectedSnapshot.engineMode, .cloud)
+
+        let accepted = await store.setEngineModeIfReady(.local, readiness: StubReadiness(
+            cloudKey: false,
+            localStatus: .verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: root, diskUsageBytes: 1))
+        ))
+        XCTAssertTrue(accepted.accepted)
+        let acceptedSnapshot = await store.snapshot()
+        XCTAssertEqual(acceptedSnapshot.engineMode, .local)
+    }
+
+}
+
+
+private struct StubReadiness: EngineReadinessProbing {
+    let cloudKey: Bool
+    let localStatus: LocalModelCacheStatus
+
+    func cloudKeyAvailable() async -> Bool { cloudKey }
+    func localModelStatus() async -> LocalModelCacheStatus { localStatus }
+    func localModelID() -> String { CohereMLXBackend.modelID }
 }

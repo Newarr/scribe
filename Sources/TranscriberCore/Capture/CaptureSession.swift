@@ -10,6 +10,8 @@ public actor CaptureSession {
     private nonisolated let micWriter: AudioFileWriter
     private nonisolated let systemWriter: AudioFileWriter
     private nonisolated let collector: PTSCollector
+    private nonisolated let sessionEngineIdentifier: String
+    private nonisolated let liveLevelHandler: (@Sendable (PTSCollector.StreamID, Float) -> Void)?
     /// Codex rc2-audit CAP-3: latched stop task. Concurrent stop()
     /// callers await the SAME task instead of returning immediately
     /// when status is `.stopping`. Without this, a Stop-during-Stop
@@ -29,11 +31,15 @@ public actor CaptureSession {
         mic: AudioCaptureSource,
         system: AudioCaptureSource,
         sampleRate: Int,
-        channelCount: Int
+        channelCount: Int,
+        sessionEngineIdentifier: String = "elevenlabs",
+        liveLevelHandler: (@Sendable (PTSCollector.StreamID, Float) -> Void)? = nil
     ) throws {
         self.directory = directory
         self.mic = mic
         self.system = system
+        self.sessionEngineIdentifier = sessionEngineIdentifier
+        self.liveLevelHandler = liveLevelHandler
         self.micWriter = try AudioFileWriter(url: directory.micPartial, sampleRate: sampleRate, channelCount: channelCount)
         self.systemWriter = try AudioFileWriter(url: directory.systemPartial, sampleRate: sampleRate, channelCount: channelCount)
         // Per-buffer PTS log feeds streaming finalize (Phase ε) and AEC
@@ -57,6 +63,15 @@ public actor CaptureSession {
             throw CaptureError.alreadyClaimed
         }
         captureClaim = claim
+
+        do {
+            try SessionStartManifest.write(engine: sessionEngineIdentifier, at: directory.startManifest)
+        } catch {
+            SessionClaim.release(claim)
+            captureClaim = nil
+            status = .failed
+            throw error
+        }
 
         var startedWriters = false
         var startedMic = false
@@ -215,6 +230,7 @@ public actor CaptureSession {
         ---
         schema: transcriber/v1
         status: pending
+        engine: \(sessionEngineIdentifier)
         audio:
           - mic.m4a
           - system.m4a
@@ -257,6 +273,42 @@ public actor CaptureSession {
         }
         guard outcome == .appended else { return }
         collector.observe(stream, buffer: buffer)
+        if let rms = Self.rmsLevel(from: buffer) {
+            liveLevelHandler?(stream, rms)
+        }
+    }
+
+    private nonisolated static func rmsLevel(from buffer: CMSampleBuffer) -> Float? {
+        guard let dataBuffer = CMSampleBufferGetDataBuffer(buffer) else { return nil }
+
+        var length = 0
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        let status = CMBlockBufferGetDataPointer(
+            dataBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: &length,
+            totalLengthOut: &totalLength,
+            dataPointerOut: &dataPointer
+        )
+        guard status == kCMBlockBufferNoErr,
+              let dataPointer,
+              totalLength >= MemoryLayout<Float32>.size else {
+            return nil
+        }
+
+        let sampleCount = totalLength / MemoryLayout<Float32>.size
+        guard sampleCount > 0 else { return nil }
+
+        let samples = dataPointer.withMemoryRebound(to: Float32.self, capacity: sampleCount) { pointer in
+            UnsafeBufferPointer(start: pointer, count: sampleCount)
+        }
+        var sumSquares: Float = 0
+        for sample in samples {
+            guard sample.isFinite else { continue }
+            sumSquares += sample * sample
+        }
+        return min(max(sqrt(sumSquares / Float(sampleCount)), 0), 1)
     }
 
     private func failAndCleanup() async {

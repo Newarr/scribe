@@ -144,7 +144,7 @@ Session claim:
 ## Default Settings
 
 - Mode: `Transcribe + save audio`.
-- Primary engine: ElevenLabs (cloud). Cohere (local) downloads in the background during onboarding regardless of which engine the user picks. A keyless user gets a working app; a keyed user gets a fallback when cloud fails.
+- Primary engine: explicit user-selected `cloud` or `local`. Cloud is ElevenLabs (`scribe_v2`); Local is Cohere via `mlx-audio-swift` + `MLXAudioSTT.CohereTranscribeModel` with pinned model ID `beshkenadze/cohere-transcribe-03-2026-mlx-fp16`. Cohere (local) downloads in the background during onboarding regardless of which engine the user picks. A keyless user gets a working app; a keyed user gets a ready explicit alternative when cloud fails.
 - Output: one folder per meeting under `~/Scribe/`. Avoid `~/Documents/Scribe/` because Documents may be inside iCloud Desktop & Documents sync. `~/Movies/Scribe/` is an acceptable alternative.
 - Calendar context sharing: keyterms only.
 - Auto-stop guard: enabled.
@@ -275,7 +275,7 @@ Recents section (in the menu bar's main popover, not the active-recording popove
 
 - Last 5 saved sessions, sourced from `outputRoot/` by mtime.
 - Each item shows: title, duration, time-of-day or relative day (`12:34 today`, `Yesterday`, `Tue`).
-- Inline actions per item: `Open Folder`, `Open Transcript`. Failed sessions also show `Retry`. (Later work.)
+- Inline actions per item: `Open Folder`, `Open Transcript`. Failed sessions show `Retry` when saved audio exists and the persisted engine is ready; if the persisted Local engine needs setup, the action routes to Cohere repair instead of Cloud or a new recording.
 - 5 items only — past that is a history UI, which v1 does not ship.
 - No `Delete audio` action here; bulk audio management lives in Settings → Storage.
 
@@ -433,20 +433,35 @@ Retry policy (cloud transcription):
 
 Local mode (Cohere):
 
-- Target local model. Treat as a spike until macOS runtime is proven.
-- Local mode must not send audio or calendar context to any transcription provider.
-- No silent fallback in either direction (local → cloud or cloud → local). Engine switches are explicit user actions.
+- Local runtime is native Swift/MLX: `mlx-audio-swift` with `MLXAudioSTT.CohereTranscribeModel`, not Rust, Python, shell, or an external executable.
+- Pinned model ID: `beshkenadze/cohere-transcribe-03-2026-mlx-fp16`. Download, readiness, diagnostics, verification, and transcription all use this identity; no `latest` alias or alternate model is exposed.
+- Local mode converts the transcription input to mono 16 kHz for inference while preserving the user-facing durable `audio.m4a` asset separately.
+- Local mode must not send audio, transcript text, calendar context, keyterms, or API keys to any transcription provider. Local artifacts may still store allowed calendar metadata locally.
+- No silent fallback in either direction (Local → Cloud or Cloud → Local). Engine switches are explicit Settings actions or explicit retries; active sessions keep the session-start engine snapshot.
 
 Cohere lifecycle:
 
-- Background download starts during the Screen Recording onboarding step, regardless of which engine the user picks. This guarantees a keyless user has a working app and a keyed user has a fallback when cloud fails.
-- Atomic write (`.partial` → rename) and checksum verification on completion. While unverified, the engine pointer stays on the user's chosen primary; switching to Local is blocked until verification.
-- If the download fails or is cancelled, surface clearly with a Retry action. Do not silently fall back.
-- User can later trigger redownload from Settings → Engine.
+- Background download starts during the Screen Recording onboarding step, regardless of which engine the user picks. This guarantees a keyless user has a working app and a keyed user has a ready explicit alternative when cloud fails.
+- Downloads write only `.partial` cache artifacts until all pinned artifacts complete, then atomically rename into the final cache.
+- Verification checks pinned model identity and reviewed artifact integrity (manifest/size/checksum or equivalent) before Local is marked ready. File existence alone is not readiness.
+- Local selection, Test Recording, manual recording, retry, and recovery are blocked until verification succeeds and MLX/runtime support is available.
+- Disk-space preflight runs before starting or resuming a model download and blocks unsafe writes.
+- If the download fails, is cancelled, is corrupt, or verification fails, surface a bounded reason plus Retry. Retry replaces failed partial cache state without touching session folders. Do not silently fall back.
+- User can later Remove the Local model from Settings → Engine. Removal requires confirmation, deletes only model cache files, and makes Local unavailable until redownloaded; sessions under `~/Scribe/` are untouched.
+
+End-to-end engine topology:
+
+1. Settings/onboarding stores an explicit selected engine (`cloud` or `local`).
+2. Preflight checks shared capture prerequisites for both engines, then Cloud key readiness or Local verified-cache + MLX readiness.
+3. Capture always records mic + system audio and finalizes durable `audio.m4a` before transcription starts.
+4. TranscriptionWorker uses the session-start engine snapshot: ElevenLabs receives audio plus bounded keyterms in Cloud mode; CohereMLXBackend runs locally with no provider calls or keyterms in Local mode.
+5. TranscriptWriter and MetadataJSONWriter write normal artifacts with `engine: elevenlabs` or `engine: cohere`.
+6. Retry/recovery reuse the existing session directory/audio and persisted engine; unavailable Local surfaces Cohere repair, unavailable Cloud surfaces key setup. Neither path invokes the other engine automatically.
+7. Diagnostics report selected-engine readiness, active/recent session engine provenance, local model status, pinned model ID, cache existence, MLX availability, and redacted last download error without raw paths or content.
 
 Engine failure:
 
-- A failed cloud transcription (timeout, 401, 429, 5xx after retries) writes a `status: failed` transcript per the Markdown Contract and surfaces a `Retry` affordance on the failed session in the menu-bar Recents popover. (Retry surface is later work.)
+- A failed transcription writes a `status: failed` transcript per the Markdown Contract, preserves `audio.m4a`, writes matching `metadata.json`, and surfaces `Retry` or repair on the failed session in the menu-bar Recents popover.
 - The user may switch engines manually (Settings → Engine) and re-trigger transcription on the saved audio. Both engines must be ready for this to be a one-click move; that's the reason Cohere is staged during onboarding rather than on first need.
 
 ## Output and Storage
@@ -639,7 +654,7 @@ ElevenLabs returned a timeout after 2 retries.
 - Or transcribe outside Scribe: open `audio.m4a` in any other tool.
 ```
 
-Retry should become one-click from the menu-bar Recents popover for any failed session within the last 24 hours, not just the most recent. This retry surface is later work.
+Retry is available from the menu-bar Recents popover for failed sessions with saved audio, reuses the existing session directory/audio, and honors the persisted engine. If the failed session used Cohere and Local setup is unavailable, Recents routes to Cohere repair/setup; it never starts a new recording, exposes import, or silently switches to Cloud.
 
 ### metadata.json sidecar
 
@@ -669,7 +684,7 @@ Requirements:
 
 - Store ElevenLabs key only in macOS Keychain.
 - Never store secrets in UserDefaults, plist files, logs, crash reports, Markdown, or metadata.
-- First-run privacy acknowledgement: cloud mode sends audio plus selected keyterms to ElevenLabs; local mode does not.
+- First-run privacy acknowledgement: cloud mode sends audio plus selected keyterms to ElevenLabs; local mode sends no audio, transcript text, calendar context, keyterms, or API keys off device for transcription. Local model setup may download pinned public Cohere/MLX artifacts without user content.
 - No recurring consent reminder.
 - No transcript/audio/calendar content in app logs.
 - Logs contain lifecycle only: prompted, started, stopped, failed, provider used.
@@ -691,6 +706,11 @@ Show:
 - Audio levels.
 - ElevenLabs key validity.
 - Local model status.
+- Local pinned model ID.
+- Local cache existence (boolean only, no raw path).
+- MLX/runtime availability.
+- Redacted last local download error.
+- Selected-engine readiness and active/recent session engine provenance.
 - Output path.
 
 Export diagnostics:
@@ -731,9 +751,7 @@ Each question has a stable unique ID for future agent work.
 
 ### Local Mode
 
-- `q_cohere_runtime`: What macOS runtime path can run Cohere Transcribe reliably from the app?
-- `q_cohere_model_size`: What is the actual Cohere model size, and does it justify the onboarding-time download?
-- `q_local_model_fallback`: If Cohere is not practical, should Parakeet v3 or WhisperKit be the fallback local engine?
+(no open questions — see Resolved trail)
 
 ### Storage
 
@@ -763,7 +781,10 @@ These IDs are kept as a stable trail; the resolution lives in the relevant secti
 - `q_calendar_description_markdown` — resolved: always include sanitized calendar notes as `## Notes from calendar` when the event has a description. Sanitization drops URLs and scrubs digit runs / secret labels per `KeytermSanitizer` rules. The section is omitted entirely when the event has no description.
 - `q_full_context_setting` — resolved: NOT shipped in v1. The keyterm-only path with `KeytermSanitizer` is the canonical boundary; URLs aren't useful as recognition hints anyway. An opt-in "full context to cloud" setting can be revisited later if a concrete use case emerges.
 - `q_context_keyterm_limit` — resolved: 16 keyterms per request, deduped, in insertion order (`CalendarEvent.swift:73`).
-- `q_local_model_v1_scope` — resolved: Cohere is staged in onboarding as a background download regardless of which engine the user picks. Engine itself remains a spike per `decision_local_model_spike`, but availability of the download is firm.
+- `q_local_model_v1_scope` — resolved: Cohere is staged in onboarding as a background download regardless of which engine the user picks.
+- `q_cohere_runtime` — resolved: Local mode runs native Swift/MLX through `mlx-audio-swift` and `MLXAudioSTT.CohereTranscribeModel`; unsupported MLX/runtime states block Local with repair/setup instead of fallback.
+- `q_cohere_model_size` — resolved: the pinned Cohere/MLX model is `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` and is large enough to require progress, disk-space preflight, `.partial` cache writes, integrity verification, Retry, and Remove controls.
+- `q_local_model_fallback` — resolved: no alternate local engine fallback ships. Cohere/MLX is the Local path; failures preserve audio and surface repair or explicit engine switching.
 
 ---
 
@@ -775,7 +796,7 @@ These items are unresolved drift between SPEC.md and the rc1 implementation. The
 - **Start-prompt button shape drift.** Spec: two buttons (`Start Recording` / `Not now`) plus a `More options ▾` disclosure exposing `Stop asking about this meeting` (recurring-series suppress, keys on recurrence-series ID) AND `Stop detecting [App] for 30 minutes`. Code (`StartPromptCoordinator.swift`): three flat buttons (`Start recording` / `Not now` / `Stop detecting [App] for 30 min`); the `More options` disclosure and the recurring-series suppress are entirely absent. **Code action:** collapse to two buttons + disclosure; persist suppressed-series IDs (likely under the `transcriber.settings.v1` JSON blob).
 - **Quiet Meetings settings panel missing.** Spec: `Settings → Quiet Meetings` lists suppressed recurring series with a `Re-enable` action per series. Code: no UI, no persistence. Depends on the start-prompt button shape change above. **Code action:** add the Settings panel and the read/write surface backing it.
 
-Recommended landing order: **button shape collapse → Quiet Meetings panel → Recents inline actions/Retry**. Rationale: the Quiet Meetings panel depends on the button-shape change because it needs something to persist; Recents Retry depends on the failed-session action surface.
+Recommended landing order: **button shape collapse → Quiet Meetings panel**. Rationale: the Quiet Meetings panel depends on the button-shape change because it needs something to persist. Recents failed-session Retry/repair is current behavior and is documented in the Menu Bar UI, Transcription, Markdown Contract, Acceptance, and QA sections above.
 
 When any of the above lands in code, delete the corresponding bullet here.
 
@@ -799,10 +820,10 @@ When any of the above lands in code, delete the corresponding bullet here.
 - Stop prompt is a floating HUD; it does not steal focus.
 - Menu bar icon shows live `MIC` and `SYS` indicators next to elapsed time during Recording. They dim/amber when their channel is silent for >5 seconds.
 - Active-recording popover opens with a Privacy Status block at top showing destination path, captured sources, exclusions, and full engine label.
-- Recents popover shows at most 5 saved sessions, with `Open Folder` / `Open Transcript` and (for failed sessions) `Retry`. (Later work.)
+- Recents popover shows at most 5 saved sessions, with `Open Folder` / `Open Transcript` and failed-session `Retry` or Cohere repair as appropriate.
 - Saved success fires a transient notification and a brief menu-bar `Saved` glyph; no persistent in-app toast.
-- Cohere downloads in the background during onboarding regardless of which engine the user picks.
-- No silent fallback between engines.
+- Cohere downloads in the background during onboarding regardless of which engine the user picks, using `mlx-audio-swift` + `CohereTranscribeModel` and pinned model `beshkenadze/cohere-transcribe-03-2026-mlx-fp16`.
+- No silent fallback between engines; Local and Cloud switches are explicit user actions and failed transcriptions preserve audio with failed transcripts.
 - Frontmatter has no `schema` field. `status` is omitted on success and required on `partial` / `failed`.
 - Speaker blocks render as `### [HH:MM:SS] Speaker A` with one timestamp per block.
 - Body opens with H1 → metadata blockquote → attendees → calendar notes → `## Transcript`. Calendar notes are not intermixed with the transcript.
@@ -883,7 +904,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 
 - Success path produces transcript and the .md has no `status` field.
 - 401 / 429 / timeout / partial each produce the documented failure transcript shape.
-- Failed session retries one-click from the Recents popover. (Later work.)
+- Failed session retries are available from the Recents popover when saved audio exists, reuse the existing session directory/audio, and route unavailable Local sessions to Cohere repair.
 - Engine switch (Settings → Engine) re-triggers transcription on saved audio without silent fallback.
 - Failure transcript includes a `## What you can do` body section.
 
@@ -898,7 +919,7 @@ When any of the above lands in code, delete the corresponding bullet here.
 - Switching from Dropbox to Google Drive re-warns; subdir within Dropbox does not.
 - Pre-record disk-space warning fires below ~1 GB free.
 - Mid-recording disk-full fails safely without losing already-captured audio where possible.
-- Recents popover shows at most 5 sessions; failed items expose `Retry`. (Later work.)
+- Recents popover shows at most 5 sessions; failed items expose `Retry` when saved audio exists or a repair/setup action when the persisted engine needs attention.
 - Settings → Storage shows total audio size; `Delete all audio (keep transcripts)` requires confirmation.
 
 **Markdown Contract**
@@ -983,7 +1004,7 @@ Implementation notes:
 External services:
 
 - ElevenLabs is the v1 primary transcription engine. Send audio plus bounded keyterms only by default. Do not send full calendar descriptions, meeting URLs, attendee emails, dial-in codes, or passwords unless a future setting explicitly enables full context.
-- Cohere Transcribe is the target local model. Treat as a spike. Requirements before calling supported: pinned model version, checksum verification, license review, disk/RAM estimate, one-command download, golden audio test, no Python/dev-environment dependency for normal users.
+- Cohere Transcribe is the supported Local model through `mlx-audio-swift` + `CohereTranscribeModel`, pinned to `beshkenadze/cohere-transcribe-03-2026-mlx-fp16`. Local readiness requires verified cache integrity and MLX/runtime support; no Python, Rust, shell, or external executable path is required for normal users.
 
 Product inspiration:
 

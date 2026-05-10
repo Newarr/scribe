@@ -77,6 +77,12 @@ final class TranscriptionWorkerTests: XCTestCase {
         let metadata = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: data)
         XCTAssertEqual(metadata.status, "failed")
         XCTAssertEqual(metadata.audio, "audio.m4a", "failure metadata must reference the canonical audio asset, not raw streams")
+        XCTAssertEqual(metadata.error_code, "elevenlabs_unauthorized")
+        XCTAssertEqual(metadata.retry_count, 0)
+        XCTAssertEqual(metadata.attempt_count, 1)
+        XCTAssertNotNil(metadata.audio_duration_seconds)
+        XCTAssertNotNil(metadata.audio_size_bytes)
+        XCTAssertGreaterThan(metadata.audio_size_bytes ?? 0, 0)
     }
 
     private func writeAACSilence(to url: URL, durationSec: Double) throws {
@@ -92,6 +98,251 @@ final class TranscriptionWorkerTests: XCTestCase {
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
         buf.frameLength = frames
         try file.write(from: buf)
+    }
+
+
+    func testLocalSuccessWritesCohereArtifacts() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try writeAACSilence(to: session.micFinal, durationSec: 0.3)
+        try writeAACSilence(to: session.systemFinal, durationSec: 0.3)
+
+        let worker = makeWorker(
+            responses: [.success(makeResponse(modelID: CohereMLXBackend.modelID))],
+            directory: session,
+            context: makeContext(engine: "cohere"),
+            request: EngineRequest(
+                audioURL: session.url.appendingPathComponent("audio.m4a"),
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: nil,
+                keyterms: ["must-not-matter"],
+                modelID: CohereMLXBackend.modelID
+            )
+        )
+
+        let final = await worker.run()
+        XCTAssertEqual(final, .complete)
+
+        let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("engine: cohere"), transcript)
+        XCTAssertTrue(transcript.contains("audio: \"audio.m4a\""), transcript)
+        XCTAssertFalse(transcript.contains("status:"), "complete transcript must omit status: \(transcript)")
+
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: session.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertEqual(metadata.engine, "cohere")
+        XCTAssertEqual(metadata.audio, "audio.m4a")
+    }
+
+    func testLocalTerminalFailureWritesCohereFailedArtifactsAndPreservesAudio() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try writeAACSilence(to: session.micFinal, durationSec: 0.3)
+        try writeAACSilence(to: session.systemFinal, durationSec: 0.3)
+
+        let localEngine = RecordingEngine(responses: [.failure(LocalFixtureError.inferenceFailed)])
+        let cloudEngine = RecordingEngine(responses: [.success(makeResponse())])
+        let worker = makeWorker(
+            engine: localEngine,
+            directory: session,
+            context: makeContext(engine: "cohere"),
+            request: EngineRequest(
+                audioURL: session.url.appendingPathComponent("audio.m4a"),
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: nil,
+                keyterms: [],
+                modelID: CohereMLXBackend.modelID
+            )
+        )
+
+        let final = await worker.run()
+        guard case .failed = final else { return XCTFail("expected failed, got \(final)") }
+
+        let localCallCount = await localEngine.callCount
+        let cloudCallCount = await cloudEngine.callCount
+        XCTAssertEqual(localCallCount, 1)
+        XCTAssertEqual(cloudCallCount, 0, "local failure must not call cloud fallback")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.url.appendingPathComponent("audio.m4a").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.micFinal.path), "failed local sessions preserve raw retryable audio")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.systemFinal.path), "failed local sessions preserve raw retryable audio")
+
+        let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("status: failed"), transcript)
+        XCTAssertTrue(transcript.contains("engine: cohere"), transcript)
+        XCTAssertTrue(transcript.contains("audio: \"audio.m4a\""), transcript)
+        XCTAssertTrue(transcript.contains("error_code: \"transcription_failed\""), transcript)
+        XCTAssertTrue(transcript.contains("retry_count: 0"), transcript)
+        XCTAssertTrue(transcript.contains("attempt_count: 1"), transcript)
+        XCTAssertTrue(transcript.contains("audio_duration_seconds:"), transcript)
+        XCTAssertTrue(transcript.contains("audio_size_bytes:"), transcript)
+        XCTAssertTrue(transcript.contains("## What you can do"), transcript)
+
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: session.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "failed")
+        XCTAssertEqual(metadata.engine, "cohere")
+        XCTAssertEqual(metadata.audio, "audio.m4a")
+        XCTAssertEqual(metadata.error_code, "transcription_failed")
+        XCTAssertEqual(metadata.retry_count, 0)
+        XCTAssertEqual(metadata.attempt_count, 1)
+        XCTAssertNotNil(metadata.audio_duration_seconds)
+        XCTAssertNotNil(metadata.audio_size_bytes)
+    }
+
+    func testLocalRetryReusesExistingSessionAudioAndUpdatesSameArtifacts() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try Data("existing-audio".utf8).write(to: session.url.appendingPathComponent("audio.m4a"))
+        try TranscriptWriter.writeFailed(
+            at: session.transcript,
+            context: makeContext(engine: "cohere", audioRelativePaths: ["audio.m4a"]),
+            errorMessage: "previous local failure"
+        )
+        try MetadataJSONWriter.write(
+            at: session.url.appendingPathComponent("metadata.json"),
+            metadata: MetadataJSONWriter.Metadata(
+                status: .failed,
+                context: makeContext(engine: "cohere", audioRelativePaths: ["audio.m4a"]),
+                audio: "audio.m4a",
+                aecStatus: .failed
+            )
+        )
+
+        let engine = RecordingEngine(responses: [.success(makeResponse(modelID: CohereMLXBackend.modelID))])
+        let worker = makeWorker(
+            engine: engine,
+            directory: session,
+            context: makeContext(engine: "cohere", audioRelativePaths: ["audio.m4a"]),
+            request: EngineRequest(
+                audioURL: session.url.appendingPathComponent("audio.m4a"),
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: nil,
+                keyterms: [],
+                modelID: CohereMLXBackend.modelID
+            ),
+            retryTerminalFailures: true
+        )
+
+        let final = await worker.run()
+        XCTAssertEqual(final, .complete)
+        let audioURLs = await engine.audioURLs
+        XCTAssertEqual(audioURLs, [session.url.appendingPathComponent("audio.m4a")])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.url.appendingPathComponent("audio.m4a").path))
+
+        let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("engine: cohere"), transcript)
+        XCTAssertTrue(transcript.contains("Hello"), transcript)
+        XCTAssertFalse(transcript.contains("status:"), transcript)
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: session.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertEqual(metadata.engine, "cohere")
+    }
+
+
+
+    func testCloudRetryReusesExistingSessionAudioAndUpdatesSameArtifacts() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        let audio = session.url.appendingPathComponent("audio.m4a")
+        try Data("existing-cloud-audio".utf8).write(to: audio)
+        try TranscriptWriter.writeFailed(
+            at: session.transcript,
+            context: makeContext(engine: "elevenlabs", audioRelativePaths: ["audio.m4a"]),
+            errorMessage: "previous cloud failure"
+        )
+        let transcriptBefore = try FileManager.default.attributesOfItem(atPath: session.transcript.path)[.modificationDate] as? Date
+        let metadataURL = session.url.appendingPathComponent("metadata.json")
+        try MetadataJSONWriter.write(
+            at: metadataURL,
+            metadata: MetadataJSONWriter.Metadata(
+                status: .failed,
+                context: makeContext(engine: "elevenlabs", audioRelativePaths: ["audio.m4a"]),
+                audio: "audio.m4a",
+                aecStatus: .failed
+            )
+        )
+
+        let engine = RecordingEngine(responses: [.success(makeResponse())])
+        let worker = makeWorker(
+            engine: engine,
+            directory: session,
+            context: makeContext(engine: "elevenlabs", audioRelativePaths: ["audio.m4a"]),
+            request: EngineRequest(
+                audioURL: audio,
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: nil,
+                keyterms: [],
+                modelID: "scribe_v2"
+            ),
+            retryTerminalFailures: true
+        )
+
+        let final = await worker.run()
+        XCTAssertEqual(final, .complete)
+        let audioURLs = await engine.audioURLs
+        XCTAssertEqual(audioURLs, [audio])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertEqual(try Data(contentsOf: audio), Data("existing-cloud-audio".utf8))
+        XCTAssertEqual(session.url.lastPathComponent, "session", "retry must stay in the original session directory")
+
+        let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("engine: elevenlabs"), transcript)
+        XCTAssertTrue(transcript.contains("Hello"), transcript)
+        XCTAssertFalse(transcript.contains("status:"), transcript)
+        let transcriptAfter = try FileManager.default.attributesOfItem(atPath: session.transcript.path)[.modificationDate] as? Date
+        XCTAssertNotEqual(transcriptBefore, transcriptAfter)
+
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: metadataURL)
+        )
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertEqual(metadata.engine, "elevenlabs")
+        XCTAssertEqual(metadata.audio, "audio.m4a")
+    }
+
+    func testLocalCancellationAfterAudioFinalizationLeavesRecoverablePendingArtifacts() async throws {
+        let session = dir()
+        try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+        try writeAACSilence(to: session.micFinal, durationSec: 0.3)
+        try writeAACSilence(to: session.systemFinal, durationSec: 0.3)
+
+        let engine = RecordingEngine(responses: [.failure(CancellationError())])
+        let worker = makeWorker(
+            engine: engine,
+            directory: session,
+            context: makeContext(engine: "cohere"),
+            request: EngineRequest(
+                audioURL: session.url.appendingPathComponent("audio.m4a"),
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: nil,
+                keyterms: [],
+                modelID: CohereMLXBackend.modelID
+            )
+        )
+
+        let final = await worker.run()
+        XCTAssertEqual(final, .cancelled)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session.url.appendingPathComponent("audio.m4a").path))
+        XCTAssertEqual(TranscriptStatusReader.read(at: session.transcript), .pending)
+        let parsed = TranscriptFrontmatterReader.read(at: session.transcript)
+        XCTAssertEqual(parsed?.context.engine, "cohere")
+        XCTAssertEqual(parsed?.context.audioRelativePaths, ["audio.m4a"])
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: session.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "pending")
+        XCTAssertEqual(metadata.engine, "cohere")
+        XCTAssertEqual(metadata.audio, "audio.m4a")
     }
 
     func testTransientFailureThenSuccessOnRetry() async throws {
@@ -186,14 +437,23 @@ final class TranscriptionWorkerTests: XCTestCase {
         XCTAssertEqual(parsed?.context.language, "en")
     }
 
-    func testThreeTransientFailuresExhaustsBudget() async throws {
+    func testFourTransientCloudFailuresRecordsThreeRetriesAndFourAttempts() async throws {
         let err = ElevenLabsScribeBackend.BackendError.rateLimited
-        let worker = makeWorker(responses: [.failure(err), .failure(err), .failure(err)])
+        let worker = makeWorker(responses: [.failure(err), .failure(err), .failure(err), .failure(err)])
         let final = await worker.run()
         guard case .failed = final else {
             return XCTFail("expected .failed, got \(final)")
         }
         XCTAssertEqual(TranscriptStatusReader.read(at: dir().transcript), .failed)
+        let transcript = try String(contentsOf: dir().transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("retry_count: 3"), transcript)
+        XCTAssertTrue(transcript.contains("attempt_count: 4"), transcript)
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir().url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.retry_count, 3)
+        XCTAssertEqual(metadata.attempt_count, 4)
     }
 
     func testTerminalErrorDoesNotRetry() async throws {
@@ -281,12 +541,12 @@ final class TranscriptionWorkerTests: XCTestCase {
         SessionDirectory(url: root.appendingPathComponent("session"))
     }
 
-    private func makeContext() -> TranscriptContext {
+    private func makeContext(engine: String = "elevenlabs", audioRelativePaths: [String] = ["mic.m4a", "system.m4a"]) -> TranscriptContext {
         TranscriptContext(
             title: "Test Session",
             date: "2026-04-29",
-            engine: "elevenlabs",
-            audioRelativePaths: ["mic.m4a", "system.m4a"],
+            engine: engine,
+            audioRelativePaths: audioRelativePaths,
             startedAt: "2026-04-29T14:30:00Z",
             endedAt: "2026-04-29T15:00:00Z",
             attendees: [],
@@ -294,14 +554,14 @@ final class TranscriptionWorkerTests: XCTestCase {
         )
     }
 
-    private func makeResponse() -> EngineResponse {
+    private func makeResponse(modelID: String = "scribe_v2") -> EngineResponse {
         EngineResponse(
             utterances: [
                 .init(speaker: "speaker_0", startSeconds: 0, endSeconds: 1.0, text: "Hello"),
                 .init(speaker: "speaker_1", startSeconds: 1.1, endSeconds: 2.0, text: "World")
             ],
             detectedLanguage: "en",
-            modelID: "scribe_v2"
+            modelID: modelID
         )
     }
 
@@ -309,26 +569,49 @@ final class TranscriptionWorkerTests: XCTestCase {
         responses: [Result<EngineResponse, Error>],
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { _ in /* skip */ },
         keepRawStreams: Bool = false,
-        directory: SessionDirectory? = nil
+        directory: SessionDirectory? = nil,
+        context: TranscriptContext? = nil,
+        request: EngineRequest? = nil,
+        retryTerminalFailures: Bool = false
     ) -> TranscriptionWorker {
         let session = directory ?? dir()
-        try? FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
         let engine = FakeEngine(responses: responses)
-        let request = EngineRequest(
-            audioURL: root.appendingPathComponent("multichannel.wav"),
-            mode: .multichannel,
-            languageCode: nil,
-            keyterms: []
+        return makeWorker(
+            engine: engine,
+            directory: session,
+            context: context ?? makeContext(),
+            request: request ?? EngineRequest(
+                audioURL: root.appendingPathComponent("multichannel.wav"),
+                mode: .multichannel,
+                languageCode: nil,
+                keyterms: []
+            ),
+            sleep: sleep,
+            keepRawStreams: keepRawStreams,
+            retryTerminalFailures: retryTerminalFailures
         )
+    }
+
+    private func makeWorker(
+        engine: TranscriptionEngine,
+        directory session: SessionDirectory,
+        context: TranscriptContext,
+        request: EngineRequest,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { _ in /* skip */ },
+        keepRawStreams: Bool = false,
+        retryTerminalFailures: Bool = false
+    ) -> TranscriptionWorker {
+        try? FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
         return TranscriptionWorker(
             directory: session,
-            context: makeContext(),
+            context: context,
             engine: engine,
             request: request,
             speakerMapping: [:],
             policy: RetryPolicy(delays: [0.001, 0.001, 0.001]),
             sleep: sleep,
-            keepRawStreams: keepRawStreams
+            keepRawStreams: keepRawStreams,
+            retryTerminalFailures: retryTerminalFailures
         )
     }
 
@@ -410,6 +693,29 @@ final class TranscriptionWorkerTests: XCTestCase {
 actor SleepCounter {
     private(set) var count = 0
     func increment() { count += 1 }
+}
+
+enum LocalFixtureError: Error { case inferenceFailed }
+
+actor RecordingEngine: TranscriptionEngine {
+    private var queue: [Result<EngineResponse, Error>]
+    private(set) var audioURLs: [URL] = []
+
+    init(responses: [Result<EngineResponse, Error>]) {
+        self.queue = responses
+    }
+
+    var callCount: Int { audioURLs.count }
+
+    func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
+        audioURLs.append(request.audioURL)
+        guard !queue.isEmpty else { throw FakeEngine.FakeError.noMoreResponses }
+        let next = queue.removeFirst()
+        switch next {
+        case .success(let r): return r
+        case .failure(let e): throw e
+        }
+    }
 }
 
 actor FakeEngine: TranscriptionEngine {

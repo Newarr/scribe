@@ -190,7 +190,7 @@ private struct DiagnosticsView: View {
                     .frame(maxWidth: 540, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("v\(model.snapshot.appVersion) · \(model.snapshot.exportedAt)")
+            Text("v\(model.snapshot.appVersion) · macOS \(model.snapshot.osVersion.major).\(model.snapshot.osVersion.minor).\(model.snapshot.osVersion.patch) · \(model.snapshot.exportedAt)")
                 .font(DS.Font.eyebrow)
                 .tracking(0.44)
                 .foregroundStyle(DS.Color.foregroundTertiary)
@@ -218,6 +218,7 @@ private struct DiagnosticsView: View {
             permissionRow("Microphone", model.snapshot.permissions.microphone)
             permissionRow("Screen & System Audio Recording", model.snapshot.permissions.screenRecording)
             permissionRow("Calendar (optional)", model.snapshot.permissions.calendar)
+            row("Active calendar source", calendarSourceLabel(model.snapshot.activeCalendarSource))
         }
     }
 
@@ -225,12 +226,16 @@ private struct DiagnosticsView: View {
     // "Engine readiness" was support jargon.
     private var engineSection: some View {
         DSSection("Transcription") {
+            row("Selected engine", model.snapshot.engine.selectedEngine)
+            boolRow("Selected engine ready", model.snapshot.engine.selectedEngineReady)
             row("ElevenLabs key", model.snapshot.engine.cloudKey)
-            if let p = model.snapshot.engine.localBinaryPresent {
-                boolRow("Local transcription binary", p)
-            }
-            if let p = model.snapshot.engine.localLanguageModelPresent {
-                boolRow("Language detection model", p)
+            row("Local model status", model.snapshot.engine.localModelStatus)
+            row("Local model", model.snapshot.engine.localModelID)
+            boolRow("Local cache present", model.snapshot.engine.localCachePathExists)
+            boolRow("Local MLX runtime", model.snapshot.engine.mlxAvailable)
+            boolRow("Cohere local ready", model.snapshot.engine.localReady)
+            if model.snapshot.engine.lastDownloadError.isEmpty == false {
+                row("Last local setup error", model.snapshot.engine.lastDownloadError)
             }
         }
     }
@@ -247,6 +252,11 @@ private struct DiagnosticsView: View {
             }
             if model.snapshot.sessions.orphanedWithAudio > 0 {
                 row("Orphaned (audio, no transcript)", "\(model.snapshot.sessions.orphanedWithAudio)")
+            }
+            row("ElevenLabs sessions", "\(model.snapshot.sessions.cloudEngineSessions)")
+            row("Cohere sessions", "\(model.snapshot.sessions.localEngineSessions)")
+            if model.snapshot.sessions.unknownEngineSessions > 0 {
+                row("Unknown engine sessions", "\(model.snapshot.sessions.unknownEngineSessions)")
             }
             row("Total retries", "\(model.snapshot.sessions.totalRetries)")
         }
@@ -307,6 +317,14 @@ private struct DiagnosticsView: View {
             // mono label). Status remains semantically encoded; the
             // rendering stops looking like a Mac System Settings clone.
             Indicator(state: indicatorState(for: status), label: indicatorLabel(for: status))
+        }
+    }
+
+    private func calendarSourceLabel(_ source: String) -> String {
+        switch source {
+        case "appleCalendar": return "Apple Calendar"
+        case "none": return "None"
+        default: return "Unknown"
         }
     }
 

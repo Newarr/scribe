@@ -115,38 +115,20 @@ enum PermissionRemediation {
                 primaryAction: .openInAppSettings,
                 kind: kind
             )
-        case .localEngineNotConfigured:
+        case .localModelNotVerified(let modelID):
             return Step(
-                id: "local.engine.unconfigured",
-                title: "Local engine binary path not configured",
-                detail: "Local mode is selected but no Cohere binary path is set. Settings → Engine.",
+                id: "local.model.not-verified",
+                title: "Cohere local model not ready",
+                detail: "Local mode needs the verified Cohere model \(modelID). Open Settings → Engine to download, verify, or retry setup.",
                 openURL: nil,
                 primaryAction: .openInAppSettings,
                 kind: kind
             )
-        case .missingLocalEngineBinary(let url):
+        case .localRuntimeUnavailable:
             return Step(
-                id: "local.engine.binary",
-                title: "Local engine binary missing",
-                detail: "Expected the Cohere binary at \(url.path). Reinstall Scribe or switch to cloud mode.",
-                openURL: nil,
-                primaryAction: .openInAppSettings,
-                kind: kind
-            )
-        case .localLanguageModelNotConfigured:
-            return Step(
-                id: "local.lang-model.unconfigured",
-                title: "Language detection model path not configured",
-                detail: "The local engine needs a language-detection model (Whisper-tiny). Settings → Engine.",
-                openURL: nil,
-                primaryAction: .openInAppSettings,
-                kind: kind
-            )
-        case .missingLocalLanguageModel(let url):
-            return Step(
-                id: "local.lang-model",
-                title: "Language detection model missing",
-                detail: "Expected the Whisper-tiny model at \(url.path). Reinstall Scribe or switch to cloud mode.",
+                id: "local.runtime.unavailable",
+                title: "Cohere local runtime unavailable",
+                detail: "Local mode requires native MLX support on Apple Silicon. Open Settings → Engine for repair options or explicitly choose Cloud.",
                 openURL: nil,
                 primaryAction: .openInAppSettings,
                 kind: kind
@@ -167,6 +149,24 @@ enum PermissionRemediation {
                 detail: "Granting calendar access lets Scribe tag sessions with meeting titles and attendees. Recording works without it.",
                 openURL: nil,
                 primaryAction: .requestCalendar,
+                kind: kind
+            )
+        case .notificationsDeniedOptional:
+            return Step(
+                id: "notifications.denied",
+                title: "Notifications denied (optional)",
+                detail: "Without notifications, Scribe can still record manually, but meeting prompts lose their backup notification channel. Enable notifications in System Settings → Notifications.",
+                openURL: URL(string: "x-apple.systempreferences:com.apple.preference.notifications"),
+                primaryAction: nil,
+                kind: kind
+            )
+        case .notificationsNotDetermined:
+            return Step(
+                id: "notifications.undetermined",
+                title: "Notifications not enabled yet (optional)",
+                detail: "Notifications help Scribe remind you about meeting prompts. Manual recording still works without them.",
+                openURL: URL(string: "x-apple.systempreferences:com.apple.preference.notifications"),
+                primaryAction: nil,
                 kind: kind
             )
         }

@@ -9,14 +9,14 @@ It stays out of the way until it matters: a meeting starts, audio drops, a permi
 - **Records mic + call audio** simultaneously via ScreenCaptureKit.
 - **Auto-detects** Zoom, Google Meet, FaceTime, Microsoft Teams, etc., and asks once whether to record. Ignores you for 30 minutes if you say it's not a meeting.
 - **Auto-stops** after 30 seconds of silence, with a 10-second countdown HUD you can cancel.
-- **Transcribes** through ElevenLabs and saves Markdown next to the audio in `~/Scribe/`.
+- **Transcribes** with your selected engine: ElevenLabs (cloud) or Cohere (local), then saves Markdown next to the audio in `~/Scribe/`.
 - **Recovers** from a crash, relaunch and any session that was mid-recording or mid-transcription resumes itself.
 - **Survives quit**, Cmd-Q during a recording asks first, then finalizes audio and transcript before exit.
 
-## What it does NOT do (yet)
+## What it does NOT do
 
-- Run transcription locally on your Mac. Cloud-only in V1.0; a local engine ships in a later release.
-- Live transcript display, summaries, AI follow-ups, or a transcript history UI. Open Finder; Markdown files don't need a browser.
+- Import existing audio. Scribe is record-only by design.
+- Live transcript display, summaries, AI follow-ups, chat, vector search, or a transcript history UI. Open Finder; Markdown files don't need a browser.
 - Native Google Calendar or Outlook. Use Apple Calendar (which can sync from anywhere).
 
 ## Install
@@ -46,8 +46,8 @@ The Xcode project is generated from `TranscriberApp/project.yml` via [`xcodegen`
 2. The menu bar gains a wave icon. Click it → **Record now**.
 3. macOS asks for microphone permission. Grant it.
 4. macOS asks for **Screen & System Audio Recording** (this is what captures the audio of the *other* people on the call). Grant it, then **restart Scribe**.
-5. Settings → enter your **ElevenLabs API key**. Saved securely in your macOS Keychain.
-6. Calendar permission is **optional**, granting it adds the meeting title and attendee names as transcription hints.
+5. Choose an engine in Settings → Engine. **Cohere (local)** uses the pinned `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` model through `mlx-audio-swift`; **ElevenLabs (cloud)** requires an API key saved securely in your macOS Keychain.
+6. Calendar permission is **optional**. In Cloud mode, granting it sends bounded keyterms (title/attendee names only) as transcription hints; in Local mode, calendar context stays on your Mac.
 
 After that, Scribe sits in the menu bar and either: (a) prompts when a meeting app launches during a calendar event, or (b) waits for you to click **Record now**.
 
@@ -65,8 +65,10 @@ The transcript is the source of truth. Markdown opens in any editor.
 
 ## Privacy
 
-- **Recordings go to ElevenLabs** for transcription and are deleted from their servers after processing.
-- **Calendar event titles + attendee names may be sent** as transcription hints if Calendar is granted. Notes, links, emails, dial-in codes, and passwords are never sent.
+- **Local mode uses Cohere (local) on your Mac.** Transcription sends no audio, transcript text, calendar context, keyterms, or API keys off device. Model setup may download the pinned public Cohere/MLX artifacts; it does not upload user content.
+- **Cloud mode sends recordings to ElevenLabs** for transcription and they are deleted from their servers after processing. Calendar event titles + attendee names may be sent as bounded keyterms if Calendar is granted. Notes, links, emails, dial-in codes, and passwords are never sent.
+- **No silent fallback.** Local never silently switches to Cloud, and Cloud never silently switches to Local. Engine changes are explicit user actions; failures preserve `audio.m4a` and write a failed transcript.
+- **Local model cache is repairable.** Downloads use `.partial` files, verify pinned artifacts before Local becomes selectable, expose Retry on failure/low disk/corrupt cache, and Remove only deletes model cache files, not sessions.
 - **No telemetry.** The app doesn't phone home. Diagnostics export is local-only and PII-redacted (transcripts, attendees, API keys, full paths all stripped).
 - **Wipe everything**: delete `~/Scribe/`, run `security delete-generic-password -s com.szymonsypniewicz.transcriber -a elevenlabs-api-key`, drag the app to Trash.
 

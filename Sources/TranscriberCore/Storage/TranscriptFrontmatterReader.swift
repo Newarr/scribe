@@ -30,6 +30,13 @@ public enum TranscriptFrontmatterReader {
     /// diagnostics aggregate-counts surface; the full Frontmatter
     /// reader stays available for the supervisor's resume path.
     public static func readStatusAndAttemptsStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int)? {
+        readDiagnosticsFrontmatterStreaming(at: url).map { ($0.status, $0.attempts) }
+    }
+
+    /// Diagnostics-only frontmatter reader. It extracts only safe enum/count
+    /// fields plus normalized engine provenance, and still stops at the
+    /// frontmatter delimiter without reading transcript bodies.
+    public static func readDiagnosticsFrontmatterStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int, engine: String)? {
         guard let stream = InputStream(url: url) else { return nil }
         stream.open()
         defer { stream.close() }
@@ -38,6 +45,7 @@ public enum TranscriptFrontmatterReader {
         var lineCount = 0
         var sawOpener = false
         var statusRaw: String?
+        var engineRaw: String?
         var attempts = 0
 
         let chunkSize = 256
@@ -60,18 +68,26 @@ public enum TranscriptFrontmatterReader {
                     // Closing delimiter — distinguish missing status (statusless
                     // success: .complete) from present-but-unrecognized status
                     // (malformed: nil), matching TranscriptStatusReader.
+                    let parsedStatus: TranscriptStatus
                     if let raw = statusRaw {
                         guard let parsed = TranscriptStatus(rawValue: raw) else { return nil }
-                        return (parsed, attempts)
+                        parsedStatus = parsed
+                    } else {
+                        parsedStatus = .complete
                     }
-                    return (.complete, attempts)
+                    return (parsedStatus, attempts, normalizeDiagnosticsEngine(engineRaw))
                 }
                 if line.hasPrefix("status:") {
                     statusRaw = String(line.dropFirst("status:".count))
                         .trimmingCharacters(in: .whitespaces)
                         .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 }
-                if line.hasPrefix("attempts:") {
+                if line.hasPrefix("engine:") {
+                    engineRaw = String(line.dropFirst("engine:".count))
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                }
+                if line.hasPrefix("attempts:") && statusRaw == "retrying" {
                     let v = String(line.dropFirst("attempts:".count))
                         .trimmingCharacters(in: .whitespaces)
                     attempts = Int(v) ?? 0
@@ -89,6 +105,14 @@ public enum TranscriptFrontmatterReader {
             if lineCount > 100 { return nil }
         }
         return nil
+    }
+
+    private static func normalizeDiagnosticsEngine(_ raw: String?) -> String {
+        switch raw?.lowercased() {
+        case "elevenlabs": return "elevenlabs"
+        case "cohere": return "cohere"
+        default: return "unknown"
+        }
     }
 
     static func readFromString(_ content: String) -> Frontmatter? {
@@ -196,7 +220,7 @@ public enum TranscriptFrontmatterReader {
         let context = TranscriptContext(
             title: fields["title"] ?? "(untitled)",
             date: fields["date"] ?? "",
-            engine: fields["engine"] ?? "elevenlabs",
+            engine: fields["engine"] ?? "unknown",
             audioRelativePaths: audioPaths,
             scheduledStart: fields["scheduled_start"],
             scheduledEnd: fields["scheduled_end"],

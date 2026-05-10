@@ -11,7 +11,7 @@ import TranscriberCore
 /// the title bar; the user must either click "I understand" or quit
 /// the app via cmd-q. Spec consent UI shouldn't be silently dismissable.
 @MainActor
-final class PrivacyAcknowledgementController {
+class PrivacyAcknowledgementController {
     private var window: NSWindow?
     private let onAcknowledged: @MainActor () -> Void
 

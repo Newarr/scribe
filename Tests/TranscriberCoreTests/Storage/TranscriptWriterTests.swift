@@ -74,7 +74,12 @@ final class TranscriptWriterTests: XCTestCase {
         // copy) but no longer leads the body. The user-facing
         // headline is "transcription failed" + "what you can do".
         XCTAssertTrue(content.contains("Rate limited after 3 retries"))
-        XCTAssertTrue(content.contains("audio is saved as `audio.m4a`"))
+        XCTAssertTrue(content.contains("Audio is saved at `audio.m4a`"))
+        XCTAssertTrue(content.contains("error_code: \"transcription_failed\""))
+        XCTAssertTrue(content.contains("retry_count: 0"))
+        XCTAssertTrue(content.contains("attempt_count: 1"))
+        XCTAssertTrue(content.contains("audio_duration_seconds:"))
+        XCTAssertTrue(content.contains("audio_size_bytes:"))
         XCTAssertTrue(content.contains("What you can do"))
     }
 
@@ -98,6 +103,92 @@ final class TranscriptWriterTests: XCTestCase {
 
         try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "boom")
         let failed = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(failed.contains("audio is saved as `mic.m4a` and `system.m4a`"))
+        XCTAssertTrue(failed.contains("Audio is saved at `mic.m4a` and `system.m4a`"))
     }
+
+    func testFailedTranscriptIncludesBoundedFailureDetails() throws {
+        let url = tmp.appendingPathComponent("transcript.md")
+        let context = TranscriptContext(
+            title: "T", date: "2026-04-29", engine: "cohere",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
+            attendees: [], language: nil
+        )
+        let details = TranscriptFailureDetails(
+            errorCode: "Cohere Timeout!!",
+            errorMessage: "Failed at /Users/alice/Scribe/Secret/transcript.md with token https://example.com/signed?token=abc and alice@example.com\nStack trace line",
+            retryCount: 3,
+            attemptCount: 4,
+            audioDurationSeconds: 3291,
+            audioSizeBytes: 52_840_192
+        )
+
+        try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: details.errorMessage, details: details)
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("engine: cohere"), content)
+        XCTAssertTrue(content.contains("error_code: \"cohere_timeout\""), content)
+        XCTAssertTrue(content.contains("retry_count: 3"), content)
+        XCTAssertTrue(content.contains("attempt_count: 4"), content)
+        XCTAssertTrue(content.contains("audio_duration_seconds: 3291"), content)
+        XCTAssertTrue(content.contains("audio_size_bytes: 52840192"), content)
+        XCTAssertFalse(content.contains("/Users/alice"), content)
+        XCTAssertFalse(content.contains("alice@example.com"), content)
+        XCTAssertFalse(content.contains("https://example.com"), content)
+        XCTAssertFalse(content.contains("token=abc"), content)
+        XCTAssertFalse(content.contains("\nStack trace line"), content)
+    }
+
+
+    func testFailedTranscriptRedactsSignedURLBeforePathAndStripsQueryTokens() throws {
+        let url = tmp.appendingPathComponent("transcript.md")
+        let context = TranscriptContext(
+            title: "Signed URL", date: "2026-04-29", engine: "elevenlabs",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
+            attendees: [], language: nil
+        )
+        let raw = "Upload failed for https://storage.example.com/Users/alice/Scribe/audio.m4a?X-Amz-Signature=SECRET&token=abc123 and retry_url=?access_token=def456 at /Users/alice/Scribe/session/audio.m4a"
+        try TranscriptWriter.writeFailed(
+            at: url,
+            context: context,
+            errorMessage: raw,
+            details: TranscriptFailureDetails(errorMessage: raw)
+        )
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("[url]"), content)
+        XCTAssertTrue(content.contains("[path]"), content)
+        XCTAssertFalse(content.contains("storage.example.com"), content)
+        XCTAssertFalse(content.contains("X-Amz-Signature"), content)
+        XCTAssertFalse(content.contains("SECRET"), content)
+        XCTAssertFalse(content.contains("token=abc123"), content)
+        XCTAssertFalse(content.contains("access_token=def456"), content)
+        XCTAssertFalse(content.contains("/Users/alice"), content)
+    }
+
+
+    func testFailedTranscriptRedactsAuthorizationBearerHeaderFormsBeforeGenericKeyValueRedaction() throws {
+        let url = tmp.appendingPathComponent("transcript.md")
+        let context = TranscriptContext(
+            title: "Bearer", date: "2026-04-29", engine: "elevenlabs",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-04-29T14:30:00Z", endedAt: "2026-04-29T15:00:00Z",
+            attendees: [], language: nil
+        )
+        let raw = "Provider returned Authorization=Bearer abc123 and Authorization: Bearer def456 plus bearer ghi789 and X-Auth-Token: jkl012"
+        try TranscriptWriter.writeFailed(
+            at: url,
+            context: context,
+            errorMessage: raw,
+            details: TranscriptFailureDetails(errorMessage: raw)
+        )
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("Authorization: Bearer [redacted]"), content)
+        XCTAssertTrue(content.contains("Bearer [redacted]"), content)
+        XCTAssertFalse(content.contains("abc123"), content)
+        XCTAssertFalse(content.contains("def456"), content)
+        XCTAssertFalse(content.contains("ghi789"), content)
+        XCTAssertFalse(content.contains("jkl012"), content)
+    }
+
 }

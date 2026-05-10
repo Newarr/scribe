@@ -20,12 +20,32 @@ import Foundation
 /// modeled below.
 public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
     public let appVersion: String
+    public let osVersion: OSVersion
+    /// Normalized, non-content-bearing calendar source. This never carries
+    /// event titles, calendar names, attendee data, or account identifiers.
+    public let activeCalendarSource: String
     public let exportedAt: String  // ISO8601
     public let settings: SettingsView
     public let permissions: PermissionsView
     public let engine: EngineView
     public let sessions: SessionSummary
     public let liveLevels: LiveLevels?
+
+    public struct OSVersion: Codable, Sendable, Equatable {
+        public let major: Int
+        public let minor: Int
+        public let patch: Int
+
+        public init(major: Int, minor: Int, patch: Int) {
+            self.major = major
+            self.minor = minor
+            self.patch = patch
+        }
+
+        public init(_ version: OperatingSystemVersion) {
+            self.init(major: version.majorVersion, minor: version.minorVersion, patch: version.patchVersion)
+        }
+    }
 
     public struct SettingsView: Codable, Sendable, Equatable {
         public let engineMode: String           // "cloud" | "local"
@@ -60,19 +80,47 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
     }
 
     public struct EngineView: Codable, Sendable, Equatable {
+        /// Explicit current setting, separate from session provenance.
+        public let selectedEngine: String  // "cloud" | "local"
+        /// Readiness for the selected engine only. Cloud requires a readable
+        /// key; Local requires verified cache plus MLX/runtime availability.
+        public let selectedEngineReady: Bool
         /// Tri-state per codex P1.4. "configured" = key present and
         /// readable. "missing" = key not in keychain. "unreadable" =
         /// keychain returned an error other than item-not-found
         /// (locked, denied, transient I/O). Never carries the value.
         public let cloudKey: String  // "configured" | "missing" | "unreadable"
-        /// Nil when not in local mode. Never a path.
-        public let localBinaryPresent: Bool?
-        public let localLanguageModelPresent: Bool?
+        /// Normalized Local Cohere model status. Never a path.
+        public let localModelStatus: String
+        /// Pinned reviewed model identity only.
+        public let localModelID: String
+        /// Cache path is represented only as existence, never as URL/path.
+        public let localCachePathExists: Bool
+        public let mlxAvailable: Bool
+        public let localReady: Bool
+        /// Bounded reviewed failure code/message; empty when no failure.
+        public let lastDownloadError: String
 
-        public init(cloudKey: String, localBinaryPresent: Bool? = nil, localLanguageModelPresent: Bool? = nil) {
+        public init(
+            selectedEngine: String,
+            selectedEngineReady: Bool,
+            cloudKey: String,
+            localModelStatus: String,
+            localModelID: String,
+            localCachePathExists: Bool,
+            mlxAvailable: Bool,
+            localReady: Bool,
+            lastDownloadError: String
+        ) {
+            self.selectedEngine = selectedEngine
+            self.selectedEngineReady = selectedEngineReady
             self.cloudKey = cloudKey
-            self.localBinaryPresent = localBinaryPresent
-            self.localLanguageModelPresent = localLanguageModelPresent
+            self.localModelStatus = localModelStatus
+            self.localModelID = localModelID
+            self.localCachePathExists = localCachePathExists
+            self.mlxAvailable = mlxAvailable
+            self.localReady = localReady
+            self.lastDownloadError = lastDownloadError
         }
     }
 
@@ -93,8 +141,25 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
         /// transcript) so support sees both diagnostically.
         public let orphanedWithAudio: Int
         public let totalRetries: Int
+        /// Session engine provenance counts from transcript frontmatter only.
+        /// These are aggregate counts and never include titles, paths, or text.
+        public let cloudEngineSessions: Int
+        public let localEngineSessions: Int
+        public let unknownEngineSessions: Int
 
-        public init(total: Int, pending: Int, retrying: Int, complete: Int, failed: Int, unknown: Int, orphanedWithAudio: Int, totalRetries: Int) {
+        public init(
+            total: Int,
+            pending: Int,
+            retrying: Int,
+            complete: Int,
+            failed: Int,
+            unknown: Int,
+            orphanedWithAudio: Int,
+            totalRetries: Int,
+            cloudEngineSessions: Int,
+            localEngineSessions: Int,
+            unknownEngineSessions: Int
+        ) {
             self.total = total
             self.pending = pending
             self.retrying = retrying
@@ -103,9 +168,12 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
             self.unknown = unknown
             self.orphanedWithAudio = orphanedWithAudio
             self.totalRetries = totalRetries
+            self.cloudEngineSessions = cloudEngineSessions
+            self.localEngineSessions = localEngineSessions
+            self.unknownEngineSessions = unknownEngineSessions
         }
 
-        public static let zero = SessionSummary(total: 0, pending: 0, retrying: 0, complete: 0, failed: 0, unknown: 0, orphanedWithAudio: 0, totalRetries: 0)
+        public static let zero = SessionSummary(total: 0, pending: 0, retrying: 0, complete: 0, failed: 0, unknown: 0, orphanedWithAudio: 0, totalRetries: 0, cloudEngineSessions: 0, localEngineSessions: 0, unknownEngineSessions: 0)
     }
 
     public struct LiveLevels: Codable, Sendable, Equatable {
@@ -120,6 +188,8 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
 
     public init(
         appVersion: String,
+        osVersion: OSVersion,
+        activeCalendarSource: String,
         exportedAt: String,
         settings: SettingsView,
         permissions: PermissionsView,
@@ -128,6 +198,8 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
         liveLevels: LiveLevels?
     ) {
         self.appVersion = appVersion
+        self.osVersion = osVersion
+        self.activeCalendarSource = activeCalendarSource
         self.exportedAt = exportedAt
         self.settings = settings
         self.permissions = permissions
@@ -176,6 +248,9 @@ public enum DiagnosticsCollector {
         var orphanedWithAudio = 0
         var totalRetries = 0
         var totalSessions = 0
+        var cloudEngineSessions = 0
+        var localEngineSessions = 0
+        var unknownEngineSessions = 0
 
         for entry in entries {
             var isDir: ObjCBool = false
@@ -205,12 +280,18 @@ public enum DiagnosticsCollector {
             // transcript bodies into memory. The diagnostics surface
             // needs status + attempts; everything else is body or
             // PII-bearing context.
-            guard let result = TranscriptFrontmatterReader.readStatusAndAttemptsStreaming(at: dir.transcript) else {
+            guard let result = TranscriptFrontmatterReader.readDiagnosticsFrontmatterStreaming(at: dir.transcript) else {
                 unknown += 1
                 totalSessions += 1
+                unknownEngineSessions += 1
                 continue
             }
             totalSessions += 1
+            switch result.engine {
+            case "elevenlabs": cloudEngineSessions += 1
+            case "cohere": localEngineSessions += 1
+            default: unknownEngineSessions += 1
+            }
             switch result.status {
             case .pending: pending += 1
             case .retrying: retrying += 1
@@ -228,7 +309,10 @@ public enum DiagnosticsCollector {
             failed: failed,
             unknown: unknown,
             orphanedWithAudio: orphanedWithAudio,
-            totalRetries: totalRetries
+            totalRetries: totalRetries,
+            cloudEngineSessions: cloudEngineSessions,
+            localEngineSessions: localEngineSessions,
+            unknownEngineSessions: unknownEngineSessions
         )
     }
 
@@ -258,34 +342,75 @@ public enum DiagnosticsCollector {
         )
     }
 
-    /// Probes engine readiness for whichever mode is currently
-    /// configured. Cloud mode populates only `cloudKey`; local mode
-    /// populates only the local* fields. Mixed-state output stays
-    /// minimal so the export never asserts "missing local binary"
-    /// when the user is on cloud mode.
+    /// Probes engine readiness and local model/runtime state using the
+    /// same source of truth as preflight. Local fields are always present
+    /// and fixed-shape, regardless of selected engine, so schema tests catch
+    /// unreviewed additions and support can distinguish current selection
+    /// from the engine that produced existing sessions.
     public static func engine(
         mode: EngineMode,
         cloudProbe: () async -> CloudKeyState,
         engineProbe: EngineReadinessProbing
     ) async -> DiagnosticsSnapshot.EngineView {
+        let cloudState = await cloudProbe()
+        let localStatus = await engineProbe.localModelStatus()
+        let localStatusView = diagnosticsLocalModelStatus(localStatus)
+        let mlxAvailable = diagnosticsMLXAvailable(localStatus)
+        let localReady = localStatus.isReady && mlxAvailable
+        let selectedReady: Bool
         switch mode {
         case .cloud:
-            let state = await cloudProbe()
-            return DiagnosticsSnapshot.EngineView(cloudKey: state.rawValue)
+            selectedReady = cloudState == .configured
         case .local:
-            let cloudState = await cloudProbe()
-            let bin = engineProbe.localEngineBinaryURL()
-            let model = engineProbe.localLanguageModelURL()
-            let binPresent: Bool? = bin.map { _ in true } ?? nil
-            let binReady = bin == nil ? false : await engineProbe.localBinaryReady(bin!)
-            let modelPresent: Bool? = model.map { _ in true } ?? nil
-            let modelReady = model == nil ? false : await engineProbe.localModelReady(model!)
-            _ = binPresent; _ = modelPresent  // computed for readability; the actual flag is "ready"
-            return DiagnosticsSnapshot.EngineView(
-                cloudKey: cloudState.rawValue,
-                localBinaryPresent: binReady,
-                localLanguageModelPresent: modelReady
-            )
+            selectedReady = localReady
+        }
+        return DiagnosticsSnapshot.EngineView(
+            selectedEngine: mode.rawValue,
+            selectedEngineReady: selectedReady,
+            cloudKey: cloudState.rawValue,
+            localModelStatus: localStatusView.status,
+            localModelID: engineProbe.localModelID(),
+            localCachePathExists: localStatusView.cachePathExists,
+            mlxAvailable: mlxAvailable,
+            localReady: localReady,
+            lastDownloadError: localStatusView.lastDownloadError
+        )
+    }
+
+    private static func diagnosticsLocalModelStatus(_ status: LocalModelCacheStatus) -> (status: String, cachePathExists: Bool, lastDownloadError: String) {
+        switch status {
+        case .notDownloaded:
+            return ("notDownloaded", false, "")
+        case .downloading:
+            return ("downloading", false, "")
+        case .verifying:
+            return ("verifying", false, "")
+        case .verified:
+            return ("verified", true, "")
+        case .failed(_, let reason, _):
+            return ("failed", false, diagnosticsFailureReason(reason))
+        case .unsupported(_, let reason):
+            return ("unsupported", false, diagnosticsFailureReason(reason))
+        }
+    }
+
+    private static func diagnosticsMLXAvailable(_ status: LocalModelCacheStatus) -> Bool {
+        if case .unsupported = status { return false }
+        return true
+    }
+
+    private static func diagnosticsFailureReason(_ failure: LocalModelFailure) -> String {
+        // Export a reviewed, bounded code only. This avoids leaking raw paths,
+        // usernames, signed URLs, stack traces, calendar text, or token-like
+        // substrings that may appear in lower-level error messages.
+        String(failure.code.rawValue.prefix(80))
+    }
+
+    public static func activeCalendarSource(calendarPermission: String) -> String {
+        switch calendarPermission {
+        case "granted": return "appleCalendar"
+        case "denied", "notDetermined", "restricted": return "none"
+        default: return "unknown"
         }
     }
 

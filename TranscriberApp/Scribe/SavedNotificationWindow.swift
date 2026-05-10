@@ -10,6 +10,7 @@ import TranscriberCore
 @MainActor
 final class SavedNotificationWindowController {
     private var panel: NSPanel?
+    private var currentModel: SavedNotificationModel?
     private var dismissTimer: Timer?
     private let autoDismissDuration: TimeInterval = 6.0
 
@@ -29,7 +30,14 @@ final class SavedNotificationWindowController {
     func present(_ summary: Summary) {
         dismissTimer?.invalidate()
 
-        let model = SavedNotificationModel(summary: summary)
+        let model: SavedNotificationModel
+        if let currentModel {
+            currentModel.summary = summary
+            model = currentModel
+        } else {
+            model = SavedNotificationModel(summary: summary)
+            currentModel = model
+        }
 
         if panel == nil {
             let panel = NSPanel(
@@ -58,11 +66,11 @@ final class SavedNotificationWindowController {
             panel.contentView = NSHostingView(rootView: SavedNotificationView(
                 model: model,
                 onOpenFolder: { [weak self] in
-                    if let url = summary.folderURL { NSWorkspace.shared.open(url) }
+                    if let url = self?.currentModel?.summary.folderURL { NSWorkspace.shared.open(url) }
                     self?.dismiss()
                 },
                 onOpenTranscript: { [weak self] in
-                    if let url = summary.transcriptURL { NSWorkspace.shared.open(url) }
+                    if let url = self?.currentModel?.summary.transcriptURL { NSWorkspace.shared.open(url) }
                     self?.dismiss()
                 },
                 onPauseAutoDismiss: { [weak self] in self?.pauseDismiss() },
@@ -97,6 +105,7 @@ final class SavedNotificationWindowController {
         panel?.orderOut(nil)
         panel?.close()
         panel = nil
+        currentModel = nil
     }
 }
 

@@ -15,7 +15,7 @@ Scribe records meeting audio on your Mac and turns it into a Markdown transcript
 
 ## What leaves your Mac
 
-### Cloud mode (default for V1.0-rc1)
+### Cloud mode
 
 Cloud mode uploads audio and a few selected metadata fields to ElevenLabs for transcription. Specifically:
 
@@ -23,11 +23,15 @@ Cloud mode uploads audio and a few selected metadata fields to ElevenLabs for tr
 - **Calendar-derived "keyterms"** — if Calendar permission is granted AND a calendar event overlaps the recording window, the event's title and attendee names are sent as `keyterms` form fields. This biases the transcription toward the names of people in the meeting. If Calendar is denied or no event matches, no keyterms are sent.
 - **Language hint** — if a language preference is set, the BCP-47 tag (e.g. `en`, `pl`) is sent. Otherwise the language is auto-detected by the engine.
 
-Nothing else is sent. The app does not phone home, does not collect telemetry, and does not contact ElevenLabs except to upload audio for transcription.
+Nothing else is sent. The app does not phone home, does not collect telemetry, and does not contact ElevenLabs except to upload audio for transcription when Cloud is selected.
 
-### Local mode (deferred to a later release)
+### Local mode
 
-When local mode ships, audio stays on-device. Local mode runs Cohere's transcription binary (planned: `second-state/cohere_transcribe_rs`) bundled with the app. No data leaves your Mac. Until local mode ships, the app's preflight gate denies recording in local mode.
+Local mode uses Cohere (local) through `mlx-audio-swift` and `CohereTranscribeModel` with the pinned model `beshkenadze/cohere-transcribe-03-2026-mlx-fp16`. During transcription, Scribe sends no audio, transcript text, calendar context, keyterms, or API keys to ElevenLabs, Cohere-hosted APIs, or any other transcription provider.
+
+Local model setup is separate from transcription: Scribe may download the pinned public Cohere/MLX model artifacts into its model cache, writing `.partial` files first and only marking Local ready after integrity verification succeeds. That download contains no user audio, transcripts, calendar data, keyterms, or API keys. Retry repairs failed or corrupt partial downloads; Remove deletes only the model cache, never your session folders.
+
+There is no silent fallback. If Local is selected but the model is missing, downloading, corrupt, removed, low on disk, or unsupported by the MLX runtime, Scribe blocks transcription with a repair action instead of switching to Cloud. Cloud likewise does not switch to Local unless you explicitly change engines and retry.
 
 ## Calendar access (optional)
 
@@ -40,11 +44,11 @@ The "Export Diagnostics…" menu item writes a JSON file to `~/Library/Logs/Scri
 - App version and ISO8601 export timestamp.
 - Settings: engine mode, keep-raw-streams flag, AEC-enabled flag, privacy-acknowledged flag, **HMAC-SHA256 hash** of the output folder path (keyed with the per-install secret in Keychain), and a writability flag.
 - Permissions: granted / denied / notDetermined per permission (mic, screen recording, calendar).
-- Engine readiness: `cloudKey ∈ {configured, missing, unreadable}`, plus optional booleans for the local binary and language model.
+- Engine readiness: `cloudKey ∈ {configured, missing, unreadable}` plus fixed-shape Local fields: selected engine readiness, normalized local model status (`notDownloaded`, `downloading`, `verifying`, `verified`, `failed`, `unsupported`), pinned model ID, cache-exists boolean, MLX availability, and bounded/redacted last download error.
 - Session aggregate counts: total, pending, retrying, complete, failed, unknown, orphaned-with-audio, total-retries.
-- Live RMS levels (only present when populated by future phases).
+- Live RMS levels for microphone/system audio when safe live capture state exists; when no level source has populated live state, this field is absent/unknown rather than fabricated.
 
-The export does **not** contain transcript bodies, attendee names, calendar event titles, audio file contents, the API key value, raw output folder paths, or any other per-session content. The four mandatory redaction tests (`testDiagnosticsContainsNoTranscriptContent`, `testDiagnosticsContainsNoAttendeeNames`, `testDiagnosticsContainsNoAPIKey`, `testDiagnosticsRedactionWalksWholeSessionFolder`) enforce this contract.
+The export does **not** contain transcript bodies, attendee names, calendar event titles, keyterms, audio file contents, model cache paths, the API key value, raw output folder paths, or any other per-session content. The four mandatory redaction tests (`testDiagnosticsContainsNoTranscriptContent`, `testDiagnosticsContainsNoAttendeeNames`, `testDiagnosticsContainsNoAPIKey`, `testDiagnosticsRedactionWalksWholeSessionFolder`) enforce this contract.
 
 ## How to wipe everything
 

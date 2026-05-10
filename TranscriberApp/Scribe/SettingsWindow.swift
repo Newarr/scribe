@@ -12,6 +12,9 @@ final class SettingsWindowController {
     private let fallback: SettingsStore.Defaults
     private let keychainService: String
     private let keychainAccount: String
+    private let engineReadiness: EngineReadinessProbing
+    private let onRetryLocalModel: @MainActor () async -> LocalModelCacheStatus
+    private let onClearLocalModelCache: @MainActor () async throws -> Void
     private let onShowInMenuBarChange: @MainActor (Bool) -> Void
     private let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
     private let onAppearanceThemeChange: @MainActor (AppearanceTheme) -> Void
@@ -22,6 +25,9 @@ final class SettingsWindowController {
         fallback: SettingsStore.Defaults,
         keychainService: String,
         keychainAccount: String,
+        engineReadiness: EngineReadinessProbing,
+        onRetryLocalModel: @escaping @MainActor () async -> LocalModelCacheStatus = { .notDownloaded(modelID: CohereMLXBackend.modelID) },
+        onClearLocalModelCache: @escaping @MainActor () async throws -> Void = {},
         onShowInMenuBarChange: @escaping @MainActor (Bool) -> Void = { _ in },
         onShortcutChange: @escaping @MainActor (KeyboardShortcutSetting) -> Void = { _ in },
         onAppearanceThemeChange: @escaping @MainActor (AppearanceTheme) -> Void = { _ in }
@@ -30,13 +36,19 @@ final class SettingsWindowController {
         self.fallback = fallback
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
+        self.engineReadiness = engineReadiness
+        self.onRetryLocalModel = onRetryLocalModel
+        self.onClearLocalModelCache = onClearLocalModelCache
         self.onShowInMenuBarChange = onShowInMenuBarChange
         self.onShortcutChange = onShortcutChange
         self.onAppearanceThemeChange = onAppearanceThemeChange
     }
 
-    func show() {
+    func show(focus: EngineSettingsCardFocus? = nil) {
         if let window = self.window {
+            if let focus {
+                NotificationCenter.default.post(name: .settingsEngineFocusRequested, object: focus.rawValue)
+            }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -46,7 +58,10 @@ final class SettingsWindowController {
         let model = SettingsFormModel(
             initial: initial,
             keychainService: keychainService,
-            keychainAccount: keychainAccount
+            keychainAccount: keychainAccount,
+            engineReadiness: engineReadiness,
+            onRetryLocalModel: onRetryLocalModel,
+            onClearLocalModelCache: onClearLocalModelCache
         )
 
         let host = NSWindow(
@@ -116,7 +131,8 @@ final class SettingsWindowController {
             onCancel: { [weak self, weak host] in
                 host?.close()
                 self?.window = nil
-            }
+            },
+            initialEngineFocus: focus
         ))
 
         // Codex Phase η P1.3: a title-bar close should behave like
@@ -196,16 +212,24 @@ final class SettingsFormModel: ObservableObject {
     @Published var apiKey: String
     @Published var apiKeyEditedFromInitial: Bool = false
     @Published var saveError: String?
+    @Published var engineViewState: EngineSettingsViewState
+    @Published var pendingLocalModelRemoval: EngineSettingsEffect?
 
     let initialSnapshot: SessionSettings
     private let keychainService: String
     private let keychainAccount: String
     private let initialAPIKey: String
+    private let engineReadiness: EngineReadinessProbing
+    private let onRetryLocalModel: @MainActor () async -> LocalModelCacheStatus
+    private let onClearLocalModelCache: @MainActor () async throws -> Void
 
     init(
         initial: SessionSettings,
         keychainService: String,
-        keychainAccount: String
+        keychainAccount: String,
+        engineReadiness: EngineReadinessProbing,
+        onRetryLocalModel: @escaping @MainActor () async -> LocalModelCacheStatus = { .notDownloaded(modelID: CohereMLXBackend.modelID) },
+        onClearLocalModelCache: @escaping @MainActor () async throws -> Void = {}
     ) {
         self.initialSnapshot = initial
         self.outputRoot = initial.outputRoot
@@ -218,21 +242,27 @@ final class SettingsFormModel: ObservableObject {
         self.startStopShortcut = initial.startStopShortcut
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
+        self.engineReadiness = engineReadiness
+        self.onRetryLocalModel = onRetryLocalModel
+        self.onClearLocalModelCache = onClearLocalModelCache
 
         let keychain = KeychainStore(service: keychainService, account: keychainAccount)
         let stored = (try? keychain.read()) ?? ""
         self.initialAPIKey = stored
         self.apiKey = stored
+        self.engineViewState = EngineSettingsViewState.make(
+            selectedEngine: initial.engineMode,
+            cloudKeyAvailable: stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            localStatus: .notDownloaded(modelID: engineReadiness.localModelID()),
+            modelID: engineReadiness.localModelID()
+        )
+        Task { await refreshEngineViewState() }
     }
 
     var currentSettings: SessionSettings {
         SessionSettings(
             outputRoot: outputRoot,
-            // Codex PM-review UX-10: pin to cloud while local is
-            // disabled in UI. Local mode shipped only as protocol +
-            // EngineSelector dispatch; saving it would create a
-            // dead-end recording failure.
-            engineMode: .cloud,
+            engineMode: engineMode,
             keepRawStreams: keepRawStreams,
             aecEnabled: aecEnabled,
             // Privacy ack is one-way; if the user already acked it,
@@ -243,6 +273,72 @@ final class SettingsFormModel: ObservableObject {
             showInMenuBar: showInMenuBar,
             startStopShortcut: startStopShortcut
         )
+    }
+
+
+    func refreshEngineViewState() async {
+        engineViewState = await EngineSettingsViewState.make(selectedEngine: engineMode, readiness: engineReadiness)
+    }
+
+    func attemptEngineSelection(_ requestedMode: EngineMode) async -> EngineSelectionAttempt {
+        await refreshEngineViewState()
+        let attempt = await EngineSelectionPolicy.evaluate(
+            requested: requestedMode,
+            current: engineMode,
+            readiness: engineReadiness
+        )
+        engineMode = attempt.selectedEngineMode
+        await refreshEngineViewState()
+        if let reason = attempt.repairReason {
+            saveError = SettingsFormModel.repairMessage(for: reason)
+        } else {
+            saveError = nil
+        }
+        return attempt
+    }
+
+    @discardableResult
+    func handleEngineAction(_ action: EngineSettingsAction) async -> EngineSettingsEffect {
+        var reducer = EngineSettingsActionReducer(selectedEngine: engineMode)
+        let effect = reducer.handle(action)
+        engineMode = reducer.selectedEngine
+        switch effect {
+        case .confirmRemoveLocalModel:
+            pendingLocalModelRemoval = effect
+        case .startLocalRetry:
+            _ = await onRetryLocalModel()
+            await refreshEngineViewState()
+            saveError = "Cohere model download is retrying."
+        case .clearLocalModelCache:
+            do {
+                try await onClearLocalModelCache()
+                pendingLocalModelRemoval = nil
+                if engineMode == .local {
+                    saveError = "Cohere model removed. Local remains selected and will show Setup Required until repaired."
+                } else {
+                    saveError = "Cohere model removed. Local will be unavailable until repaired."
+                }
+                await refreshEngineViewState()
+            } catch {
+                saveError = "Failed to remove Cohere model: \(error.localizedDescription)"
+            }
+        case .none:
+            pendingLocalModelRemoval = nil
+        }
+        return effect
+    }
+
+    static func repairMessage(for reason: PreflightReason) -> String {
+        switch reason {
+        case .missingCloudAPIKey:
+            return "Add an ElevenLabs API key before selecting Cloud."
+        case .localRuntimeUnavailable:
+            return "Cohere (local) is not supported on this Mac."
+        case .localModelNotVerified:
+            return "Cohere (local) is unavailable until the model is downloaded and verified."
+        default:
+            return "This engine is not ready yet. Fix setup before selecting it."
+        }
     }
 
     /// Commits the API key through Keychain. Returns true on success.
@@ -294,7 +390,9 @@ private struct SettingsForm: View {
     let onSettingsChange: @MainActor (SessionSettings) async -> Void
     let onSave: @MainActor (SessionSettings) async -> Void
     let onCancel: @MainActor () -> Void
+    let initialEngineFocus: EngineSettingsCardFocus?
     @State private var selectedPage: SettingsPage = .general
+    @State private var focusedEngineCard: EngineSettingsCardFocus?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -327,6 +425,18 @@ private struct SettingsForm: View {
                 .stroke(FidelitySettings.lineStrong, lineWidth: 1)
         )
         .preferredColorScheme(model.appearanceTheme.preferredColorScheme)
+        .onAppear {
+            if let initialEngineFocus {
+                selectedPage = .audio
+                focusedEngineCard = initialEngineFocus
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .settingsEngineFocusRequested)) { notification in
+            selectedPage = .audio
+            if let raw = notification.object as? String {
+                focusedEngineCard = EngineSettingsCardFocus(rawValue: raw)
+            }
+        }
     }
 
     @ViewBuilder
@@ -342,7 +452,7 @@ private struct SettingsForm: View {
                 onSettingsChange: onSettingsChange
             )
         case .audio:
-            FidelityAudioPanel(model: model, onSettingsChange: onSettingsChange)
+            FidelityAudioPanel(model: model, onSettingsChange: onSettingsChange, focusedEngineCard: focusedEngineCard)
         case .shortcuts:
             FidelityShortcutsPanel(
                 model: model,
@@ -359,6 +469,10 @@ private struct SettingsForm: View {
             FidelityAboutPanel()
         }
     }
+}
+
+private extension Notification.Name {
+    static let settingsEngineFocusRequested = Notification.Name("ScribeSettingsEngineFocusRequested")
 }
 
 private enum SettingsPage: String, CaseIterable, Identifiable {
@@ -929,6 +1043,7 @@ private struct FidelityGeneralPanel: View {
 private struct FidelityAudioPanel: View {
     @ObservedObject var model: SettingsFormModel
     let onSettingsChange: @MainActor (SessionSettings) async -> Void
+    let focusedEngineCard: EngineSettingsCardFocus?
     @State private var inputDevice = "MacBook Pro Microphone"
     @State private var language = "English (auto-detect dialect)"
     @State private var speakerLabels = true
@@ -939,6 +1054,51 @@ private struct FidelityAudioPanel: View {
                 title: "Audio",
                 subtitle: "Configure how Scribe captures and transcribes voice."
             )
+
+            FidelitySection(title: "Engine") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 12) {
+                        FidelityEngineCard(
+                            title: "ElevenLabs (cloud)",
+                            status: model.engineViewState.cloud.statusText,
+                            detail: model.engineViewState.cloud.detailText,
+                            selected: model.engineMode == .cloud,
+                            enabled: model.engineViewState.cloud.isSelectionEnabled,
+                            actions: [],
+                            focused: focusedEngineCard == .cloud
+                        ) { selectEngine(.cloud) }
+
+                        FidelityEngineCard(
+                            title: "Cohere (local)",
+                            status: model.engineViewState.local.statusText,
+                            detail: "\(model.engineViewState.local.modelName) · \(model.engineViewState.local.diskUsageText)\n\(model.engineViewState.local.privacyCopy)",
+                            selected: model.engineMode == .local,
+                            enabled: model.engineViewState.local.isSelectionEnabled,
+                            actions: model.engineViewState.local.availableActions.map { action in
+                                action == .retry ? "Retry" : "Remove"
+                            },
+                            focused: focusedEngineCard == .local
+                        ) { selectEngine(.local) } actionHandler: { title in
+                            Task {
+                                if title == "Retry" { _ = await model.handleEngineAction(.retryLocalSetup) }
+                                if title == "Remove" { _ = await model.handleEngineAction(.requestRemoveLocalModel) }
+                            }
+                        }
+                    }
+                    if case .confirmRemoveLocalModel(let modelName) = model.pendingLocalModelRemoval {
+                        FidelityInlineConfirmation(
+                            title: "Remove \(modelName)?",
+                            message: "Local transcription will be unavailable until the Cohere model is downloaded and verified again.",
+                            confirmTitle: "Remove",
+                            onCancel: { Task { _ = await model.handleEngineAction(.cancelRemoveLocalModel) } },
+                            onConfirm: { Task { _ = await model.handleEngineAction(.confirmRemoveLocalModel) } }
+                        )
+                    }
+                }
+                .padding(14)
+                .task { await model.refreshEngineViewState() }
+            }
+            .padding(.bottom, 22)
 
             FidelitySection(title: "Recording") {
                 FidelityRow(label: "Input device") {
@@ -970,8 +1130,135 @@ private struct FidelityAudioPanel: View {
         }
     }
 
+    private func selectEngine(_ mode: EngineMode) {
+        Task {
+            let attempt = await model.attemptEngineSelection(mode)
+            if attempt.accepted {
+                await onSettingsChange(model.currentSettings)
+            }
+        }
+    }
+
     private func persistSettings() {
         Task { await onSettingsChange(model.currentSettings) }
+    }
+}
+
+private struct FidelityEngineCard: View {
+    let title: String
+    let status: String
+    let detail: String
+    let selected: Bool
+    let enabled: Bool
+    let actions: [String]
+    let focused: Bool
+    let select: () -> Void
+    let actionHandler: (String) -> Void
+
+    init(
+        title: String,
+        status: String,
+        detail: String,
+        selected: Bool,
+        enabled: Bool,
+        actions: [String],
+        focused: Bool = false,
+        select: @escaping () -> Void,
+        actionHandler: @escaping (String) -> Void = { _ in }
+    ) {
+        self.title = title
+        self.status = status
+        self.detail = detail
+        self.selected = selected
+        self.enabled = enabled
+        self.actions = actions
+        self.focused = focused
+        self.select = select
+        self.actionHandler = actionHandler
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: select) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
+                        FidelityStatusDot(color: selected ? FidelitySettings.green : (enabled ? FidelitySettings.amber : FidelitySettings.ink3))
+                        Text(title)
+                            .font(FidelitySettings.controlFont)
+                            .foregroundStyle(selected ? FidelitySettings.ink : FidelitySettings.ink2)
+                        Spacer(minLength: 0)
+                        Text(status)
+                            .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11).weight(.medium))
+                            .foregroundStyle(enabled ? FidelitySettings.green : FidelitySettings.amber)
+                    }
+                    Text(detail)
+                        .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                        .foregroundStyle(FidelitySettings.ink3)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(selected ? FidelitySettings.controlSelected : FidelitySettings.fieldFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(focused ? FidelitySettings.accentFocus : (selected ? FidelitySettings.controlSelectedStroke : FidelitySettings.controlStroke), lineWidth: focused ? 2 : 1)
+                )
+                .opacity(enabled || selected ? 1 : 0.70)
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+
+            if actions.isEmpty == false {
+                HStack(spacing: 8) {
+                    ForEach(actions, id: \.self) { action in
+                        if action == "Remove" {
+                            FidelityDangerButton(action) { actionHandler(action) }
+                        } else {
+                            FidelitySecondaryButton(action) { actionHandler(action) }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct FidelityInlineConfirmation: View {
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(FidelitySettings.rowFont.weight(.medium))
+                    .foregroundStyle(FidelitySettings.ink)
+                Text(message)
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                    .foregroundStyle(FidelitySettings.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 10)
+            FidelityGhostButton("Cancel", action: onCancel)
+            FidelityDangerButton(confirmTitle, action: onConfirm)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(FidelitySettings.rust.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(FidelitySettings.rust.opacity(0.22), lineWidth: 1)
+        )
     }
 }
 
@@ -1827,6 +2114,33 @@ private struct FidelityGhostButton: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(FidelitySettings.ghostButtonStroke, lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+private struct FidelityDangerButton: View {
+    let title: String
+    let action: () -> Void
+
+    init(_ title: String, action: @escaping () -> Void = {}) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(FidelitySettings.controlFont)
+                .foregroundStyle(SwiftUI.Color.white)
+                .frame(height: 28)
+                .padding(.horizontal, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(FidelitySettings.rust)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }

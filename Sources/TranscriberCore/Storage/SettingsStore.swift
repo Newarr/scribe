@@ -122,6 +122,44 @@ public struct SessionSettings: Sendable, Equatable, Codable {
 /// Reads are also single-blob, so a partial write (e.g. crash mid-
 /// commit) leaves the previous good blob intact rather than mixing
 /// fields from two epochs.
+
+public struct EngineSelectionAttempt: Sendable, Equatable {
+    public let selectedEngineMode: EngineMode
+    public let accepted: Bool
+    public let repairReason: PreflightReason?
+
+    public init(selectedEngineMode: EngineMode, accepted: Bool, repairReason: PreflightReason?) {
+        self.selectedEngineMode = selectedEngineMode
+        self.accepted = accepted
+        self.repairReason = repairReason
+    }
+}
+
+public enum EngineSelectionPolicy {
+    public static func evaluate(
+        requested mode: EngineMode,
+        current: EngineMode,
+        readiness: EngineReadinessProbing
+    ) async -> EngineSelectionAttempt {
+        switch mode {
+        case .cloud:
+            guard await readiness.cloudKeyAvailable() else {
+                return EngineSelectionAttempt(selectedEngineMode: current, accepted: false, repairReason: .missingCloudAPIKey)
+            }
+            return EngineSelectionAttempt(selectedEngineMode: .cloud, accepted: true, repairReason: nil)
+        case .local:
+            switch await readiness.localModelStatus() {
+            case .verified:
+                return EngineSelectionAttempt(selectedEngineMode: .local, accepted: true, repairReason: nil)
+            case .unsupported:
+                return EngineSelectionAttempt(selectedEngineMode: current, accepted: false, repairReason: .localRuntimeUnavailable)
+            case .notDownloaded, .downloading, .verifying, .failed:
+                return EngineSelectionAttempt(selectedEngineMode: current, accepted: false, repairReason: .localModelNotVerified(modelID: readiness.localModelID()))
+            }
+        }
+    }
+}
+
 public actor SettingsStore {
     public enum Key: String, Sendable {
         /// Single JSON blob holding the whole settings struct.
@@ -205,6 +243,16 @@ public actor SettingsStore {
         var current = snapshot()
         current.engineMode = mode
         try? commit(current)
+    }
+
+    public func setEngineModeIfReady(_ mode: EngineMode, readiness: EngineReadinessProbing) async -> EngineSelectionAttempt {
+        let current = snapshot()
+        let attempt = await EngineSelectionPolicy.evaluate(requested: mode, current: current.engineMode, readiness: readiness)
+        guard attempt.accepted else { return attempt }
+        var updated = current
+        updated.engineMode = attempt.selectedEngineMode
+        try? commit(updated)
+        return attempt
     }
 
     public func setKeepRawStreams(_ on: Bool) {

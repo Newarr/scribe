@@ -67,7 +67,8 @@ final class PermissionDoctorTests: XCTestCase {
         )
         let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
         XCTAssertTrue(report.blockers.contains(.screenRecordingDenied),
-                      "screen recording is required per spec line 339 (no mic-only fallback)")
+                      "screen/system audio is required per spec line 339 (no mic-only fallback)")
+        XCTAssertEqual(PreflightReason.systemAudioRequiredMessage, "System Audio is required to capture other people in calls.")
     }
 
     func testMissingCloudKeyBlocksCloudMode() async {
@@ -83,49 +84,116 @@ final class PermissionDoctorTests: XCTestCase {
                       "cloud mode without a Keychain API key must block; today AppDelegate only discovers this after capture")
     }
 
-    func testMissingLocalBinaryBlocksLocalMode() async {
-        let outputRoot = makeWritableTempDir()
-        defer { try? FileManager.default.removeItem(at: outputRoot) }
+    func testUnavailableLocalModelStatesBlockLocalModeWithRepairGuidance() async {
+        let blockingStates: [LocalModelCacheStatus] = [
+            .notDownloaded(modelID: CohereMLXBackend.modelID),
+            .downloading(modelID: CohereMLXBackend.modelID, progress: LocalModelDownloadProgress(completedBytes: 10, totalBytes: 100)),
+            .verifying(modelID: CohereMLXBackend.modelID),
+            .failed(
+                modelID: CohereMLXBackend.modelID,
+                reason: LocalModelFailure(code: .verificationFailed, message: "Checksum mismatch"),
+                retryAvailable: true
+            )
+        ]
 
-        // Bundle path configured but the file doesn't exist on disk:
-        // emits the URL-bearing reason so the popover can show the user
-        // exactly which file the build expected.
-        let probe = StubEngine(
-            cloudKey: false,
-            localBinary: URL(fileURLWithPath: "/tmp/cohere-not-installed"),
-            localModel: URL(fileURLWithPath: "/tmp/model"),
-            binaryReady: false,
-            modelReady: true
-        )
-        let doctor = PermissionDoctor(
-            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
-            engine: probe
-        )
-        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
-        XCTAssertTrue(report.blockers.contains(where: {
-            if case .missingLocalEngineBinary = $0 { return true } else { return false }
-        }))
+        for status in blockingStates {
+            let outputRoot = makeWritableTempDir()
+            defer { try? FileManager.default.removeItem(at: outputRoot) }
+            let doctor = PermissionDoctor(
+                permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
+                engine: StubEngine(cloudKey: true, localStatus: status)
+            )
+            let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
+            XCTAssertEqual(report.blockers, [.localModelNotVerified(modelID: CohereMLXBackend.modelID)], "Unexpected blockers for \(status)")
+            XCTAssertEqual(RecordRequestGate().verdict(from: report), .deny(report.blockers))
+        }
     }
 
-    func testMissingLocalModelBlocksLocalMode() async {
+    func testVerifiedLocalModelAllowsLocalModeWithoutCloudKey() async {
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+
+        let doctor = PermissionDoctor(
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
+            engine: StubEngine(
+                cloudKey: false,
+                localStatus: .verified(LocalModelCacheInfo(modelID: CohereMLXBackend.modelID, cacheURL: outputRoot, diskUsageBytes: 1))
+            )
+        )
+        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
+        XCTAssertEqual(report.blockers, [])
+        XCTAssertEqual(RecordRequestGate().verdict(from: report), .allow)
+    }
+
+    func testUnsupportedLocalRuntimeBlocksWithoutCloudFallback() async {
         let outputRoot = makeWritableTempDir()
         defer { try? FileManager.default.removeItem(at: outputRoot) }
 
         let probe = StubEngine(
-            cloudKey: false,
-            localBinary: URL(fileURLWithPath: "/tmp/cohere"),
-            localModel: URL(fileURLWithPath: "/tmp/model"),
-            binaryReady: true,
-            modelReady: false
+            cloudKey: true,
+            localStatus: .unsupported(
+                modelID: CohereMLXBackend.modelID,
+                reason: LocalModelFailure(code: .unsupportedRuntime, message: "No MLX runtime")
+            )
         )
         let doctor = PermissionDoctor(
             permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
             engine: probe
         )
         let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
-        XCTAssertTrue(report.blockers.contains(where: {
-            if case .missingLocalLanguageModel = $0 { return true } else { return false }
-        }))
+        XCTAssertEqual(report.blockers, [.localRuntimeUnavailable])
+    }
+
+
+    func testRemovedLocalCacheBlocksSelectedLocalWithoutCloudFallback() async {
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+
+        let doctor = PermissionDoctor(
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
+            engine: StubEngine(cloudKey: true, localStatus: .notDownloaded(modelID: CohereMLXBackend.modelID))
+        )
+        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
+        XCTAssertEqual(report.blockers, [.localModelNotVerified(modelID: CohereMLXBackend.modelID)])
+    }
+
+    func testCloudMissingKeyBlocksEvenWhenLocalIsVerified() async {
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+
+        let doctor = PermissionDoctor(
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
+            engine: StubEngine(
+                cloudKey: false,
+                localStatus: .verified(LocalModelCacheInfo(modelID: CohereMLXBackend.modelID, cacheURL: outputRoot, diskUsageBytes: 1))
+            )
+        )
+        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
+        XCTAssertEqual(report.blockers, [.missingCloudAPIKey])
+    }
+
+    func testRequiredCapturePrerequisitesBlockBothEnginesWhileRecommendedWarnOnly() async {
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+        let localReady = StubEngine(
+            cloudKey: true,
+            localStatus: .verified(LocalModelCacheInfo(modelID: CohereMLXBackend.modelID, cacheURL: outputRoot, diskUsageBytes: 1))
+        )
+
+        for mode in [EngineMode.cloud, .local] {
+            let doctor = PermissionDoctor(
+                permissions: StubPermissions(mic: .denied, screen: .denied, calendar: .denied, notifications: .denied),
+                engine: localReady,
+                folder: AlwaysUnwritableFolderProbe()
+            )
+            let report = await doctor.audit(outputRoot: outputRoot, engineMode: mode)
+            XCTAssertTrue(report.blockers.contains(.microphoneDenied))
+            XCTAssertTrue(report.blockers.contains(.screenRecordingDenied))
+            XCTAssertTrue(report.blockers.contains(where: { if case .outputFolderUnwritable = $0 { return true }; return false }))
+            XCTAssertTrue(report.warnings.contains(.calendarDeniedOptional))
+            XCTAssertTrue(report.warnings.contains(.notificationsDeniedOptional))
+            XCTAssertEqual(RecordRequestGate().verdict(from: report), .deny(report.blockers))
+        }
     }
 
     func testUnwritableOutputFolderBlocks() async {
@@ -178,40 +246,22 @@ final class PermissionDoctorTests: XCTestCase {
                      "ordinary Documents folder must not false-positive")
     }
 
-    func testLocalEngineNotConfiguredYieldsTypedReasonNotFakePath() async {
-        // Codex Phase α review P2.2: V1 cloud-only builds without a Cohere
-        // binary URL must emit `localEngineNotConfigured`, not a fake
-        // "Resources/cohere_transcribe_rs" URL that the popover would
-        // display literally.
+
+    func testRecommendedCalendarAndNotificationsSurfaceWarningsNotBlockers() async {
         let outputRoot = makeWritableTempDir()
         defer { try? FileManager.default.removeItem(at: outputRoot) }
 
-        let probe = StubEngine(cloudKey: false, localBinary: nil, localModel: nil)
         let doctor = PermissionDoctor(
-            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted),
-            engine: probe
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .denied, notifications: .denied),
+            engine: StubEngine(
+                cloudKey: false,
+                localStatus: .verified(LocalModelCacheInfo(modelID: CohereMLXBackend.modelID, cacheURL: outputRoot, diskUsageBytes: 1))
+            )
         )
         let report = await doctor.audit(outputRoot: outputRoot, engineMode: .local)
-        XCTAssertTrue(report.blockers.contains(.localEngineNotConfigured))
-        XCTAssertTrue(report.blockers.contains(.localLanguageModelNotConfigured))
-        XCTAssertFalse(report.blockers.contains(where: {
-            if case .missingLocalEngineBinary = $0 { return true } else { return false }
-        }), "must NOT emit a fake URL when no binary path is configured")
-    }
-
-    // MARK: warnings
-
-    func testCalendarDeniedSurfacesWarningNotBlocker() async {
-        let outputRoot = makeWritableTempDir()
-        defer { try? FileManager.default.removeItem(at: outputRoot) }
-
-        let doctor = PermissionDoctor(
-            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .denied),
-            engine: StubEngine(cloudKey: true)
-        )
-        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
-        XCTAssertEqual(report.blockers, [], "spec line 88 + 333: calendar denial NEVER blocks recording")
+        XCTAssertEqual(report.blockers, [], "recommended permissions must never block recording when required prerequisites and selected engine are ready")
         XCTAssertTrue(report.warnings.contains(.calendarDeniedOptional))
+        XCTAssertTrue(report.warnings.contains(.notificationsDeniedOptional))
         XCTAssertEqual(RecordRequestGate().verdict(from: report), .allowWithWarnings(report.warnings))
     }
 
@@ -226,6 +276,20 @@ final class PermissionDoctorTests: XCTestCase {
         let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
         XCTAssertEqual(report.blockers, [])
         XCTAssertTrue(report.warnings.contains(.calendarNotDetermined))
+    }
+
+    func testNotificationsNotDeterminedSurfacesWarning() async {
+        let outputRoot = makeWritableTempDir()
+        defer { try? FileManager.default.removeItem(at: outputRoot) }
+
+        let doctor = PermissionDoctor(
+            permissions: StubPermissions(mic: .granted, screen: .granted, calendar: .granted, notifications: .notDetermined),
+            engine: StubEngine(cloudKey: true)
+        )
+        let report = await doctor.audit(outputRoot: outputRoot, engineMode: .cloud)
+        XCTAssertEqual(report.blockers, [])
+        XCTAssertTrue(report.warnings.contains(.notificationsNotDetermined))
+        XCTAssertEqual(RecordRequestGate().verdict(from: report), .allowWithWarnings(report.warnings))
     }
 
     // MARK: gate
@@ -265,44 +329,39 @@ private struct StubPermissions: PermissionStatusProbing {
     let mic: PermissionStatus
     let screen: PermissionStatus
     let cal: PermissionStatus
+    let notificationsStatus: PermissionStatus
 
-    init(mic: PermissionStatus, screen: PermissionStatus, calendar: PermissionStatus) {
+    init(mic: PermissionStatus, screen: PermissionStatus, calendar: PermissionStatus, notifications: PermissionStatus = .granted) {
         self.mic = mic
         self.screen = screen
         self.cal = calendar
+        self.notificationsStatus = notifications
     }
 
     func microphone() async -> PermissionStatus { mic }
     func screenRecording() async -> PermissionStatus { screen }
     func calendar() async -> PermissionStatus { cal }
+    func notifications() async -> PermissionStatus { notificationsStatus }
 }
 
 private struct StubEngine: EngineReadinessProbing {
     let cloudKey: Bool
-    let localBinary: URL?
-    let localModel: URL?
-    let binaryReady: Bool
-    let modelReady: Bool
+    let localStatus: LocalModelCacheStatus
+    let modelID: String
 
     init(
         cloudKey: Bool,
-        localBinary: URL? = nil,
-        localModel: URL? = nil,
-        binaryReady: Bool = false,
-        modelReady: Bool = false
+        localStatus: LocalModelCacheStatus = .notDownloaded(modelID: CohereMLXBackend.modelID),
+        modelID: String = CohereMLXBackend.modelID
     ) {
         self.cloudKey = cloudKey
-        self.localBinary = localBinary
-        self.localModel = localModel
-        self.binaryReady = binaryReady
-        self.modelReady = modelReady
+        self.localStatus = localStatus
+        self.modelID = modelID
     }
 
     func cloudKeyAvailable() async -> Bool { cloudKey }
-    func localEngineBinaryURL() -> URL? { localBinary }
-    func localLanguageModelURL() -> URL? { localModel }
-    func localBinaryReady(_ url: URL) async -> Bool { binaryReady }
-    func localModelReady(_ url: URL) async -> Bool { modelReady }
+    func localModelStatus() async -> LocalModelCacheStatus { localStatus }
+    func localModelID() -> String { modelID }
 }
 
 private struct AlwaysUnwritableFolderProbe: OutputFolderProbing {
