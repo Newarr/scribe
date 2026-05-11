@@ -12,7 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+        # mlx-audio-swift requires swift-tools-version:6.2, which ships with
+        # Xcode 26. The macos-15 image bundles Xcode 26.3 alongside Xcode 16.
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
       - name: Build core
         run: swift build
       - name: Test core
