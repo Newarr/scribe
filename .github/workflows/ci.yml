@@ -8,12 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    # Needs macOS 26 host: Xcode 26's `actool` invokes AVFCore-backed
+    # `ibtoold` for `.icon` asset compilation, which dyld-fails on macOS 15
+    # because of missing CoreMedia symbols (e.g. `_kFigCaptionRegionDisplayAlign_Before`).
+    # `swift build` and `swift test` worked on `macos-15` once xcode-select
+    # pointed at Xcode 26.3, but the app's asset catalog needs the OS frameworks.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
-        # mlx-audio-swift requires swift-tools-version:6.2, which ships with
-        # Xcode 26. The macos-15 image bundles Xcode 26.3 alongside Xcode 16.
+        # mlx-audio-swift requires swift-tools-version:6.2 (Xcode 26).
         run: sudo xcode-select -s /Applications/Xcode_26.3.app
       - name: Build core
         run: swift build
