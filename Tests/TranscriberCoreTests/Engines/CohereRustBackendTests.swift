@@ -407,15 +407,37 @@ final class CohereMLXBackendTests: XCTestCase {
             XCTFail("Backend must throw on degenerate output, not silently return")
         } catch let error as CohereMLXBackendError {
             switch error {
-            case .degenerateOutput(let reason, let sample):
+            case .degenerateOutput(let reason):
                 XCTAssertTrue(reason.contains("tri-gram") || reason.contains("unique-word"),
                               "Reason should identify the failure mode, got: \(reason)")
-                XCTAssertFalse(sample.isEmpty, "Sample should include a snippet of the failing transcript")
-                XCTAssertLessThanOrEqual(sample.count, 120, "Sample is capped at 120 chars")
+                let serialized = String(describing: error)
+                XCTAssertFalse(
+                    serialized.contains("I think that's what I'm hearing"),
+                    "String(describing:) must not embed transcript content; TranscriptionWorker persists this verbatim to disk"
+                )
             }
         } catch {
             XCTFail("Expected CohereMLXBackendError.degenerateOutput, got \(error)")
         }
+    }
+
+    func testDetectorDoesNotFireOnShortTranscriptWithFewRepeats() {
+        // 30+ words, "thank you very" tri-gram appears 3 times. Before the
+        // `n >= 5` floor was added this fired (3/28 ≈ 11% > 8%) and the
+        // backend threw, costing the user a usable transcript.
+        let words: [String] = [
+            "thank", "you", "very", "much", "for",
+            "joining", "the", "call", "today",
+            "thank", "you", "very", "much", "again",
+            "before", "we", "wrap",
+            "thank", "you", "very", "kindly",
+            "and", "have", "a", "wonderful", "rest", "of", "your", "afternoon", "everyone"
+        ]
+        XCTAssertGreaterThanOrEqual(words.count, 30)
+        XCTAssertNil(
+            DegenerateOutputDetector.evaluate(words.joined(separator: " ")),
+            "Three repeats of a common tri-gram in a short transcript is not degenerate"
+        )
     }
 }
 
