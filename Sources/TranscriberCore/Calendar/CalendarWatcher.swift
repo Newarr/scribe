@@ -68,9 +68,18 @@ public actor CalendarWatcher {
         }
     }
 
-    public func stop() {
-        pollTask?.cancel()
+    /// Cancels the poll loop and awaits its termination. The previous sync
+    /// variant returned before the in-flight `refreshNow()` had finished, so
+    /// `stop()` could complete and a stale poll iteration would still bump
+    /// the lookup callout afterward — visible on slower hardware as a
+    /// flaky `testStopCancelsPollLoop`. By awaiting `task.value` here, any
+    /// in-progress refresh is allowed to drain before `stop()` returns and
+    /// no further polls can happen for this watcher instance.
+    public func stop() async {
+        let task = pollTask
         pollTask = nil
+        task?.cancel()
+        await task?.value
     }
 
     /// Forces an immediate refresh outside the regular cadence. Called on
