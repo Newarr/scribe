@@ -22,8 +22,8 @@ jobs:
       - name: Build app
         run: |
           xcodebuild \
-            -project TranscriberApp/TranscriberApp.xcodeproj \
-            -scheme TranscriberApp \
+            -project TranscriberApp/Scribe.xcodeproj \
+            -scheme Scribe \
             -configuration Debug \
             -destination 'platform=macOS' \
             build \
