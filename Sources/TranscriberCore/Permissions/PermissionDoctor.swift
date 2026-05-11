@@ -107,12 +107,14 @@ public struct DefaultPermissionStatusProbe: PermissionStatusProbing {
     public func screenRecording() async -> PermissionStatus { await permissions.screenRecordingStatus() }
     public func calendar() async -> PermissionStatus {
         switch EKEventStore.authorizationStatus(for: .event) {
-        case .fullAccess: return .granted
+        // `.authorized` is the legacy pre-macOS-14 full-access value.
+        // Treat it as granted so users who approved calendar before
+        // upgrading don't see the audit re-prompt them on a permission
+        // they've already granted. `.writeOnly` stays not-granted —
+        // Scribe needs to read events to extract keyterms.
+        case .fullAccess, .authorized: return .granted
         case .denied, .restricted: return .denied
-        case .notDetermined, .authorized, .writeOnly:
-            // Treat partial / legacy authorizations as "not yet usable" so the
-            // first-run flow re-prompts. Recording still proceeds because
-            // calendar is optional; this just keeps the warning surface honest.
+        case .notDetermined, .writeOnly:
             return .notDetermined
         @unknown default:
             return .notDetermined

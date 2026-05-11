@@ -581,7 +581,7 @@ private struct RecordingPopoverContent: View {
         switch model.status {
         case .recording, .stopping: return "LIVE"
         case .starting: return "STARTING"
-        case .finalized: return "SAVING"
+        case .finalized: return "TRANSCRIBING"
         case .failed: return "FAILED"
         case .idle: return model.setupNeedsAttention ? "SETUP" : "READY"
         }

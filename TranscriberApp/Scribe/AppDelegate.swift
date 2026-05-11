@@ -85,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingFlowController: OnboardingFlowController?
     private var settingsWindowController: SettingsWindowController?
     private var setupPopover: PermissionRecoveryPopoverController?
+    private var permissionsOnboarding: PermissionsOnboardingWindowController?
     private var diagnosticsWindowController: DiagnosticsWindowController?
     private let savedNotification = SavedNotificationWindowController()
 
@@ -314,6 +315,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         self.setupPopover = PermissionRecoveryPopoverController()
+        // Polished permissions onboarding window (replaces the popover
+        // for permission-only blockers). The model inside fires
+        // `onScreenRecordingRestartRequired` when CGRequest reports
+        // granted but the running process can't see it yet — same
+        // restart alert + relaunch path as the popover used to invoke.
+        self.permissionsOnboarding = PermissionsOnboardingWindowController(
+            onScreenRecordingRestartRequired: { [weak self] in
+                self?.presentScreenRecordingRestartRequiredAlert()
+            }
+        )
         self.diagnosticsWindowController = DiagnosticsWindowController(
             snapshotProvider: { [weak self] in
                 guard let self else { return Self.emptyDiagnosticsSnapshot() }
@@ -636,34 +647,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         icon.accessibilityDescription = trust.accessibilityLabel
         button.image = icon
 
-        // Drive the animations on the button's layer so the SVG asset
-        // itself stays static + template-clean. .detected pulses
-        // opacity (1.0 → 0.4 → 1.0) on a 1.6s loop; .finalizing spins
-        // the dashed arc on a 1s loop. Other states clear any prior
-        // animations so we don't leak motion across transitions.
+        // Menu-bar animations are intentionally disabled. The previous
+        // CABasicAnimation pulse (.detected) + rotation (.finalizing)
+        // left the button's CALayer presentation in a stuck/clipped
+        // state on transition (visible bug: a small frozen glyph
+        // remained at the menu bar after a session finalized). Static
+        // icon swaps still communicate the active state. A proper
+        // animation system is a deferred design task — see vault note
+        // `01-projects/scribe/menu-bar-animations.md`.
         button.wantsLayer = true
         button.layer?.removeAllAnimations()
-        switch trust {
-        case .detected:
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 1.0
-            pulse.toValue = 0.4
-            pulse.duration = 0.8
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            button.layer?.add(pulse, forKey: "trust.detected.pulse")
-        case .finalizing:
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0.0
-            spin.toValue = Double.pi * 2
-            spin.duration = 1.0
-            spin.repeatCount = .infinity
-            // Rotate around the button's centre, not its origin.
-            button.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            button.layer?.add(spin, forKey: "trust.finalizing.spin")
-        default:
-            break
-        }
+        button.layer?.transform = CATransform3DIdentity
+        button.layer?.opacity = 1.0
     }
 
     @MainActor
@@ -866,7 +861,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let snap = settings
             report = await preflightDoctor.audit(outputRoot: snap.outputRoot, engineMode: snap.engineMode)
         }
+        // Route permission-only blockers to the polished onboarding
+        // window. Session-repair payloads and engine/output blockers
+        // stay on the deprecated popover path (it still handles those
+        // remediation surfaces; replacement is out of scope for this
+        // iteration).
+        if payload == nil, Self.allBlockersArePermissions(report) {
+            setupPopover?.close()
+            permissionsOnboarding?.present()
+            return
+        }
         showSetupRequiredPopover(report: report, sessionRepairPayload: payload)
+    }
+
+    /// True only when every blocker is a permission-related reason.
+    /// Used to decide whether the polished onboarding window can fully
+    /// cover the remediation surface, or whether we need to fall back
+    /// to the popover (engine config, output folder, etc.).
+    private static func allBlockersArePermissions(_ report: PreflightReport) -> Bool {
+        guard !report.blockers.isEmpty else { return false }
+        return report.blockers.allSatisfy { isPermissionReason($0) }
+    }
+
+    private static func isPermissionReason(_ reason: PreflightReason) -> Bool {
+        switch reason {
+        case .microphoneDenied, .microphoneNotDetermined,
+             .screenRecordingDenied,
+             .calendarDeniedOptional, .calendarNotDetermined,
+             .notificationsDeniedOptional, .notificationsNotDetermined:
+            return true
+        case .outputFolderUnwritable, .outputFolderInSyncedStorage,
+             .missingCloudAPIKey,
+             .localModelNotVerified, .localRuntimeUnavailable:
+            return false
+        }
     }
 
     @MainActor
@@ -918,9 +946,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.setupPopover?.close()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    let didShowPrompt = await self.permissions.requestScreenRecording()
+                    // CGRequestScreenCaptureAccess returns whether the
+                    // current process has access, not whether a prompt
+                    // was shown. CGPreflightScreenCaptureAccess can
+                    // disagree: after a fresh grant, the running process
+                    // may still see denied until relaunch. When that
+                    // happens, polling is futile — surface a restart
+                    // alert instead of reopening the popover forever.
+                    let requestGrant = await self.permissions.requestScreenRecording()
                     let status = await self.permissions.screenRecordingStatus()
-                    if !didShowPrompt,
+                    if requestGrant, status == .denied {
+                        self.presentScreenRecordingRestartRequiredAlert()
+                        return
+                    }
+                    if !requestGrant,
                        status == .denied,
                        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
                         NSWorkspace.shared.open(url)
@@ -943,6 +982,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.settingsWindowController?.show(focus: self.setupEngineFocus)
             }
         )
+    }
+
+    /// Shown when the user has granted screen recording in System Settings
+    /// (or this process's TCC bit has flipped to granted) but the running
+    /// process's CGPreflightScreenCaptureAccess still reports denied. This
+    /// is a macOS quirk: the grant doesn't propagate to a running process
+    /// for screen recording — only relaunch picks it up. Loop-prompting
+    /// the user is what produced the "popover flashing and can't close"
+    /// failure mode.
+    @MainActor
+    private func presentScreenRecordingRestartRequiredAlert() {
+        setupPopover?.close()
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Restart Scribe to finish enabling Screen Recording"
+        alert.informativeText = "macOS has approved Screen & System Audio Recording in System Settings, but the running Scribe process can't see the new grant until it relaunches."
+        alert.addButton(withTitle: "Quit & Reopen Scribe")
+        alert.addButton(withTitle: "Later")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            Self.relaunchAndTerminate()
+        }
+    }
+
+    /// Spawns a detached `open -n` against our own bundle, then terminates
+    /// ourselves. The child launches as a new instance immediately; the
+    /// brief two-process overlap is harmless because the new instance's
+    /// status item replaces ours after the old one exits.
+    ///
+    /// `NSApp.terminate(nil)` on its own does NOT relaunch — macOS only
+    /// re-spawns crashed apps marked for relaunch, not normal quits. We
+    /// need an external spawn so the user doesn't have to manually
+    /// reopen Scribe after granting Screen Recording.
+    nonisolated static func relaunchAndTerminate() {
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-n", Bundle.main.bundlePath]
+        do {
+            try task.run()
+        } catch {
+            Log.lifecycle.error("Relaunch spawn failed: \(String(describing: error), privacy: .public). Quitting without relaunch; user must reopen manually.")
+        }
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
     }
 
     /// Engine fires this when an allowlisted app has been running for the
@@ -1089,23 +1174,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu?.rebuild(for: status)
         applyTrustIcon()
 
-        // Codex PM-review UX-1: lazily request Calendar on first
-        // record attempt. The user is now in context (they know
-        // they're trying to record a meeting), so a calendar prompt
-        // makes sense. We don't BLOCK on the result; calendar denial
-        // is allowed-with-warning per spec line 88.
-        Task { _ = await self.calendar.requestAccess() }
+        // Eager mic and calendar prompts removed. The previous
+        // pattern (auto-fire CGRequest / EKEventStore before the audit)
+        // caused a surprise system dialog to appear BEFORE any Scribe
+        // UI surfaced — violating the "one clean window for all
+        // permissions" UX. The audit below catches .notDetermined as a
+        // blocker and routes to the Permissions onboarding window
+        // (`PermissionsOnboardingWindowController`); the user clicks
+        // Allow… in-window, which fires the system prompt from a
+        // context they understand.
 
-        // First-launch prompt: if mic is undecided, fire the system prompt
-        // so the user can grant before we re-audit. Calendar is optional, so
-        // we never wait on it here.
-        if permissions.microphoneStatus() == .notDetermined {
-            _ = await permissions.requestMicrophone()
-        }
-
-        // Phase α preflight gate. Any blocker → abort and surface the
-        // Setup Required popover (Phase η) so the user has a 1-click
-        // fix path for each unmet permission.
+        // Phase α preflight gate. Any blocker → abort and route to the
+        // Permissions onboarding window so the user has a single,
+        // explained surface for granting each unmet permission.
         let snapshot = settings
         let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
         if let freeBytes = Self.availableDiskBytes(for: snapshot.outputRoot), freeBytes < Self.minimumFreeDiskBytes {
@@ -1133,7 +1214,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu?.rebuild(for: status)
             applyTrustIcon()
             self.sessionRepairPayload = nil
-            showSetupRequiredPopover(report: report, sessionRepairPayload: nil)
+            // Permission-only blockers → polished onboarding window;
+            // engine/output blockers stay on the popover path.
+            if Self.allBlockersArePermissions(report) {
+                setupPopover?.close()
+                permissionsOnboarding?.present()
+            } else {
+                showSetupRequiredPopover(report: report, sessionRepairPayload: nil)
+            }
             return
         case .allowWithWarnings(let reasons):
             Log.lifecycle.info("startRecording proceeding with warnings: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")

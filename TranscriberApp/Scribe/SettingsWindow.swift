@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 import TranscriberCore
 import UserNotifications
@@ -527,6 +528,10 @@ private enum FidelitySettings {
     static let ink = adaptive(
         dark: NSColor(calibratedWhite: 0.98, alpha: 1.0),
         light: NSColor(calibratedWhite: 0.08, alpha: 1.0)
+    )
+    static let inkInverse = adaptive(
+        dark: NSColor(calibratedWhite: 0.08, alpha: 1.0),
+        light: NSColor(calibratedWhite: 0.98, alpha: 1.0)
     )
     static let ink2 = adaptive(
         dark: NSColor(calibratedWhite: 0.72, alpha: 1.0),
@@ -1400,86 +1405,116 @@ private struct FidelityPrivacyPanel: View {
     }
 }
 
-private struct FidelityPermissionsPanel: View {
-    @State private var microphoneStatus: PermissionStatus = .notDetermined
-    @State private var screenRecordingStatus: PermissionStatus = .notDetermined
-    @State private var calendarStatus: PermissionStatus = .notDetermined
-    @State private var notificationStatus: PermissionStatus = .notDetermined
+/// Backing state for the polished Permissions panel. Shared between the
+/// Settings tab (one-shot refresh) and the standalone Permissions
+/// onboarding window (auto-poll + becomes-active observer). The model
+/// owns the four permission statuses, the request handlers that fire
+/// in-app system prompts, and the screen-recording restart-required
+/// signal that AppDelegate maps to the relaunch alert.
+@MainActor
+final class PermissionsPanelModel: ObservableObject {
+    @Published var microphoneStatus: PermissionStatus = .notDetermined
+    @Published var screenRecordingStatus: PermissionStatus = .notDetermined
+    @Published var calendarStatus: PermissionStatus = .notDetermined
+    @Published var notificationStatus: PermissionStatus = .notDetermined
 
-    private let permissions = PermissionsService()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            FidelityPanelIntro(
-                title: "Permissions",
-                subtitle: "Scribe needs a few macOS permissions to capture meetings. Granted permissions stay in System Settings; revoke any of them at any time."
-            )
-
-            FidelitySection(title: "Required") {
-                FidelityPermissionRow(
-                    title: "Microphone",
-                    status: microphoneStatus,
-                    help: "Captures your voice from the mic.",
-                    action: .systemSettings {
-                        openSystemSettings("Privacy_Microphone")
-                    }
-                )
-                FidelityRowDivider()
-                FidelityPermissionRow(
-                    title: "Screen Recording",
-                    status: screenRecordingStatus,
-                    help: "Captures system audio so other speakers are transcribed. No video is recorded.",
-                    action: .systemSettings {
-                        openSystemSettings("Privacy_ScreenCapture")
-                    }
-                )
-            }
-            .padding(.bottom, 22)
-
-            FidelitySection(title: "Optional") {
-                FidelityPermissionRow(
-                    title: "Calendar",
-                    status: calendarStatus,
-                    help: "Names transcripts using the meeting title and labels speakers with attendee names.",
-                    action: .systemSettings {
-                        openSystemSettings("Privacy_Calendars")
-                    }
-                )
-                FidelityRowDivider()
-                FidelityPermissionRow(
-                    title: "Notifications",
-                    status: notificationStatus,
-                    help: "Tells you when a transcript is ready or when a meeting is detected.",
-                    action: .secondary("Allow…") {
-                        Task { await requestNotifications() }
-                    }
-                )
-            }
-        }
-        .task { await refreshStatuses() }
+    /// True when every "Required" permission is granted (Mic + Screen
+    /// Recording). The onboarding window's Done button gates on this so
+    /// the user can't dismiss before fixing the blockers.
+    var allRequiredGranted: Bool {
+        microphoneStatus == .granted && screenRecordingStatus == .granted
     }
 
-    private func openSystemSettings(_ pane: String) {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-            NSWorkspace.shared.open(url)
+    /// Fires when `requestScreenRecording()` reports access granted but
+    /// `screenRecordingStatus()` still returns denied — the macOS quirk
+    /// where TCC propagation requires a process restart. AppDelegate
+    /// owns the relaunch alert; the model just surfaces the signal.
+    var onScreenRecordingRestartRequired: (@MainActor () -> Void)?
+
+    private let permissions: PermissionsService
+    private let autoPoll: Bool
+    private var refreshTimer: Timer?
+    private var didBecomeActiveObserver: NSObjectProtocol?
+
+    init(autoPoll: Bool, permissions: PermissionsService = PermissionsService()) {
+        self.autoPoll = autoPoll
+        self.permissions = permissions
+    }
+
+    // No deinit cleanup: Swift 6 forbids reaching the MainActor-isolated
+    // `refreshTimer` / `didBecomeActiveObserver` from a nonisolated
+    // deinit. The Timer captures `[weak self]` so it auto-no-ops after
+    // dealloc; observer leak is bounded by call sites invoking `stop()`
+    // (the SwiftUI view's `onDisappear` does this).
+
+    /// Kick off one immediate refresh, then (when `autoPoll`) the 1.5s
+    /// poll and the becomes-active observer. The poll cadence matches
+    /// what the deprecated popover used; TCC has no change-notification
+    /// API for these scopes so polling is the cheap fallback.
+    func start() {
+        Task { @MainActor [weak self] in
+            await self?.refreshStatuses()
+        }
+        guard autoPoll else { return }
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.refreshStatuses()
+            }
+        }
+        if didBecomeActiveObserver == nil {
+            didBecomeActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.refreshStatuses()
+                }
+            }
         }
     }
 
-    @MainActor
-    private func refreshStatuses() async {
+    func stop() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+        if let token = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(token)
+            didBecomeActiveObserver = nil
+        }
+    }
+
+    func refreshStatuses() async {
         let probe = DefaultPermissionStatusProbe(permissions: permissions)
-        async let microphone = probe.microphone()
+        async let mic = probe.microphone()
         async let screen = probe.screenRecording()
-        async let calendar = probe.calendar()
-        async let notifications = notificationPermissionStatus()
-        microphoneStatus = await microphone
+        async let cal = probe.calendar()
+        async let notif = notificationPermissionStatus()
+        microphoneStatus = await mic
         screenRecordingStatus = await screen
-        calendarStatus = await calendar
-        notificationStatus = await notifications
+        calendarStatus = await cal
+        notificationStatus = await notif
     }
 
-    @MainActor
-    private func requestNotifications() async {
+    func requestMicrophone() async {
+        _ = await permissions.requestMicrophone()
+        await refreshStatuses()
+    }
+
+    func requestScreenRecording() async {
+        let granted = await permissions.requestScreenRecording()
+        await refreshStatuses()
+        if granted, screenRecordingStatus == .denied {
+            onScreenRecordingRestartRequired?()
+        }
+    }
+
+    func requestCalendar() async {
+        _ = await permissions.requestCalendar()
+        await refreshStatuses()
+    }
+
+    func requestNotifications() async {
         do {
             let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
             notificationStatus = granted ? .granted : .denied
@@ -1491,14 +1526,200 @@ private struct FidelityPermissionsPanel: View {
     private func notificationPermissionStatus() async -> PermissionStatus {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral:
-            return .granted
-        case .denied:
-            return .denied
+        case .authorized, .provisional, .ephemeral: return .granted
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
+        }
+    }
+}
+
+/// Shared permissions panel content rendered by both the Settings tab
+/// and the standalone Permissions onboarding window. Owns its panel
+/// model so each surface has its own polling state. Dynamic per-status
+/// buttons: `.notDetermined` → in-app Allow…, `.denied` → deep-link to
+/// System Settings, `.granted` → no button (status pill carries it).
+private struct FidelityPermissionsPanel: View {
+    @StateObject private var model: PermissionsPanelModel
+    private let title: String
+    private let subtitle: String
+    private let renderIntro: Bool
+    private let showsBypassExplainer: Bool
+
+    private let onRequiredStateChanged: ((Bool) -> Void)?
+
+    init(
+        title: String = "Permissions",
+        subtitle: String = "Grant a few macOS permissions to capture meetings. Audio stays on your Mac. You can change access anytime in System Settings.",
+        autoPoll: Bool = false,
+        renderIntro: Bool = true,
+        showsBypassExplainer: Bool = false,
+        onScreenRecordingRestartRequired: (@MainActor () -> Void)? = nil,
+        onRequiredStateChanged: ((Bool) -> Void)? = nil
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.renderIntro = renderIntro
+        self.showsBypassExplainer = showsBypassExplainer
+        self.onRequiredStateChanged = onRequiredStateChanged
+        let panel = PermissionsPanelModel(autoPoll: autoPoll)
+        panel.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
+        _model = StateObject(wrappedValue: panel)
+    }
+
+    private struct RowSpec: Identifiable {
+        let id: String
+        let title: String
+        let help: String
+        let statusKey: KeyPath<PermissionsPanelModel, PermissionStatus>
+        let request: @MainActor () async -> Void
+        let systemPane: String
+    }
+
+    private var requiredRowSpecs: [RowSpec] {
+        [
+            RowSpec(
+                id: "microphone",
+                title: "Microphone",
+                help: "Records your side of the meeting.",
+                statusKey: \.microphoneStatus,
+                request: { await model.requestMicrophone() },
+                systemPane: "Privacy_Microphone"
+            ),
+            RowSpec(
+                id: "screenRecording",
+                title: "Screen Recording",
+                help: "Captures everyone else. No video.",
+                statusKey: \.screenRecordingStatus,
+                request: { await model.requestScreenRecording() },
+                systemPane: "Privacy_ScreenCapture"
+            ),
+        ]
+    }
+
+    private var recommendedRowSpecs: [RowSpec] {
+        [
+            RowSpec(
+                id: "calendar",
+                title: "Calendar",
+                help: "Names transcripts and labels speakers.",
+                statusKey: \.calendarStatus,
+                request: { await model.requestCalendar() },
+                systemPane: "Privacy_Calendars"
+            ),
+            RowSpec(
+                id: "notifications",
+                title: "Notifications",
+                help: "Alerts you when a transcript is ready.",
+                statusKey: \.notificationStatus,
+                request: { await model.requestNotifications() },
+                systemPane: "Privacy_Notifications"
+            ),
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if renderIntro {
+                FidelityPanelIntro(title: title, subtitle: subtitle)
+            }
+
+            permissionsSection(title: "Required", specs: requiredRowSpecs)
+                .padding(.bottom, 24)
+
+            permissionsSection(title: "Recommended", specs: recommendedRowSpecs)
+                .padding(.bottom, showsBypassExplainer ? 14 : 0)
+
+            if showsBypassExplainer {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(FidelitySettings.ink3)
+                        .padding(.top, 2)
+                    Text("macOS may occasionally ask Scribe to bypass the system private window picker — say Allow. It's how Scribe captures system audio without picking a window each time.")
+                        .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                        .foregroundStyle(FidelitySettings.ink3)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 4)
+            }
+        }
+        .task {
+            model.start()
+        }
+        .onDisappear {
+            model.stop()
+        }
+        .onChange(of: model.microphoneStatus) { _, _ in
+            onRequiredStateChanged?(model.allRequiredGranted)
+        }
+        .onChange(of: model.screenRecordingStatus) { _, _ in
+            onRequiredStateChanged?(model.allRequiredGranted)
+        }
+    }
+
+    // ForEach (vs an inline TupleView) is the defensive choice: tuple
+    // builders are fine up to 10 children, but a previous inline version
+    // rendered only the first rows in some builds (suspected first-paint
+    // race against the @StateObject's async refresh). ForEach with stable
+    // IDs forces SwiftUI to diff per-row instead of treating the whole
+    // section as one opaque tuple.
+    @ViewBuilder
+    private func permissionsSection(title: String, specs: [RowSpec]) -> some View {
+        FidelitySection(title: title) {
+            ForEach(Array(specs.enumerated()), id: \.element.id) { index, spec in
+                if index > 0 {
+                    FidelityRowDivider()
+                }
+                FidelityPermissionRow(
+                    title: spec.title,
+                    status: model[keyPath: spec.statusKey],
+                    help: spec.help,
+                    action: rowAction(
+                        for: model[keyPath: spec.statusKey],
+                        request: spec.request,
+                        systemPane: spec.systemPane
+                    )
+                )
+            }
+        }
+    }
+
+    private func rowAction(
+        for status: PermissionStatus,
+        request: @escaping @MainActor () async -> Void,
+        systemPane: String
+    ) -> FidelityPermissionAction? {
+        switch status {
+        case .granted:
+            return nil
         case .notDetermined:
-            return .notDetermined
-        @unknown default:
-            return .notDetermined
+            return .secondary("Allow") {
+                Task { @MainActor in await request() }
+            }
+        case .denied:
+            return .systemSettings {
+                Self.openSystemSettings(systemPane)
+            }
+        }
+    }
+
+    private static func openSystemSettings(_ pane: String) {
+        // Screen Recording quirk: macOS only lists an app in the
+        // "Screen & System Audio Recording" toggle list once it has
+        // called CGRequestScreenCaptureAccess at least once. On a fresh
+        // install or after `tccutil reset` Scribe is missing from the
+        // list entirely — the user opens Settings and there's no row to
+        // flip. Register first so the row exists when Settings opens.
+        // No-op if already granted; returns immediately without a prompt
+        // if previously denied.
+        if pane == "Privacy_ScreenCapture" {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+            NSWorkspace.shared.open(url)
         }
     }
 }
@@ -1831,19 +2052,23 @@ private struct FidelityPermissionRow: View {
     let title: String
     let status: PermissionStatus
     let help: String
-    let action: FidelityPermissionAction
+    /// `nil` when no action is appropriate (e.g., status == .granted).
+    /// The row still renders title, status pill, and description; the
+    /// button column collapses so the row stays balanced.
+    let action: FidelityPermissionAction?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Circle()
                 .fill(status.fidelityColor)
                 .frame(width: 8, height: 8)
-                .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                .padding(.top, 7)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .lastTextBaseline, spacing: 8) {
                     Text(title)
                         .font(FidelitySettings.rowFont.weight(.medium))
                         .foregroundStyle(FidelitySettings.ink)
+                        .tracking(-0.08)
                     Text(status.fidelityLabel)
                         .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5).weight(.medium))
                         .foregroundStyle(status.fidelityColor)
@@ -1855,12 +2080,32 @@ private struct FidelityPermissionRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 12)
-            FidelityPermissionButton(action: action)
-                .padding(.top, 2)
+            if let action {
+                FidelityPermissionButton(action: action)
+                    .padding(.top, 2)
+            } else if status == .granted {
+                FidelityGrantedIndicator()
+                    .padding(.top, 2)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .contentShape(Rectangle())
+    }
+}
+
+private struct FidelityGrantedIndicator: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(FidelitySettings.green)
+            Text("Granted")
+                .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12.5).weight(.medium))
+                .foregroundStyle(FidelitySettings.ink3)
+        }
+        .frame(height: 28)
+        .padding(.horizontal, 8)
     }
 }
 
@@ -1873,15 +2118,16 @@ private struct FidelityPermissionButton: View {
         } label: {
             HStack(spacing: 4) {
                 Text(action.title)
-                    .font(FidelitySettings.controlFont)
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12.5)
+                        .weight(action.isSystemSettings ? .medium : .semibold))
                 if action.isSystemSettings {
                     Image(systemName: "arrow.up.forward")
                         .font(.system(size: 10.5, weight: .medium))
                         .opacity(0.58)
                 }
             }
-            .foregroundStyle(action.isSystemSettings ? FidelitySettings.ink2 : FidelitySettings.ink)
-            .padding(.horizontal, action.isSystemSettings ? 6 : 11)
+            .foregroundStyle(action.isSystemSettings ? FidelitySettings.ink2 : FidelitySettings.inkInverse)
+            .padding(.horizontal, action.isSystemSettings ? 6 : 14)
             .frame(height: 28)
             .background(buttonBackground)
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -1897,10 +2143,10 @@ private struct FidelityPermissionButton: View {
                 .fill(SwiftUI.Color.clear)
         } else {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(FidelitySettings.secondaryButtonFill)
+                .fill(FidelitySettings.ink)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(FidelitySettings.secondaryButtonStroke, lineWidth: 1)
+                        .stroke(SwiftUI.Color.black.opacity(0.08), lineWidth: 1)
                 )
         }
     }
@@ -2205,5 +2451,263 @@ private struct FidelityToggle: View {
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())
+    }
+}
+
+/// Standalone Permissions window shown when Record is blocked by
+/// missing permissions, or from the menu bar's "Setup Required..."
+/// entry. Hosts the same `FidelityPermissionsPanel` content as the
+/// Settings tab but in a focused, no-sidebar window with auto-polling
+/// so grants made in System Settings reflect within ~1.5s when the
+/// user comes back.
+///
+/// Replaces the deprecated `PermissionRecoveryPopoverController`
+/// (menu-bar popover) which had a flashing/dismissal bug and only
+/// showed unmet permissions; the window shows all four with status
+/// pills so the user has a complete picture.
+@MainActor
+final class PermissionsOnboardingWindowController {
+    private var window: NSWindow?
+    private var windowDelegate: WindowDelegate?
+    private let onScreenRecordingRestartRequired: @MainActor () -> Void
+
+    init(onScreenRecordingRestartRequired: @escaping @MainActor () -> Void) {
+        self.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
+    }
+
+    var isShown: Bool { window?.isVisible == true }
+
+    func present() {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        // Borderless + transparent background gives the SwiftUI
+        // FidelityWindowSurface gradient an edge-to-edge canvas with no
+        // standard macOS title bar consuming the top strip. The
+        // SwiftUI body draws its own close affordance (the Done button)
+        // and the close button is rendered as a hosted control in the
+        // hero area; `isMovableByWindowBackground` lets the user drag
+        // anywhere on the window.
+        let host = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 620),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        host.title = "Scribe Setup"
+        host.titleVisibility = .hidden
+        host.titlebarAppearsTransparent = true
+        host.isOpaque = false
+        host.backgroundColor = .clear
+        host.isMovableByWindowBackground = true
+        host.center()
+        host.isReleasedWhenClosed = false
+        host.sharingType = WindowChromeSharing.confidential
+        host.collectionBehavior.insert(.moveToActiveSpace)
+
+        host.contentView = NSHostingView(rootView: PermissionsOnboardingView(
+            onScreenRecordingRestartRequired: { [weak self] in
+                self?.onScreenRecordingRestartRequired()
+            },
+            onClose: { [weak self] in
+                self?.close()
+            }
+        ))
+        WindowChrome.installGlass(on: host, material: .hudWindow)
+        if let contentView = host.contentView {
+            contentView.wantsLayer = true
+            contentView.layer?.backgroundColor = NSColor.clear.cgColor
+            contentView.layer?.cornerRadius = 14
+            contentView.layer?.cornerCurve = .continuous
+            contentView.layer?.masksToBounds = true
+        }
+
+        let delegate = WindowDelegate { [weak self] in
+            self?.window = nil
+            self?.windowDelegate = nil
+        }
+        host.delegate = delegate
+
+        host.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        self.window = host
+        self.windowDelegate = delegate
+    }
+
+    func close() {
+        window?.close()
+        window = nil
+        windowDelegate = nil
+    }
+
+    private final class WindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
+        let onClose: @MainActor () -> Void
+        init(onClose: @escaping @MainActor () -> Void) { self.onClose = onClose }
+        func windowWillClose(_ notification: Notification) {
+            Task { @MainActor in onClose() }
+        }
+    }
+}
+
+private struct PermissionsOnboardingTrafficLight: View {
+    let color: SwiftUI.Color
+    let action: (@MainActor () -> Void)?
+
+    var body: some View {
+        Button {
+            action?()
+        } label: {
+            Circle()
+                .fill(color)
+                .overlay(
+                    Circle()
+                        .strokeBorder(SwiftUI.Color.black.opacity(0.078), lineWidth: 0.5)
+                )
+                .frame(width: 12, height: 12)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(action == nil)
+        .help(action == nil ? "" : "Close")
+    }
+}
+
+private struct PermissionsOnboardingView: View {
+    let onScreenRecordingRestartRequired: @MainActor () -> Void
+    let onClose: @MainActor () -> Void
+    @State private var requiredGranted: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            titleBar
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    hero
+                    // Mirror the Settings → Permissions tab so both
+                    // surfaces feel like the same family of UI. The
+                    // onboarding window builds its own hero + footer; the
+                    // panel renders just the section cards (renderIntro:
+                    // false), plus auto-poll so grants made in System
+                    // Settings reflect within ~1.5s.
+                    FidelityPermissionsPanel(
+                        autoPoll: true,
+                        renderIntro: false,
+                        showsBypassExplainer: false,
+                        onScreenRecordingRestartRequired: onScreenRecordingRestartRequired,
+                        onRequiredStateChanged: { granted in
+                            requiredGranted = granted
+                        }
+                    )
+                    footer
+                }
+                .padding(.top, 12)
+                .padding(.horizontal, 40)
+                .padding(.bottom, 32)
+            }
+        }
+        .frame(width: 620, height: 620)
+        .background(FidelityWindowSurface())
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(FidelitySettings.lineStrong, lineWidth: 1)
+        )
+    }
+
+    // Borderless window chrome with custom 12×12 traffic light dots
+    // matching the design. The close dot calls `onClose`; the
+    // minimize/zoom dots are decorative-only (rendered gray to match
+    // macOS's disabled-button look) because the onboarding window
+    // should never be minimized or zoomed mid-setup.
+    private var titleBar: some View {
+        HStack(spacing: 8) {
+            PermissionsOnboardingTrafficLight(
+                color: SwiftUI.Color(red: 1.0, green: 0.373, blue: 0.341),
+                action: onClose
+            )
+            PermissionsOnboardingTrafficLight(
+                color: SwiftUI.Color(red: 0.851, green: 0.851, blue: 0.839),
+                action: nil
+            )
+            PermissionsOnboardingTrafficLight(
+                color: SwiftUI.Color(red: 0.851, green: 0.851, blue: 0.839),
+                action: nil
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 14)
+        .frame(height: 36)
+    }
+
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(FidelitySettings.secondaryButtonFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(FidelitySettings.lineStrong, lineWidth: 1)
+                    )
+                    .shadow(color: SwiftUI.Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
+                Image(systemName: "checkmark.shield")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(FidelitySettings.ink)
+            }
+            .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Let's set up Scribe")
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 24).weight(.semibold))
+                    .foregroundStyle(FidelitySettings.ink)
+                    .tracking(-0.6)
+                Text("Grant a few macOS permissions to capture meetings.")
+                    .font(FidelitySettings.subtitleFont)
+                    .foregroundStyle(FidelitySettings.ink2)
+                    .lineSpacing(4)
+                    .tracking(-0.08)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(FidelitySettings.ink3)
+            Text("You can change these anytime in System Settings.")
+                .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                .foregroundStyle(FidelitySettings.ink3)
+                .tracking(-0.05)
+            Spacer(minLength: 0)
+            Button {
+                if requiredGranted {
+                    onClose()
+                }
+            } label: {
+                Text("Done")
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12.5).weight(.semibold))
+                    .foregroundStyle(requiredGranted ? FidelitySettings.inkInverse : FidelitySettings.ink3)
+                    .frame(height: 28)
+                    .padding(.horizontal, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(requiredGranted ? FidelitySettings.ink : FidelitySettings.offToggleFill)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(requiredGranted ? SwiftUI.Color.black.opacity(0.08) : FidelitySettings.line, lineWidth: 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!requiredGranted)
+            .help(requiredGranted ? "Done" : "Grant Microphone and Screen Recording first")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

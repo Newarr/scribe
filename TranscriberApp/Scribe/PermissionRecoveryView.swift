@@ -325,6 +325,16 @@ final class PermissionRecoveryPopoverController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private var recheck: (@MainActor () -> Void)?
     private var generation: Int = 0
+    /// Steps currently rendered in the popover. Used to skip rebuild
+    /// when the auto-recheck timer fires with an identical report
+    /// (the underlying TCC bit can be stale forever, so re-rendering
+    /// every 1.5s caused a visible close-and-reopen flash that
+    /// also raced with user-dismissal).
+    private var currentSteps: [PermissionRemediation.Step] = []
+    /// Set on user-driven dismiss (transient click-outside or explicit
+    /// close). Auto-rechecks queued before the dismiss must not
+    /// resurrect the popover within this grace window.
+    private var suppressedUntil: Date?
     nonisolated(unsafe) private var didBecomeActiveObserver: NSObjectProtocol?
     nonisolated(unsafe) private var pollTimer: Timer?
 
@@ -343,6 +353,23 @@ final class PermissionRecoveryPopoverController: NSObject, NSPopoverDelegate {
         actions: PermissionRecoveryActions,
         onRecheck: @escaping @MainActor () -> Void
     ) {
+        // If the user just dismissed the popover, don't let a queued
+        // recheck Task spring it back open within the grace window.
+        if let until = suppressedUntil, until > Date() {
+            recheck = onRecheck
+            return
+        }
+        suppressedUntil = nil
+
+        // If the popover is already shown with the same report, refresh
+        // the recheck callback and leave the UI alone. Prevents the
+        // flash-on-poll-tick caused by tearing down and rebuilding the
+        // NSPopover + NSHostingController on every 1.5s timer fire.
+        if popover.isShown, steps == currentSteps {
+            recheck = onRecheck
+            return
+        }
+
         tearDownAutoRechecks()
         // Codex Phase η P1.8: if a popover from a previous deny path
         // is still on screen, close it cleanly first so the new content
@@ -354,6 +381,7 @@ final class PermissionRecoveryPopoverController: NSObject, NSPopoverDelegate {
         generation += 1
         let showGeneration = generation
         recheck = onRecheck
+        currentSteps = steps
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(
             rootView: PermissionRecoveryView(
@@ -376,6 +404,7 @@ final class PermissionRecoveryPopoverController: NSObject, NSPopoverDelegate {
     func close() {
         tearDownAutoRechecks()
         recheck = nil
+        currentSteps = []
         guard popover.isShown else { return }
         popover.performClose(nil)
     }
@@ -387,6 +416,12 @@ final class PermissionRecoveryPopoverController: NSObject, NSPopoverDelegate {
             guard let self, !self.popover.isShown else { return }
             self.tearDownAutoRechecks()
             self.recheck = nil
+            self.currentSteps = []
+            // 5s grace window: any queued recheck Task that lands after
+            // dismiss is dropped, so click-outside actually dismisses
+            // instead of being immediately resurrected by a timer-fired
+            // Task enqueued before dismiss.
+            self.suppressedUntil = Date().addingTimeInterval(5)
         }
     }
 

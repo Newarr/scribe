@@ -12,7 +12,6 @@
 		0C259DA1AECD94AE49A3FA58 /* GeistVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 18EBB27FDC7B355AA673489A /* GeistVariable-Italic.ttf */; };
 		0C272D89A8C312C5F159B8C9 /* PermissionRecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */; };
 		0D516C4F502BAE0251244C28 /* PrivacyAcknowledgementSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */; };
-		0D516C4F502BAE0251244D29 /* OnboardingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F23A10E43C31C93C04801EF /* OnboardingWindow.swift */; };
 		1C89DA0657DF0F920EB76FEE /* SavedNotificationWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */; };
 		2309E1022B0975FCBE460DC9 /* Geist-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */; };
 		3BCF9C0AD183E210838D5AB7 /* JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = AC557FEA1022E74AC7FB2AAB /* JetBrainsMono-OFL.txt */; };
@@ -20,6 +19,7 @@
 		4EF168E02CA5FD65843B8E55 /* GeistVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A24F32984A71E09395513545 /* GeistVariable.ttf */; };
 		58FA6F896CE30C27264BF0D7 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3711DECCD9B3CE4D5706D0B9 /* AppDelegate.swift */; };
 		69D35C9D594B8F1F1EB96A53 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C6B78097708D59228C8C65 /* SettingsWindow.swift */; };
+		7BCCA0F4C6CB7120F33561C9 /* OnboardingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */; };
 		8877FAD6AC64AD127C558876 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 58A882D385FAA4B8E18A3F86 /* InterVariable.ttf */; };
 		9CD0F558E5365D845331221D /* AppearanceTheme+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */; };
 		AC05914D15CD5ED7E54877EB /* InterVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */; };
@@ -44,6 +44,7 @@
 		11345C81116DC36BA7419B25 /* Scribe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Scribe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		18EBB27FDC7B355AA673489A /* GeistVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistVariable-Italic.ttf"; sourceTree = "<group>"; };
 		1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InterVariable-Italic.ttf"; sourceTree = "<group>"; };
+		1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindow.swift; sourceTree = "<group>"; };
 		21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptCoordinator.swift; sourceTree = "<group>"; };
 		223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Geist-OFL.txt"; sourceTree = "<group>"; };
 		24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
@@ -54,7 +55,6 @@
 		57A418554CCA692B873FA2E4 /* EndCountdownWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndCountdownWindow.swift; sourceTree = "<group>"; };
 		58A882D385FAA4B8E18A3F86 /* InterVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = InterVariable.ttf; sourceTree = "<group>"; };
 		6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyAcknowledgementSheet.swift; sourceTree = "<group>"; };
-		6F23A10E43C31C93C04801EF /* OnboardingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindow.swift; sourceTree = "<group>"; };
 		71044992EBA5AF0C0CFA48D2 /* JetBrainsMonoVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMonoVariable.ttf; sourceTree = "<group>"; };
 		9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppearanceTheme+App.swift"; sourceTree = "<group>"; };
 		A24F32984A71E09395513545 /* GeistVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = GeistVariable.ttf; sourceTree = "<group>"; };
@@ -127,9 +127,9 @@
 				D529955956249F0700BFFD73 /* DesignSystem.swift */,
 				D288AA87854E67BA12387175 /* DiagnosticsView.swift */,
 				57A418554CCA692B873FA2E4 /* EndCountdownWindow.swift */,
+				1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */,
 				B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */,
 				6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */,
-				6F23A10E43C31C93C04801EF /* OnboardingWindow.swift */,
 				030D0A67E77F17BEE72A9129 /* RecordingMenu.swift */,
 				B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */,
 				572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */,
@@ -244,9 +244,9 @@
 				C88C5DC6D949DB3B9964300E /* DesignSystem.swift in Sources */,
 				09D39AB01C40DFE6902AD567 /* DiagnosticsView.swift in Sources */,
 				AFE235F52485B1F5D7F52259 /* EndCountdownWindow.swift in Sources */,
+				7BCCA0F4C6CB7120F33561C9 /* OnboardingWindow.swift in Sources */,
 				0C272D89A8C312C5F159B8C9 /* PermissionRecoveryView.swift in Sources */,
 				0D516C4F502BAE0251244C28 /* PrivacyAcknowledgementSheet.swift in Sources */,
-				0D516C4F502BAE0251244D29 /* OnboardingWindow.swift in Sources */,
 				AEAA426E81A7A6BBCAA85455 /* RecordingMenu.swift in Sources */,
 				1C89DA0657DF0F920EB76FEE /* SavedNotificationWindow.swift in Sources */,
 				C4457AFB46EBCC8F7A30D469 /* ScribeApp.swift in Sources */,

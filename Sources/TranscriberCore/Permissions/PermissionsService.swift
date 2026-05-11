@@ -23,10 +23,15 @@ public final class PermissionsService: Sendable {
         return granted ? .granted : .denied
     }
 
-    // CGPreflightScreenCaptureAccess reads TCC directly, returns instantly,
-    // and doesn't have the "first call after grant throws until restart"
-    // failure mode that SCShareableContent.current does. The async signature
-    // is preserved so PermissionStatusProbing can keep its shape.
+    // CGPreflightScreenCaptureAccess reads TCC directly and returns
+    // instantly. Unlike SCShareableContent.current it doesn't throw on
+    // first call after grant, but it shares the underlying macOS quirk:
+    // a grant made while the process is running may not become visible
+    // to the running process until relaunch. AppDelegate handles that
+    // by detecting `requestScreenRecording() == true` paired with
+    // `screenRecordingStatus() == .denied` and surfacing a restart
+    // alert. The async signature is preserved so PermissionStatusProbing
+    // can keep its shape.
     public func screenRecordingStatus() async -> PermissionStatus {
         CGPreflightScreenCaptureAccess() ? .granted : .denied
     }
