@@ -69,6 +69,57 @@ public protocol CohereMLXAudioDurationReading: Sendable {
     func durationSeconds(for audioURL: URL) async throws -> Double
 }
 
+/// Terminal errors surfaced by `CohereMLXBackend.transcribe(_:)` that the
+/// recovery layer must NOT treat as transient. The MLX path runs locally with
+/// deterministic params, so a degenerate decode is a true failure — retrying
+/// without changing inputs would loop again. `TranscriptionWorker.isTransient`
+/// does not classify these, so they reach the user as a clear failed status.
+public enum CohereMLXBackendError: Error, Sendable, Equatable {
+    case degenerateOutput(reason: String, sample: String)
+}
+
+/// Heuristic guard against the Cohere/MLX decode-loop failure mode where the
+/// model spends the entire 583-second recording emitting the same phrase
+/// dozens of times. The two checks below are pure-Swift and cheap; either one
+/// firing means the output is unusable as a transcript.
+///
+/// Compression-ratio (gzip) is intentionally omitted — it would require a new
+/// dependency to catch a failure mode already covered by the two checks here.
+/// Add it later only if the field shows misses.
+enum DegenerateOutputDetector {
+    /// Returns `nil` when the text looks like a healthy transcript; otherwise
+    /// returns a short human-readable reason that callers can put in an error
+    /// payload or log line. Texts shorter than 30 words always return `nil` —
+    /// the worker has a separate "No speech detected" terminal path for those.
+    static func evaluate(_ text: String) -> String? {
+        let words = text
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        guard words.count >= 30 else { return nil }
+
+        if words.count >= 3 {
+            var counts: [String: Int] = [:]
+            let total = words.count - 2
+            for i in 0..<total {
+                let key = "\(words[i].lowercased()) \(words[i + 1].lowercased()) \(words[i + 2].lowercased())"
+                counts[key, default: 0] += 1
+            }
+            if let (top, n) = counts.max(by: { $0.value < $1.value }),
+               Double(n) / Double(total) > 0.08 {
+                return "tri-gram \"\(top)\" repeats \(n)/\(total) times"
+            }
+        }
+
+        let unique = Set(words.map { $0.lowercased() }).count
+        let fraction = Double(unique) / Double(words.count)
+        if fraction < 0.10 {
+            return "unique-word fraction \(String(format: "%.3f", fraction)) below 0.10"
+        }
+
+        return nil
+    }
+}
+
 public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     public static let modelID = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
     public static let defaultRequestModelID = modelID
@@ -86,6 +137,17 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
 
     public static let inferenceSampleRate = 16_000
     public static let inferenceChannelCount = 1
+
+    // Inference parameter overrides. The upstream `mlx-audio-swift` defaults
+    // (`chunkDuration=1200`, `repetitionPenalty=1.0`) are unsafe for real
+    // recordings: the model card documents 35 s training distribution and
+    // greedy decoding without a penalty collapses into loop output on longer
+    // audio. These values are deliberately wrapper-side so the upstream fork
+    // can stay close to Blaizzy/mlx-audio-swift.
+    public static let inferenceChunkDurationSeconds: Float = 30.0
+    public static let inferenceMinChunkDurationSeconds: Float = 1.0
+    public static let inferenceRepetitionPenalty: Float = 1.2
+    public static let inferenceRepetitionContextSize: Int = 32
 
     private let adapter: any CohereMLXTranscribing
     private let durationReader: any CohereMLXAudioDurationReading
@@ -115,6 +177,11 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
             audioDurationSeconds: duration
         )
         let output = try await adapter.transcribe(localRequest)
+        if let reason = DegenerateOutputDetector.evaluate(output.text) {
+            let sample = String(output.text.prefix(120))
+            Log.engine.error("Cohere MLX produced degenerate output: \(reason, privacy: .public)")
+            throw CohereMLXBackendError.degenerateOutput(reason: reason, sample: sample)
+        }
         let utterances: [EngineResponse.Utterance]
         if output.segments.isEmpty {
             utterances = [EngineResponse.Utterance(
@@ -178,24 +245,37 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
     public func transcribe(_ request: CohereMLXAdapterRequest) async throws -> CohereMLXAdapterResponse {
         let (_, audio) = try loadAudioArray(from: request.audioURL, sampleRate: request.inputSampleRate)
         let model = try CohereTranscribeModel.fromDirectory(request.modelDirectoryURL)
-        var parameters = model.defaultGenerationParameters
-        parameters = STTGenerateParameters(
-            maxTokens: parameters.maxTokens,
-            temperature: parameters.temperature,
-            topP: parameters.topP,
-            topK: parameters.topK,
-            verbose: parameters.verbose,
-            language: request.languageCode,
-            chunkDuration: parameters.chunkDuration,
-            minChunkDuration: parameters.minChunkDuration,
-            repetitionPenalty: parameters.repetitionPenalty,
-            repetitionContextSize: parameters.repetitionContextSize
+        let parameters = Self.makeGenerationParameters(
+            modelDefaults: model.defaultGenerationParameters,
+            languageCode: request.languageCode
         )
         let output = model.generate(audio: audio, generationParameters: parameters)
         return CohereMLXAdapterResponse(
             text: output.text,
             segments: Self.segments(from: output.segments),
             detectedLanguage: output.language
+        )
+    }
+
+    /// Builds the generation parameters used at inference time. Exposed as a
+    /// pure static helper so tests can verify the wrapper overrides upstream
+    /// defaults without instantiating MLX. Only `maxTokens` is taken from the
+    /// model defaults; the other fields are pinned to wrapper-side constants.
+    static func makeGenerationParameters(
+        modelDefaults: STTGenerateParameters,
+        languageCode: String
+    ) -> STTGenerateParameters {
+        STTGenerateParameters(
+            maxTokens: modelDefaults.maxTokens,
+            temperature: 0.0,
+            topP: 1.0,
+            topK: 0,
+            verbose: false,
+            language: languageCode,
+            chunkDuration: CohereMLXBackend.inferenceChunkDurationSeconds,
+            minChunkDuration: CohereMLXBackend.inferenceMinChunkDurationSeconds,
+            repetitionPenalty: CohereMLXBackend.inferenceRepetitionPenalty,
+            repetitionContextSize: CohereMLXBackend.inferenceRepetitionContextSize
         )
     }
 
