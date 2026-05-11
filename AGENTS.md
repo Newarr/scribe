@@ -35,3 +35,37 @@ Important constraints:
 - Audio is the durable asset; transcription failure must not lose it.
 
 When adding open questions, use stable unique IDs in the `## Open Questions` section of `docs/spec/SPEC.md`.
+
+## Dev Build Signing (TCC persistence)
+
+Local dev builds use a self-signed code-signing cert so TCC grants
+(Screen Recording, Microphone, Calendar) survive every rebuild. Without
+a stable identity, every `xcodebuild` / `swift build` produces a new
+cdhash and macOS treats it as a different app — the "Scribe" toggle
+stays on in System Settings but the running binary can't see the grant.
+
+- Cert identity: `Scribe Dev Signer 2`
+- Keychain: `~/Library/Keychains/scribe-dev.keychain-db`
+- Install + sign script: `scripts/dev-install.sh`
+
+Usage:
+
+```bash
+scripts/dev-install.sh                # re-sign /Applications/Scribe.app
+scripts/dev-install.sh --build        # xcodegen + xcodebuild Debug + install + sign
+scripts/dev-install.sh path/to/Scribe.app
+```
+
+If the cert / keychain is missing on a fresh machine, regenerate via:
+
+```bash
+# Generate cert (CN, CA:TRUE, keyUsage digitalSignature+keyCertSign,
+# extendedKeyUsage codeSigning), import to dedicated keychain, trust
+# as code-signing root. See git history for the openssl + security
+# sequence; the key steps are import + set-key-partition-list +
+# add-trusted-cert -r trustRoot -p codeSign.
+```
+
+`scripts/release.sh` still uses Developer ID + notarization for shipping
+releases; the self-signed cert is for local /Applications dev installs
+only.

@@ -14,3 +14,12 @@ TranscriberApp/.dd-release/
 
 # macOS
 .DS_Store
+.metadata_never_index*
+
+# Build output
+build/
+
+# Design handoff and screenshots
+.design-handoff*/
+.screenshots/
+*.zip
