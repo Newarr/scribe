@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import MLXAudioSTT
 @testable import TranscriberCore
 
 final class CohereMLXBackendTests: XCTestCase {
@@ -266,6 +267,148 @@ final class CohereMLXBackendTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         for forbidden in ["Process(", "/bin/sh", "python", "rust", "cohere_transcribe_rs", "fromPretrained"] {
             XCTAssertFalse(source.localizedCaseInsensitiveContains(forbidden), "Local Cohere/MLX backend must not depend on subprocess inference: \(forbidden)")
+        }
+    }
+
+    // MARK: - Decode-loop fix regression guards
+
+    func testGenerationParametersOverrideUpstreamDefaults() {
+        // Fabricate the upstream model defaults exactly as Blaizzy/mlx-audio-swift
+        // returns them today: chunkDuration=1200, repetitionPenalty=1.0. The
+        // wrapper MUST replace those before generation runs.
+        let upstreamDefaults = STTGenerateParameters(
+            maxTokens: 1024,
+            temperature: 0.0,
+            topP: 1.0,
+            topK: 0,
+            verbose: false,
+            language: "en",
+            chunkDuration: 1200.0,
+            minChunkDuration: 1.0,
+            repetitionPenalty: 1.0,
+            repetitionContextSize: 32
+        )
+
+        let parameters = NativeCohereMLXAdapter.makeGenerationParameters(
+            modelDefaults: upstreamDefaults,
+            languageCode: "en"
+        )
+
+        XCTAssertEqual(parameters.chunkDuration, CohereMLXBackend.inferenceChunkDurationSeconds)
+        XCTAssertEqual(parameters.chunkDuration, 30.0, "30 s matches the Cohere model card's training distribution; 1200 s loops")
+        XCTAssertEqual(parameters.minChunkDuration, CohereMLXBackend.inferenceMinChunkDurationSeconds)
+        XCTAssertEqual(parameters.repetitionPenalty, CohereMLXBackend.inferenceRepetitionPenalty)
+        XCTAssertEqual(parameters.repetitionPenalty, 1.2, "Penalty must be active to break the degenerate decode")
+        XCTAssertEqual(parameters.repetitionContextSize, CohereMLXBackend.inferenceRepetitionContextSize)
+        XCTAssertEqual(parameters.temperature, 0.0, "Local transcription stays deterministic")
+        XCTAssertEqual(parameters.topP, 1.0)
+        XCTAssertEqual(parameters.topK, 0)
+        XCTAssertEqual(parameters.language, "en")
+        XCTAssertEqual(parameters.maxTokens, 1024, "maxTokens is the only value taken from model defaults")
+    }
+
+    func testDegenerateOutputDetectorFlagsRepetitiveTranscripts() {
+        let looped = String(repeating: "I think that's what I'm hearing ", count: 50)
+        let loopedReason = DegenerateOutputDetector.evaluate(looped)
+        XCTAssertNotNil(loopedReason, "Detector must catch the observed 'I think that's what I'm hearing' loop")
+        XCTAssertTrue(loopedReason?.contains("tri-gram") ?? false, "Reason should identify the dominant tri-gram, got: \(loopedReason ?? "nil")")
+
+        // A clean ≥30-word sentence with healthy unique-word distribution.
+        // Cribbed from the pangram zoo plus padding to exceed the 30-word floor.
+        let healthy = """
+        The quick brown fox jumps over the lazy dog while sphinx of black quartz \
+        judges my vow and pack my box with five dozen liquor jugs as vexingly \
+        quick daft zebras jump over a chilled fence near the meadow at dawn.
+        """
+        XCTAssertNil(DegenerateOutputDetector.evaluate(healthy), "Detector must not fire on natural diverse text")
+
+        // Fixture used by the cloud backend — guards against the detector
+        // accidentally flagging legitimate short transcripts.
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/elevenlabs-success.json")
+        let fixtureData = try? Data(contentsOf: fixtureURL)
+        let fixtureText = (try? JSONSerialization.jsonObject(with: fixtureData ?? Data())) as? [String: Any]
+        let cloudText = (fixtureText?["text"] as? String) ?? ""
+        XCTAssertFalse(cloudText.isEmpty, "Fixture must still be present")
+        XCTAssertNil(DegenerateOutputDetector.evaluate(cloudText), "Detector must not fire on cloud fixture text")
+
+        XCTAssertNil(DegenerateOutputDetector.evaluate(""), "Empty input is handled by the worker's 'no speech' path")
+        XCTAssertNil(DegenerateOutputDetector.evaluate("only a few words here"), "Below 30-word floor")
+    }
+
+    /// Real-MLX integration: load the actual model and run it against the
+    /// recording that surfaced the loop bug. Skipped unless
+    /// `SCRIBE_RUN_MLX_INTEGRATION=1` is set in the environment because it
+    /// needs the model weights downloaded and takes ~minutes to complete.
+    func testFailingRecordingTranscribesWithoutDegenerationIntegration() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["SCRIBE_RUN_MLX_INTEGRATION"] == "1",
+            "Integration test; set SCRIBE_RUN_MLX_INTEGRATION=1 to run"
+        )
+
+        let audioURL = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Scribe/2026-05-11-1756/audio.m4a")
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: audioURL.path),
+            "Real recording fixture missing at \(audioURL.path)"
+        )
+
+        let modelDir = CohereMLXBackend.defaultModelDirectoryURL
+        try XCTSkipUnless(
+            FileManager.default.fileExists(atPath: modelDir.path),
+            "Cohere MLX model weights missing at \(modelDir.path)"
+        )
+
+        let backend = CohereMLXBackend()
+        let response = try await backend.transcribe(EngineRequest(
+            audioURL: audioURL,
+            mode: .singleChannelDiarized(numSpeakers: nil),
+            languageCode: "en",
+            keyterms: [],
+            modelID: CohereMLXBackend.modelID
+        ))
+
+        let combined = response.utterances.map(\.text).joined(separator: " ")
+        let wordCount = combined.split(whereSeparator: { $0.isWhitespace }).count
+        print("MLX integration: \(wordCount) words; first 200 chars: \(combined.prefix(200))")
+
+        XCTAssertGreaterThan(
+            wordCount,
+            1_000,
+            "Local engine must produce >1000 words on the 583s recording (got \(wordCount))"
+        )
+        XCTAssertNil(
+            DegenerateOutputDetector.evaluate(combined),
+            "Local engine output must not look degenerate"
+        )
+    }
+
+    func testBackendThrowsDegenerateOutputErrorOnLoopedAdapterOutput() async {
+        let looped = String(repeating: "I think that's what I'm hearing ", count: 50)
+        let adapter = RecordingLocalAdapter(output: .init(text: looped, detectedLanguage: "en"))
+        let backend = CohereMLXBackend(adapter: adapter, durationReader: FixedDurationReader(duration: 583))
+
+        do {
+            _ = try await backend.transcribe(EngineRequest(
+                audioURL: URL(fileURLWithPath: "/tmp/audio.m4a"),
+                mode: .singleChannelDiarized(numSpeakers: nil),
+                languageCode: "en",
+                keyterms: [],
+                modelID: CohereMLXBackend.modelID
+            ))
+            XCTFail("Backend must throw on degenerate output, not silently return")
+        } catch let error as CohereMLXBackendError {
+            switch error {
+            case .degenerateOutput(let reason, let sample):
+                XCTAssertTrue(reason.contains("tri-gram") || reason.contains("unique-word"),
+                              "Reason should identify the failure mode, got: \(reason)")
+                XCTAssertFalse(sample.isEmpty, "Sample should include a snippet of the failing transcript")
+                XCTAssertLessThanOrEqual(sample.count, 120, "Sample is capped at 120 chars")
+            }
+        } catch {
+            XCTFail("Expected CohereMLXBackendError.degenerateOutput, got \(error)")
         }
     }
 }

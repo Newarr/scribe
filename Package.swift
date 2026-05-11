@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "TranscriberCore", targets: ["TranscriberCore"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", revision: "7734cd1fbbe86460083c1d24199737a24cadfcc8")
+        .package(url: "https://github.com/Newarr/mlx-audio-swift.git", revision: "b8ec43083e4c5535594dbf9274893f9e6fe4a506")
     ],
     targets: [
         .target(
