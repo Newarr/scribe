@@ -307,7 +307,7 @@ final class CohereMLXBackendTests: XCTestCase {
         XCTAssertEqual(parameters.maxTokens, 1024, "maxTokens is the only value taken from model defaults")
     }
 
-    func testDegenerateOutputDetectorFlagsRepetitiveTranscripts() {
+    func testDegenerateOutputDetectorFlagsRepetitiveTranscripts() throws {
         let looped = String(repeating: "I think that's what I'm hearing ", count: 50)
         let loopedReason = DegenerateOutputDetector.evaluate(looped)
         XCTAssertNotNil(loopedReason, "Detector must catch the observed 'I think that's what I'm hearing' loop")
@@ -327,8 +327,8 @@ final class CohereMLXBackendTests: XCTestCase {
         let fixtureURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .appendingPathComponent("Fixtures/elevenlabs-success.json")
-        let fixtureData = try? Data(contentsOf: fixtureURL)
-        let fixtureText = (try? JSONSerialization.jsonObject(with: fixtureData ?? Data())) as? [String: Any]
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let fixtureText = try JSONSerialization.jsonObject(with: fixtureData) as? [String: Any]
         let cloudText = (fixtureText?["text"] as? String) ?? ""
         XCTAssertFalse(cloudText.isEmpty, "Fixture must still be present")
         XCTAssertNil(DegenerateOutputDetector.evaluate(cloudText), "Detector must not fire on cloud fixture text")
@@ -347,12 +347,18 @@ final class CohereMLXBackendTests: XCTestCase {
             "Integration test; set SCRIBE_RUN_MLX_INTEGRATION=1 to run"
         )
 
-        let audioURL = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent("Scribe/2026-05-11-1756/audio.m4a")
+        let env = ProcessInfo.processInfo.environment
+        let audioURL: URL
+        if let override = env["SCRIBE_MLX_INTEGRATION_AUDIO"], !override.isEmpty {
+            audioURL = URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+        } else {
+            audioURL = FileManager.default
+                .homeDirectoryForCurrentUser
+                .appendingPathComponent("Scribe/2026-05-11-1756/audio.m4a")
+        }
         try XCTSkipUnless(
             FileManager.default.fileExists(atPath: audioURL.path),
-            "Real recording fixture missing at \(audioURL.path)"
+            "Real recording fixture missing at \(audioURL.path); set SCRIBE_MLX_INTEGRATION_AUDIO to point at one"
         )
 
         let modelDir = CohereMLXBackend.defaultModelDirectoryURL

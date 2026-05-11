@@ -69,49 +69,39 @@ public protocol CohereMLXAudioDurationReading: Sendable {
     func durationSeconds(for audioURL: URL) async throws -> Double
 }
 
-/// Terminal errors surfaced by `CohereMLXBackend.transcribe(_:)` that the
-/// recovery layer must NOT treat as transient. The MLX path runs locally with
-/// deterministic params, so a degenerate decode is a true failure — retrying
-/// without changing inputs would loop again. `TranscriptionWorker.isTransient`
-/// does not classify these, so they reach the user as a clear failed status.
+/// Terminal errors surfaced by `CohereMLXBackend.transcribe(_:)`. Marked
+/// terminal so `TranscriptionWorker.isTransient` (which classifies by type)
+/// does not retry — deterministic local inference would just loop again.
 public enum CohereMLXBackendError: Error, Sendable, Equatable {
     case degenerateOutput(reason: String, sample: String)
 }
 
-/// Heuristic guard against the Cohere/MLX decode-loop failure mode where the
-/// model spends the entire 583-second recording emitting the same phrase
-/// dozens of times. The two checks below are pure-Swift and cheap; either one
-/// firing means the output is unusable as a transcript.
-///
-/// Compression-ratio (gzip) is intentionally omitted — it would require a new
-/// dependency to catch a failure mode already covered by the two checks here.
-/// Add it later only if the field shows misses.
+/// Heuristic guard against decode-loop output (model emits the same phrase
+/// repeatedly instead of transcribing). Tri-gram density + unique-word
+/// fraction are both cheap and either firing means the output is unusable.
 enum DegenerateOutputDetector {
     /// Returns `nil` when the text looks like a healthy transcript; otherwise
-    /// returns a short human-readable reason that callers can put in an error
-    /// payload or log line. Texts shorter than 30 words always return `nil` —
-    /// the worker has a separate "No speech detected" terminal path for those.
+    /// returns a short human-readable reason for logs and error payloads.
+    /// Inputs under 30 words always return `nil` — the worker handles the
+    /// "no speech detected" path separately.
     static func evaluate(_ text: String) -> String? {
         let words = text
             .split(whereSeparator: { $0.isWhitespace })
-            .map(String.init)
+            .map { $0.lowercased() }
         guard words.count >= 30 else { return nil }
 
-        if words.count >= 3 {
-            var counts: [String: Int] = [:]
-            let total = words.count - 2
-            for i in 0..<total {
-                let key = "\(words[i].lowercased()) \(words[i + 1].lowercased()) \(words[i + 2].lowercased())"
-                counts[key, default: 0] += 1
-            }
-            if let (top, n) = counts.max(by: { $0.value < $1.value }),
-               Double(n) / Double(total) > 0.08 {
-                return "tri-gram \"\(top)\" repeats \(n)/\(total) times"
-            }
+        var counts: [String: Int] = [:]
+        let total = words.count - 2
+        for i in 0..<total {
+            let key = "\(words[i]) \(words[i + 1]) \(words[i + 2])"
+            counts[key, default: 0] += 1
+        }
+        if let (top, n) = counts.max(by: { $0.value < $1.value }),
+           Double(n) / Double(total) > 0.08 {
+            return "tri-gram \"\(top)\" repeats \(n)/\(total) times"
         }
 
-        let unique = Set(words.map { $0.lowercased() }).count
-        let fraction = Double(unique) / Double(words.count)
+        let fraction = Double(Set(words).count) / Double(words.count)
         if fraction < 0.10 {
             return "unique-word fraction \(String(format: "%.3f", fraction)) below 0.10"
         }
