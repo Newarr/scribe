@@ -198,7 +198,7 @@
 			mainGroup = CF1A6569B97AB964E08BAAEC;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				8486363FC92D4A5A3F677AE3 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
+				A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */,
 				953AE7D0D2147AEBF865B983 /* XCLocalSwiftPackageReference ".." */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -452,12 +452,12 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		8486363FC92D4A5A3F677AE3 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
+		A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Blaizzy/mlx-audio-swift.git";
+			repositoryURL = "https://github.com/Newarr/mlx-audio-swift.git";
 			requirement = {
 				kind = revision;
-				revision = 7734cd1fbbe86460083c1d24199737a24cadfcc8;
+				revision = b8ec43083e4c5535594dbf9274893f9e6fe4a506;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -469,12 +469,12 @@
 		};
 		2F343A2DF12DC4D575CEA724 /* MLXAudioSTT */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 8486363FC92D4A5A3F677AE3 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			package = A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
 			productName = MLXAudioSTT;
 		};
 		BF1DD1FF53036826C2308046 /* MLXAudioCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 8486363FC92D4A5A3F677AE3 /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			package = A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
 			productName = MLXAudioCore;
 		};
 /* End XCSwiftPackageProductDependency section */
