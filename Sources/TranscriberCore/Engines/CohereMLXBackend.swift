@@ -72,8 +72,14 @@ public protocol CohereMLXAudioDurationReading: Sendable {
 /// Terminal errors surfaced by `CohereMLXBackend.transcribe(_:)`. Marked
 /// terminal so `TranscriptionWorker.isTransient` (which classifies by type)
 /// does not retry — deterministic local inference would just loop again.
+///
+/// `reason` is a structural summary only (tri-gram stats, unique-word fraction)
+/// and never contains transcript content. `TranscriptionWorker` persists
+/// `String(describing: error)` into `transcript.md`/`metadata.json` on
+/// failure, so anything embedded in this case lands on disk — keep
+/// transcript text out of the payload.
 public enum CohereMLXBackendError: Error, Sendable, Equatable {
-    case degenerateOutput(reason: String, sample: String)
+    case degenerateOutput(reason: String)
 }
 
 /// Heuristic guard against decode-loop output (model emits the same phrase
@@ -96,7 +102,12 @@ enum DegenerateOutputDetector {
             let key = "\(words[i]) \(words[i + 1]) \(words[i + 2])"
             counts[key, default: 0] += 1
         }
+        // Require BOTH an absolute minimum repeat count AND a high fraction.
+        // The fraction alone would flag a 30-word transcript with three
+        // repeats of "thank you very" (3/28 ≈ 11%) as degenerate; an
+        // observed real-world loop has 12+ repeats, well above the floor.
         if let (top, n) = counts.max(by: { $0.value < $1.value }),
+           n >= 5,
            Double(n) / Double(total) > 0.08 {
             return "tri-gram \"\(top)\" repeats \(n)/\(total) times"
         }
@@ -168,9 +179,12 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         )
         let output = try await adapter.transcribe(localRequest)
         if let reason = DegenerateOutputDetector.evaluate(output.text) {
-            let sample = String(output.text.prefix(120))
-            Log.engine.error("Cohere MLX produced degenerate output: \(reason, privacy: .public)")
-            throw CohereMLXBackendError.degenerateOutput(reason: reason, sample: sample)
+            // Sample stays in the unified log at `.private` for live debugging
+            // and is intentionally NOT carried on the thrown error — the
+            // worker persists `String(describing:)` to disk and meeting
+            // content must not land in the failure artifact.
+            Log.engine.error("Cohere MLX produced degenerate output: \(reason, privacy: .public); sample: \(output.text.prefix(120), privacy: .private)")
+            throw CohereMLXBackendError.degenerateOutput(reason: reason)
         }
         let utterances: [EngineResponse.Utterance]
         if output.segments.isEmpty {
