@@ -474,7 +474,10 @@ private struct RecordingPopoverContent: View {
                     .foregroundStyle(palette.text)
                     .monospacedDigit()
             }
-            StaticWaveform(palette: palette)
+            AnimatedWaveform(
+                palette: palette,
+                isAnimating: model.status == .recording
+            )
                 .frame(height: 118)
             Text(activeStatusCopy)
                 .font(activeStatusFont)
@@ -826,8 +829,10 @@ struct MenuHeaderMark: Shape {
     }
 }
 
-private struct StaticWaveform: View {
+private struct AnimatedWaveform: View {
     let palette: RecordingPopoverPalette
+    let isAnimating: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let barHeights: [CGFloat] = [
         18, 22, 28, 24, 34, 46, 58, 66, 54, 88,
@@ -837,15 +842,35 @@ private struct StaticWaveform: View {
     ]
 
     var body: some View {
+        if isAnimating && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+                bars(time: timeline.date.timeIntervalSinceReferenceDate)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        } else {
+            bars(time: nil)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func bars(time: TimeInterval?) -> some View {
         HStack(alignment: .center, spacing: 3) {
             ForEach(barHeights.indices, id: \.self) { i in
                 Capsule()
                     .fill(palette.waveformBar.opacity(barOpacity(at: i)))
-                    .frame(width: 4, height: barHeights[i])
+                    .frame(width: 4, height: barHeight(at: i, time: time))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func barHeight(at index: Int, time: TimeInterval?) -> CGFloat {
+        let base = barHeights[index]
+        guard let time else { return base }
+        let phase = Double(index) * 0.23
+        let wave = sin(time * 3.1 + phase)
+        let scale = 1.03 + CGFloat(wave) * 0.17
+        return min(118, max(10, base * scale))
     }
 
     private func barOpacity(at index: Int) -> Double {
