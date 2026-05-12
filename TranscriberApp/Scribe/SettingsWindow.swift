@@ -521,41 +521,45 @@ private enum FidelitySettings {
     static let rowLabelWidth: CGFloat = 160
     static let rowGap: CGFloat = 18
 
-    static let font = "Inter"
-    static let rust = SwiftUI.Color(red: 0.93, green: 0.34, blue: 0.26)
-    static let green = SwiftUI.Color(red: 0.35, green: 0.77, blue: 0.46)
-    static let amber = SwiftUI.Color(red: 0.97, green: 0.72, blue: 0.24)
+    static let font = "Inter Variable"
+    static let rust = SwiftUI.Color(red: 235 / 255, green: 94 / 255, blue: 69 / 255)
+    static let green = SwiftUI.Color(red: 89 / 255, green: 196 / 255, blue: 117 / 255)
+    static let amber = SwiftUI.Color(red: 247 / 255, green: 184 / 255, blue: 61 / 255)
+    static let surfaceWarmTint = adaptive(
+        dark: NSColor(calibratedRed: 92 / 255, green: 28 / 255, blue: 18 / 255, alpha: 1.0),
+        light: NSColor(calibratedRed: 255 / 255, green: 224 / 255, blue: 214 / 255, alpha: 1.0)
+    )
     static let ink = adaptive(
-        dark: NSColor(calibratedWhite: 0.98, alpha: 1.0),
-        light: NSColor(calibratedWhite: 0.08, alpha: 1.0)
+        dark: NSColor(calibratedWhite: 250 / 255, alpha: 1.0),
+        light: NSColor(calibratedWhite: 20 / 255, alpha: 1.0)
     )
     static let inkInverse = adaptive(
-        dark: NSColor(calibratedWhite: 0.08, alpha: 1.0),
-        light: NSColor(calibratedWhite: 0.98, alpha: 1.0)
+        dark: NSColor(calibratedWhite: 20 / 255, alpha: 1.0),
+        light: NSColor(calibratedWhite: 250 / 255, alpha: 1.0)
     )
     static let ink2 = adaptive(
-        dark: NSColor(calibratedWhite: 0.72, alpha: 1.0),
-        light: NSColor(calibratedWhite: 0.28, alpha: 1.0)
+        dark: NSColor(calibratedWhite: 184 / 255, alpha: 1.0),
+        light: NSColor(calibratedWhite: 71 / 255, alpha: 1.0)
     )
     static let ink3 = adaptive(
-        dark: NSColor(calibratedWhite: 0.48, alpha: 1.0),
-        light: NSColor(calibratedWhite: 0.42, alpha: 1.0)
+        dark: NSColor(calibratedWhite: 122 / 255, alpha: 1.0),
+        light: NSColor(calibratedWhite: 107 / 255, alpha: 1.0)
     )
     static let line = adaptive(
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06),
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.08)
+        dark: NSColor(calibratedWhite: 1.0, alpha: 15 / 255),
+        light: NSColor(calibratedWhite: 0.0, alpha: 20 / 255)
     )
     static let lineRow = adaptive(
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.05),
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.07)
+        dark: NSColor(calibratedWhite: 1.0, alpha: 13 / 255),
+        light: NSColor(calibratedWhite: 0.0, alpha: 18 / 255)
     )
     static let lineStrong = adaptive(
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.12)
+        dark: NSColor(calibratedWhite: 1.0, alpha: 26 / 255),
+        light: NSColor(calibratedWhite: 0.0, alpha: 31 / 255)
     )
     static let groupFill = adaptive(
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.025),
-        light: NSColor(calibratedWhite: 1.0, alpha: 0.62)
+        dark: NSColor(calibratedWhite: 1.0, alpha: 6 / 255),
+        light: NSColor(calibratedWhite: 1.0, alpha: 158 / 255)
     )
     static let iconFill = adaptive(
         dark: NSColor(calibratedWhite: 1.0, alpha: 0.05),
@@ -622,8 +626,8 @@ private enum FidelitySettings {
         light: NSColor(calibratedWhite: 0.0, alpha: 0.08)
     )
     static let secondaryButtonFill = adaptive(
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.04),
-        light: NSColor(calibratedWhite: 1.0, alpha: 0.70)
+        dark: NSColor(calibratedWhite: 1.0, alpha: 10 / 255),
+        light: NSColor(calibratedWhite: 1.0, alpha: 179 / 255)
     )
     static let secondaryButtonStroke = adaptive(
         dark: NSColor(calibratedWhite: 1.0, alpha: 0.10),
@@ -655,36 +659,26 @@ private struct FidelityWindowSurface: View {
             glassTint
             topRightGlow
             topLeftGlow
-            bottomVignette
-            clarityVeil
-        }
-        .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [.clear, topHairline, .clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 1)
-            .padding(.horizontal, 24)
         }
     }
 
     private var isLight: Bool { colorScheme == .light }
 
     private var glassTint: SwiftUI.Color {
-        let tint = isLight
-            ? SwiftUI.Color(red: 0.96, green: 0.97, blue: 0.98)
-            : SwiftUI.Color(red: 0.028, green: 0.004, blue: 0.010)
-        return tint.opacity(isLight ? 0.80 : 0.90)
+        isLight
+            ? SwiftUI.Color(red: 245 / 255, green: 247 / 255, blue: 250 / 255)
+            : SwiftUI.Color(red: 7 / 255, green: 1 / 255, blue: 3 / 255)
     }
 
     private var topRightGlow: RadialGradient {
         RadialGradient(
             colors: [
-                isLight ? SwiftUI.Color(red: 0.86, green: 0.92, blue: 0.98).opacity(0.56) : SwiftUI.Color(red: 0.30, green: 0.05, blue: 0.10).opacity(0.46),
+                isLight
+                    ? SwiftUI.Color(red: 220 / 255, green: 234 / 255, blue: 251 / 255).opacity(0.55)
+                    : SwiftUI.Color(red: 77 / 255, green: 13 / 255, blue: 26 / 255).opacity(0.55),
                 SwiftUI.Color.clear
             ],
-            center: UnitPoint(x: 0.75, y: 0.06),
+            center: UnitPoint(x: 0.82, y: 0.04),
             startRadius: 0,
             endRadius: 520
         )
@@ -693,40 +687,15 @@ private struct FidelityWindowSurface: View {
     private var topLeftGlow: RadialGradient {
         RadialGradient(
             colors: [
-                isLight ? SwiftUI.Color(red: 1.0, green: 0.88, blue: 0.84).opacity(0.40) : SwiftUI.Color(red: 0.36, green: 0.11, blue: 0.07).opacity(0.34),
+                isLight
+                    ? SwiftUI.Color(red: 255 / 255, green: 224 / 255, blue: 214 / 255).opacity(0.42)
+                    : SwiftUI.Color(red: 92 / 255, green: 28 / 255, blue: 18 / 255).opacity(0.42),
                 SwiftUI.Color.clear
             ],
-            center: UnitPoint(x: 0.03, y: 0.01),
+            center: UnitPoint(x: 0.05, y: 0.02),
             startRadius: 0,
             endRadius: 480
         )
-    }
-
-    private var bottomVignette: RadialGradient {
-        RadialGradient(
-            colors: [
-                isLight ? SwiftUI.Color.white.opacity(0.24) : SwiftUI.Color.black.opacity(0.46),
-                SwiftUI.Color.clear
-            ],
-            center: UnitPoint(x: 0.50, y: 1.02),
-            startRadius: 90,
-            endRadius: 500
-        )
-    }
-
-    private var clarityVeil: LinearGradient {
-        LinearGradient(
-            colors: [
-                isLight ? SwiftUI.Color.white.opacity(0.12) : SwiftUI.Color.white.opacity(0.012),
-                isLight ? SwiftUI.Color.white.opacity(0.08) : SwiftUI.Color.black.opacity(0.32)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    private var topHairline: SwiftUI.Color {
-        isLight ? SwiftUI.Color.white.opacity(0.60) : SwiftUI.Color.white.opacity(0.20)
     }
 }
 private struct FidelityDivider: View {
@@ -1411,6 +1380,31 @@ private struct FidelityPrivacyPanel: View {
 /// owns the four permission statuses, the request handlers that fire
 /// in-app system prompts, and the screen-recording restart-required
 /// signal that AppDelegate maps to the relaunch alert.
+struct DebugPermissionStatuses {
+    let microphone: PermissionStatus
+    let screenRecording: PermissionStatus
+    let calendar: PermissionStatus
+    let notifications: PermissionStatus
+
+    var allRequiredGranted: Bool {
+        microphone == .granted && screenRecording == .granted
+    }
+
+    static let withoutPermissions = DebugPermissionStatuses(
+        microphone: .notDetermined,
+        screenRecording: .denied,
+        calendar: .notDetermined,
+        notifications: .notDetermined
+    )
+
+    static let withPermissions = DebugPermissionStatuses(
+        microphone: .granted,
+        screenRecording: .granted,
+        calendar: .granted,
+        notifications: .granted
+    )
+}
+
 @MainActor
 final class PermissionsPanelModel: ObservableObject {
     @Published var microphoneStatus: PermissionStatus = .notDetermined
@@ -1433,12 +1427,24 @@ final class PermissionsPanelModel: ObservableObject {
 
     private let permissions: PermissionsService
     private let autoPoll: Bool
+    private let debugStatuses: DebugPermissionStatuses?
     private var refreshTimer: Timer?
     private var didBecomeActiveObserver: NSObjectProtocol?
 
-    init(autoPoll: Bool, permissions: PermissionsService = PermissionsService()) {
+    init(
+        autoPoll: Bool,
+        permissions: PermissionsService = PermissionsService(),
+        debugStatuses: DebugPermissionStatuses? = nil
+    ) {
         self.autoPoll = autoPoll
         self.permissions = permissions
+        self.debugStatuses = debugStatuses
+        if let debugStatuses {
+            microphoneStatus = debugStatuses.microphone
+            screenRecordingStatus = debugStatuses.screenRecording
+            calendarStatus = debugStatuses.calendar
+            notificationStatus = debugStatuses.notifications
+        }
     }
 
     // No deinit cleanup: Swift 6 forbids reaching the MainActor-isolated
@@ -1452,6 +1458,7 @@ final class PermissionsPanelModel: ObservableObject {
     /// what the deprecated popover used; TCC has no change-notification
     /// API for these scopes so polling is the cheap fallback.
     func start() {
+        if debugStatuses != nil { return }
         Task { @MainActor [weak self] in
             await self?.refreshStatuses()
         }
@@ -1485,6 +1492,13 @@ final class PermissionsPanelModel: ObservableObject {
     }
 
     func refreshStatuses() async {
+        if let debugStatuses {
+            microphoneStatus = debugStatuses.microphone
+            screenRecordingStatus = debugStatuses.screenRecording
+            calendarStatus = debugStatuses.calendar
+            notificationStatus = debugStatuses.notifications
+            return
+        }
         let probe = DefaultPermissionStatusProbe(permissions: permissions)
         async let mic = probe.microphone()
         async let screen = probe.screenRecording()
@@ -1555,14 +1569,18 @@ private struct FidelityPermissionsPanel: View {
         renderIntro: Bool = true,
         showsBypassExplainer: Bool = false,
         onScreenRecordingRestartRequired: (@MainActor () -> Void)? = nil,
-        onRequiredStateChanged: ((Bool) -> Void)? = nil
+        onRequiredStateChanged: ((Bool) -> Void)? = nil,
+        debugStatuses: DebugPermissionStatuses? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
         self.renderIntro = renderIntro
         self.showsBypassExplainer = showsBypassExplainer
         self.onRequiredStateChanged = onRequiredStateChanged
-        let panel = PermissionsPanelModel(autoPoll: autoPoll)
+        let panel = PermissionsPanelModel(
+            autoPoll: autoPoll,
+            debugStatuses: debugStatuses
+        )
         panel.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
         _model = StateObject(wrappedValue: panel)
     }
@@ -2097,8 +2115,8 @@ private struct FidelityPermissionRow: View {
 private struct FidelityGrantedIndicator: View {
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 11, weight: .medium))
+            LucideIcon(glyph: .check)
+                .frame(width: 12, height: 12)
                 .foregroundStyle(FidelitySettings.green)
             Text("Granted")
                 .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12.5).weight(.medium))
@@ -2121,13 +2139,13 @@ private struct FidelityPermissionButton: View {
                     .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12.5)
                         .weight(action.isSystemSettings ? .medium : .semibold))
                 if action.isSystemSettings {
-                    Image(systemName: "arrow.up.forward")
-                        .font(.system(size: 10.5, weight: .medium))
+                    LucideIcon(glyph: .arrowUpRight)
+                        .frame(width: 10.5, height: 10.5)
                         .opacity(0.58)
                 }
             }
             .foregroundStyle(action.isSystemSettings ? FidelitySettings.ink2 : FidelitySettings.inkInverse)
-            .padding(.horizontal, action.isSystemSettings ? 6 : 14)
+            .padding(.horizontal, action.isSystemSettings ? 8 : 14)
             .frame(height: 28)
             .background(buttonBackground)
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -2199,15 +2217,31 @@ private struct FidelityCodeBlock<Actions: View>: View {
 
 private struct FidelitySection<Content: View>: View {
     let title: String
+    let detail: String?
     @ViewBuilder var content: () -> Content
+
+    init(title: String, detail: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.detail = detail
+        self.content = content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased())
-                .font(FidelitySettings.sectionFont)
-                .foregroundStyle(FidelitySettings.ink3)
-                .tracking(0.66)
-                .padding(.leading, 14)
+            HStack(alignment: .center, spacing: 8) {
+                Text(title.uppercased())
+                    .font(FidelitySettings.sectionFont)
+                    .foregroundStyle(FidelitySettings.ink3)
+                    .tracking(0.66)
+                Spacer(minLength: 0)
+                if let detail {
+                    Text(detail)
+                        .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11).weight(.medium))
+                        .foregroundStyle(FidelitySettings.ink3)
+                        .tracking(-0.05)
+                }
+            }
+            .padding(.horizontal, 14)
             VStack(spacing: 0) {
                 content()
             }
@@ -2579,35 +2613,72 @@ private struct PermissionsOnboardingTrafficLight: View {
 private struct PermissionsOnboardingView: View {
     let onScreenRecordingRestartRequired: @MainActor () -> Void
     let onClose: @MainActor () -> Void
-    @State private var requiredGranted: Bool = false
+    #if DEBUG
+    let debugPermissionStatuses: DebugPermissionStatuses?
+    #endif
+    @State private var requiredGranted: Bool
+
+    #if DEBUG
+    init(
+        onScreenRecordingRestartRequired: @escaping @MainActor () -> Void,
+        onClose: @escaping @MainActor () -> Void,
+        debugPermissionStatuses: DebugPermissionStatuses? = nil
+    ) {
+        self.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
+        self.onClose = onClose
+        self.debugPermissionStatuses = debugPermissionStatuses
+        _requiredGranted = State(initialValue: debugPermissionStatuses?.allRequiredGranted ?? false)
+    }
+    #else
+    init(
+        onScreenRecordingRestartRequired: @escaping @MainActor () -> Void,
+        onClose: @escaping @MainActor () -> Void
+    ) {
+        self.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
+        self.onClose = onClose
+        _requiredGranted = State(initialValue: false)
+    }
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             titleBar
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    hero
-                    // Mirror the Settings → Permissions tab so both
-                    // surfaces feel like the same family of UI. The
-                    // onboarding window builds its own hero + footer; the
-                    // panel renders just the section cards (renderIntro:
-                    // false), plus auto-poll so grants made in System
-                    // Settings reflect within ~1.5s.
-                    FidelityPermissionsPanel(
-                        autoPoll: true,
-                        renderIntro: false,
-                        showsBypassExplainer: false,
-                        onScreenRecordingRestartRequired: onScreenRecordingRestartRequired,
-                        onRequiredStateChanged: { granted in
-                            requiredGranted = granted
-                        }
-                    )
-                    footer
-                }
-                .padding(.top, 12)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 32)
+            VStack(alignment: .leading, spacing: 24) {
+                hero
+                // Mirror the Settings → Permissions tab so both
+                // surfaces feel like the same family of UI. The
+                // onboarding window builds its own hero + footer; the
+                // panel renders just the section cards (renderIntro:
+                // false), plus auto-poll so grants made in System
+                // Settings reflect within ~1.5s.
+                #if DEBUG
+                FidelityPermissionsPanel(
+                    autoPoll: true,
+                    renderIntro: false,
+                    showsBypassExplainer: false,
+                    onScreenRecordingRestartRequired: onScreenRecordingRestartRequired,
+                    onRequiredStateChanged: { granted in
+                        requiredGranted = granted
+                    },
+                    debugStatuses: debugPermissionStatuses
+                )
+                #else
+                FidelityPermissionsPanel(
+                    autoPoll: true,
+                    renderIntro: false,
+                    showsBypassExplainer: false,
+                    onScreenRecordingRestartRequired: onScreenRecordingRestartRequired,
+                    onRequiredStateChanged: { granted in
+                        requiredGranted = granted
+                    }
+                )
+                #endif
+                footer
             }
+            .padding(.top, 12)
+            .padding(.horizontal, 40)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: 620, height: 620)
         .background(FidelityWindowSurface())
@@ -2650,12 +2721,25 @@ private struct PermissionsOnboardingView: View {
                     .fill(FidelitySettings.secondaryButtonFill)
                     .overlay(
                         RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        FidelitySettings.surfaceWarmTint.opacity(0.70),
+                                        SwiftUI.Color.clear
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .stroke(FidelitySettings.lineStrong, lineWidth: 1)
                     )
                     .shadow(color: SwiftUI.Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
-                Image(systemName: "checkmark.shield")
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(FidelitySettings.ink)
+                MenuHeaderMark()
+                    .fill(FidelitySettings.ink)
+                    .frame(width: 22, height: 22)
             }
             .frame(width: 44, height: 44)
 
@@ -2676,8 +2760,8 @@ private struct PermissionsOnboardingView: View {
 
     private var footer: some View {
         HStack(alignment: .center, spacing: 6) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 11, weight: .regular))
+            LucideIcon(glyph: .info)
+                .frame(width: 12, height: 12)
                 .foregroundStyle(FidelitySettings.ink3)
             Text("You can change these anytime in System Settings.")
                 .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
@@ -2709,5 +2793,31 @@ private struct PermissionsOnboardingView: View {
             .help(requiredGranted ? "Done" : "Grant Microphone and Screen Recording first")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
     }
 }
+
+#if DEBUG
+@MainActor
+enum OnboardingVisualSnapshotRenderer {
+    static func renderAll(to directory: URL) throws {
+        let cases: [(name: String, statuses: DebugPermissionStatuses, colorScheme: ColorScheme)] = [
+            ("onboarding-without-permissions-light", .withoutPermissions, .light),
+            ("onboarding-with-permissions-light", .withPermissions, .light),
+            ("onboarding-without-permissions-dark", .withoutPermissions, .dark),
+            ("onboarding-with-permissions-dark", .withPermissions, .dark)
+        ]
+
+        for item in cases {
+            let view = PermissionsOnboardingView(
+                onScreenRecordingRestartRequired: {},
+                onClose: {},
+                debugPermissionStatuses: item.statuses
+            )
+            .environment(\.colorScheme, item.colorScheme)
+            .preferredColorScheme(item.colorScheme)
+            try DebugVisualSnapshotWriter.write(view, named: item.name, to: directory)
+        }
+    }
+}
+#endif

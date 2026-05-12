@@ -7,13 +7,12 @@ import TranscriberCore
 /// presents one of two layouts based on the live `SessionStatus`:
 ///
 ///   - **Idle / last:** header with brand mark + state badge, body
-///     with up to five recent sessions (each with title, duration,
-///     relative time, and inline open-folder / open-transcript / retry
-///     actions), footer with Settings / Diagnostics / Quit.
-///   - **Recording:** header with brand mark + `REC · 04:21` indicator,
-///     body with the live source label + elapsed time + waveform plus
-///     a CAPTURING group of System audio / Mic status rows; footer
-///     with `Stop and save` primary + `Open folder` ghost.
+///     with a setup prompt or recent sessions, footer with setup,
+///     settings, and record actions.
+///   - **Recording:** header with brand mark + state badge, body with
+///     the source label, elapsed time, waveform, status copy, and
+///     destination strip; footer with settings and stop/finalizing
+///     action.
 ///
 /// The previous `NSMenu`-driven API (a `RecordingMenu` exposing
 /// `menu: NSMenu` and an `Action` enum) is preserved as the public
@@ -246,13 +245,30 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         switch raw {
         case "idle":
             model.status = .idle
+        case "starting":
+            model.status = .starting
+            model.elapsedSeconds = 0
+            model.recordingSourceLabel = "Recording"
+            model.outcomeFolderName = nil
+            model.outcomeFolderURL = nil
         case "recording":
             model.status = .recording
-            model.elapsedSeconds = max(model.elapsedSeconds, 76)
+            model.elapsedSeconds = max(model.elapsedSeconds, 261)
             model.recordingSourceLabel = model.recordingSourceLabel == "Recording" ? "Zoom · Design review" : model.recordingSourceLabel
+            model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
+        case "stopping":
+            model.status = .stopping
+            model.elapsedSeconds = max(model.elapsedSeconds, 2838)
+            model.recordingSourceLabel = "Zoom · Design review"
+            model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
+        case "finalized", "transcribing":
+            model.status = .finalized
+            model.elapsedSeconds = max(model.elapsedSeconds, 2838)
+            model.recordingSourceLabel = "Zoom · Design review"
             model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
         case "failed":
             model.status = .failed
+            model.outcomeFolderURL = model.outcomeFolderURL ?? URL(fileURLWithPath: "/tmp")
         default:
             break
         }
@@ -272,12 +288,6 @@ final class RecordingMenuModel: ObservableObject {
     /// recording surface. Pattern: `"Zoom · Acme Q3 sync"` when source
     /// and meeting title are both known; falls back to `"Recording"`.
     @Published var recordingSourceLabel: String = "Recording"
-    /// Right-side mono value for the System audio row in the
-    /// CAPTURING group. Pattern: `"on · 48 kHz"` / `"off"`.
-    @Published var systemAudioLabel: String = "on · 48 kHz"
-    /// Right-side mono value for the Mic row. Defaults to the system
-    /// default device's display name when known; falls back to `"-"`.
-    @Published var micLabel: String = "-"
     /// Where the saved transcript will land (folder name only, e.g.
     /// `2026-04-30 14:02 - Acme Q3 sync`). Nil hides the outcome
     /// strip below the waveform.
@@ -293,56 +303,84 @@ final class RecordingMenuModel: ObservableObject {
 
     func refreshRecents(under root: URL?) {
         guard let root else { recents = []; return }
-        recents = SessionFolderEnumerator.recents(under: root, limit: 5)
+        recents = SessionFolderEnumerator.recents(under: root, limit: 3)
     }
 }
 
 private struct RecordingPopoverContent: View {
     @ObservedObject var model: RecordingMenuModel
     let onAction: (RecordingMenu.Action) -> Void
+    let animatesAppearance: Bool
 
     private let menuWidth: CGFloat = 420
     @SwiftUI.State private var didAppear: Bool = false
     @Environment(\.colorScheme) private var colorScheme
+    private let menuHeadingFont = SwiftUI.Font.custom(DS.sansFamily, size: 16).weight(.semibold)
+
+    init(
+        model: RecordingMenuModel,
+        animatesAppearance: Bool = true,
+        onAction: @escaping (RecordingMenu.Action) -> Void
+    ) {
+        self.model = model
+        self.animatesAppearance = animatesAppearance
+        self.onAction = onAction
+    }
 
     var body: some View {
-        let palette = RecordingPopoverPalette(colorScheme: colorScheme)
+        let resolvedColorScheme = model.appearanceTheme.preferredColorScheme ?? colorScheme
+        let palette = RecordingPopoverPalette(colorScheme: resolvedColorScheme)
         VStack(spacing: 0) {
             header(palette: palette)
             Rectangle()
-                .fill(palette.line)
+                .fill(palette.dividerLine)
                 .frame(height: 1)
             content(palette: palette)
         }
-        .background(palette.surface)
+        .frame(width: menuWidth, height: targetSurfaceHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: targetSurfaceHeight == nil)
+        .background(PopoverSurfaceBackground(palette: palette))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(palette.line, lineWidth: 1)
+                .stroke(palette.outerStroke, lineWidth: 1)
         )
-        .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [SwiftUI.Color.clear, palette.specular, SwiftUI.Color.clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 1)
-            .padding(.horizontal, 18)
-        }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: palette.shadow, radius: 18, x: 0, y: 8)
-        .frame(width: menuWidth)
-        .fixedSize(horizontal: false, vertical: true)
-        .opacity(didAppear ? 1 : 0)
-        .offset(y: didAppear ? 0 : -6)
-        .animation(.easeOut(duration: 0.18), value: didAppear)
-        .onAppear { didAppear = true }
+        .shadow(color: palette.shadow, radius: palette.shadowRadius, x: 0, y: palette.shadowYOffset)
+        .opacity(animatesAppearance ? (didAppear ? 1 : 0) : 1)
+        .offset(y: animatesAppearance ? (didAppear ? 0 : -6) : 0)
+        .animation(animatesAppearance ? .easeOut(duration: 0.18) : nil, value: didAppear)
+        .onAppear {
+            if animatesAppearance {
+                didAppear = true
+            }
+        }
+        .environment(\.colorScheme, resolvedColorScheme)
         .preferredColorScheme(model.appearanceTheme.preferredColorScheme)
     }
 
+    private var targetSurfaceHeight: CGFloat? {
+        switch model.status {
+        case .idle:
+            if model.setupNeedsAttention { return 167 }
+            return model.recents.isEmpty ? nil : 336
+        case .starting:
+            return 311
+        case .recording:
+            return 355
+        case .stopping:
+            return 377
+        case .finalized:
+            return 357
+        case .failed:
+            return 196
+        }
+    }
+
     private func header(palette: RecordingPopoverPalette) -> some View {
-        HStack(spacing: 12) {
-            BrandMark(size: 14)
-                .foregroundStyle(palette.text)
+        HStack(spacing: 6) {
+            MenuHeaderMark()
+                .fill(palette.text)
+                .frame(width: 18, height: 18)
             Text("scribe")
                 .font(DS.Font.subheading)
                 .foregroundStyle(palette.text)
@@ -351,18 +389,8 @@ private struct RecordingPopoverContent: View {
                 text: headerStatusText,
                 color: headerStatusColor(palette: palette)
             )
-            Button {
-                onAction(.openSettings)
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(IconButtonStyle(palette: palette))
-            .help("Open Settings")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
         .frame(height: 46)
     }
 
@@ -380,20 +408,15 @@ private struct RecordingPopoverContent: View {
 
     private func idleLayout(palette: RecordingPopoverPalette) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                Circle()
-                    .fill(model.setupNeedsAttention ? palette.warning : palette.ready)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 6)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(model.setupNeedsAttention ? "Setup needs attention" : "Ready when you are.")
-                        .font(DS.Font.heading)
-                        .foregroundStyle(palette.text)
-                    Text(model.setupNeedsAttention ? "Open setup to grant missing permissions." : "Scribe is watching for calls. Start manually any time.")
-                        .font(DS.Font.bodySmall)
-                        .foregroundStyle(palette.secondaryText)
-                }
-                Spacer()
+            VStack(alignment: .leading, spacing: 5) {
+                Text(model.setupNeedsAttention ? "Setup needs attention" : "Ready to record")
+                    .font(menuHeadingFont)
+                    .foregroundStyle(palette.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(model.setupNeedsAttention ? "Open setup to grant missing permissions." : "Scribe will prompt for meetings, or you can start now.")
+                    .font(DS.Font.bodySmall)
+                    .foregroundStyle(palette.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if model.recents.isEmpty {
                 EmptyView()
@@ -417,10 +440,11 @@ private struct RecordingPopoverContent: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(palette.line, lineWidth: 1)
+                        .stroke(palette.controlStroke, lineWidth: 1)
                 )
             }
-            HStack {
+            HStack(spacing: 8) {
+                settingsGear(palette: palette)
                 if model.setupNeedsAttention {
                     Button("Check setup") { onAction(.openSetupRequired) }
                         .buttonStyle(GhostPopoverButtonStyle(palette: palette))
@@ -436,36 +460,36 @@ private struct RecordingPopoverContent: View {
     }
 
     private func recordingLayout(palette: RecordingPopoverPalette) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle().fill(palette.live).frame(width: 8, height: 8)
                 Text(model.recordingSourceLabel)
-                    .font(DS.Font.heading)
+                    .font(menuHeadingFont)
                     .foregroundStyle(palette.text)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer()
                 Text(timeString(model.elapsedSeconds))
-                    .font(SwiftUI.Font.custom(DS.monoFamily, size: 19).weight(.regular))
+                    .font(SwiftUI.Font.custom(DS.monoFamily, size: 17).weight(.regular))
                     .foregroundStyle(palette.text)
                     .monospacedDigit()
             }
-            privacyStatusBlock(palette: palette)
-            AnimatedWaveform(palette: palette)
+            StaticWaveform(palette: palette)
                 .frame(height: 118)
             Text(activeStatusCopy)
-                .font(DS.Font.body)
+                .font(activeStatusFont)
                 .foregroundStyle(palette.secondaryText)
-            if let folder = model.outcomeFolderName {
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if shouldShowOutcomeFolder, let folder = model.outcomeFolderName {
                 HStack(spacing: 8) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 12, weight: .medium))
+                    LucideIcon(glyph: .folder)
+                        .frame(width: 12, height: 12)
                     Text(folder)
                         .font(DS.Font.monoSmall)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .foregroundStyle(palette.tertiaryText)
+                .foregroundStyle(palette.metaText)
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -475,66 +499,36 @@ private struct RecordingPopoverContent: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(palette.line, lineWidth: 1)
+                        .stroke(palette.controlStroke, lineWidth: 1)
                 )
             }
-            HStack {
-                if model.outcomeFolderURL != nil {
-                    Button("Open folder") { openActiveFolder() }
-                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-                }
+            HStack(spacing: 8) {
+                settingsGear(palette: palette)
                 Spacer()
-                Button("Stop now") { onAction(.stop) }
-                    .keyboardShortcut("s", modifiers: [.command])
-                    .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+                if activeActionIsPrimary {
+                    Button(activeActionTitle) {
+                        if !activeActionIsDisabled { onAction(.stop) }
+                    }
+                        .keyboardShortcut("s", modifiers: [.command])
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette, textColor: palette.activePrimaryButtonText))
+                } else {
+                    Button(activeActionTitle) {
+                        if !activeActionIsDisabled { onAction(.stop) }
+                    }
+                        .keyboardShortcut("s", modifiers: [.command])
+                        .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+                        .allowsHitTesting(!activeActionIsDisabled)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
     }
 
-    private func privacyStatusBlock(palette: RecordingPopoverPalette) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            privacyLine("Audio: local" + destinationSuffix)
-            privacyLine("Captured: mic + system audio · no video, no screenshots")
-            privacyLine("Engine: \(engineDisplayName)")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(palette.controlFill)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(palette.line, lineWidth: 1)
-        )
-    }
-
-    private func privacyLine(_ text: String) -> some View {
-        Text(text)
-            .font(DS.Font.monoSmall)
-            .tracking(0.4)
-            .foregroundStyle(DS.Color.foregroundSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-    }
-
-    private var destinationSuffix: String {
-        guard let folder = model.outcomeFolderName, !folder.isEmpty else { return "" }
-        return " · ~/Scribe/\(folder)/"
-    }
-
-    private var engineDisplayName: String {
-        switch model.sessionEngineMode {
-        case .cloud: return "ElevenLabs (cloud)"
-        case .local: return "Cohere (local)"
-        }
-    }
-
     private var activeStatusCopy: String {
         switch (model.status, model.sessionEngineMode) {
+        case (.stopping, _):
+            return "Saving the recording. Finishing the last few seconds of capture."
         case (.finalized, .local):
             return "Finalizing audio for Cohere transcription on this Mac."
         case (.finalized, .cloud):
@@ -546,35 +540,82 @@ private struct RecordingPopoverContent: View {
         }
     }
 
-    private func openActiveFolder() {
-        if let url = model.outcomeFolderURL { NSWorkspace.shared.open(url) }
+    private var activeStatusFont: SwiftUI.Font {
+        switch model.status {
+        case .recording, .starting:
+            return SwiftUI.Font.custom(DS.sansFamily, size: 13).weight(.regular)
+        case .stopping, .finalized, .idle, .failed:
+            return DS.Font.body
+        }
+    }
+
+    private var shouldShowOutcomeFolder: Bool {
+        model.status != .starting
+    }
+
+    private var activeActionTitle: String {
+        switch model.status {
+        case .stopping:
+            return "Stopping…"
+        default:
+            return "Stop now"
+        }
+    }
+
+    private var activeActionIsPrimary: Bool {
+        switch model.status {
+        case .recording, .starting:
+            return true
+        case .stopping, .finalized, .failed, .idle:
+            return false
+        }
+    }
+
+    private var activeActionIsDisabled: Bool {
+        switch model.status {
+        case .stopping, .finalized:
+            return true
+        case .idle, .starting, .recording, .failed:
+            return false
+        }
+    }
+
+    private func settingsGear(palette: RecordingPopoverPalette) -> some View {
+        Button {
+            onAction(.openSettings)
+        } label: {
+            LucideIcon(glyph: .settings)
+                .frame(width: 16, height: 16)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(IconButtonStyle(palette: palette))
+        .help("Open Settings")
     }
 
     private func failedLayout(palette: RecordingPopoverPalette) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
+                LucideIcon(glyph: .alertTriangle)
+                    .frame(width: 16, height: 16)
                     .foregroundStyle(palette.warning)
                 Text("Transcription failed")
-                    .font(DS.Font.heading)
+                    .font(menuHeadingFont)
                     .foregroundStyle(palette.text)
             }
             Text("Transcription failed, but the recording remains on disk and can be retried.")
                 .font(DS.Font.bodySmall)
                 .foregroundStyle(palette.secondaryText)
-            HStack {
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                settingsGear(palette: palette)
                 Spacer()
-                if model.outcomeFolderURL != nil {
-                    Button("Retry") { onAction(.retryFailedSession) }
-                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
-                } else {
-                    Button("Open setup") { onAction(.openSetupRequired) }
-                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
-                }
+                Button("Retry") { onAction(.retryFailedSession) }
+                    .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 18)
+        .padding(.vertical, 16)
     }
 
     private var headerStatusText: String {
@@ -592,7 +633,7 @@ private struct RecordingPopoverContent: View {
         case .recording, .stopping: return palette.live
         case .failed: return palette.warning
         case .idle: return model.setupNeedsAttention ? palette.warning : palette.ready
-        default: return palette.secondaryText
+        default: return palette.neutralStatus
         }
     }
 
@@ -608,60 +649,142 @@ private struct RecordingPopoverContent: View {
 private struct RecordingPopoverPalette {
     let colorScheme: ColorScheme
 
-    var surface: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color(red: 0.10, green: 0.10, blue: 0.12).opacity(0.86)
-            : SwiftUI.Color(red: 0.965, green: 0.956, blue: 0.946).opacity(0.94)
+    var isDark: Bool { colorScheme == .dark }
+
+    var surfaceBase: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 7 / 255, green: 1 / 255, blue: 3 / 255)
+            : SwiftUI.Color(red: 245 / 255, green: 247 / 255, blue: 250 / 255)
+    }
+
+    var surfaceCoolTint: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 77 / 255, green: 13 / 255, blue: 26 / 255).opacity(0.50)
+            : SwiftUI.Color(red: 220 / 255, green: 234 / 255, blue: 251 / 255).opacity(0.50)
+    }
+
+    var surfaceWarmTint: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 92 / 255, green: 28 / 255, blue: 18 / 255).opacity(0.40)
+            : SwiftUI.Color(red: 255 / 255, green: 224 / 255, blue: 214 / 255).opacity(0.40)
     }
 
     var controlFill: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color.white.opacity(0.045)
-            : SwiftUI.Color.black.opacity(0.045)
+        isDark
+            ? SwiftUI.Color.white.opacity(11 / 255)
+            : SwiftUI.Color.white.opacity(102 / 255)
+    }
+
+    var controlStroke: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(26 / 255)
+            : SwiftUI.Color.black.opacity(16 / 255)
+    }
+
+    var badgeFill: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(18 / 255)
+            : SwiftUI.Color.black.opacity(8 / 255)
     }
 
     var hoverFill: SwiftUI.Color {
-        colorScheme == .dark
+        isDark
             ? SwiftUI.Color.white.opacity(0.055)
             : SwiftUI.Color.black.opacity(0.055)
     }
 
-    var line: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color.white.opacity(0.10)
-            : SwiftUI.Color.black.opacity(0.10)
+    var outerStroke: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(26 / 255)
+            : SwiftUI.Color.black.opacity(18 / 255)
     }
 
-    var specular: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color.white.opacity(0.22)
-            : SwiftUI.Color.white.opacity(0.74)
+    var buttonStroke: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(26 / 255)
+            : SwiftUI.Color.black.opacity(31 / 255)
+    }
+
+    var dividerLine: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(15 / 255)
+            : SwiftUI.Color.black.opacity(10 / 255)
+    }
+
+    var line: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color.white.opacity(24 / 255)
+            : SwiftUI.Color.black.opacity(20 / 255)
     }
 
     var text: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color(red: 0.96, green: 0.96, blue: 0.96)
-            : SwiftUI.Color(red: 0.07, green: 0.07, blue: 0.075)
+        isDark
+            ? SwiftUI.Color(red: 250 / 255, green: 250 / 255, blue: 250 / 255)
+            : SwiftUI.Color(red: 20 / 255, green: 20 / 255, blue: 20 / 255)
     }
 
     var secondaryText: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color(red: 0.72, green: 0.72, blue: 0.72)
-            : SwiftUI.Color(red: 0.38, green: 0.36, blue: 0.35)
+        isDark
+            ? SwiftUI.Color(red: 184 / 255, green: 184 / 255, blue: 184 / 255)
+            : SwiftUI.Color(red: 71 / 255, green: 71 / 255, blue: 71 / 255)
     }
 
     var tertiaryText: SwiftUI.Color {
-        colorScheme == .dark
-            ? SwiftUI.Color(red: 0.48, green: 0.48, blue: 0.48)
-            : SwiftUI.Color(red: 0.50, green: 0.48, blue: 0.46)
+        isDark
+            ? SwiftUI.Color(red: 122 / 255, green: 122 / 255, blue: 122 / 255)
+            : SwiftUI.Color(red: 107 / 255, green: 107 / 255, blue: 107 / 255)
     }
 
-    var live: SwiftUI.Color { SwiftUI.Color(red: 0.923, green: 0.369, blue: 0.272) }
-    var ready: SwiftUI.Color { SwiftUI.Color(red: 0.353, green: 0.771, blue: 0.464) }
-    var warning: SwiftUI.Color { SwiftUI.Color(red: 0.967, green: 0.721, blue: 0.241) }
-    var shadow: SwiftUI.Color { SwiftUI.Color.black.opacity(colorScheme == .dark ? 0.42 : 0.18) }
-    var waveformBar: SwiftUI.Color { colorScheme == .dark ? SwiftUI.Color.white : SwiftUI.Color.black }
-    var buttonTextOnPrimary: SwiftUI.Color { SwiftUI.Color.white }
+    var metaText: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 122 / 255, green: 122 / 255, blue: 122 / 255)
+            : SwiftUI.Color(red: 140 / 255, green: 135 / 255, blue: 129 / 255)
+    }
+
+    var badgeText: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 184 / 255, green: 184 / 255, blue: 184 / 255)
+            : SwiftUI.Color(red: 117 / 255, green: 111 / 255, blue: 104 / 255)
+    }
+
+    var live: SwiftUI.Color { SwiftUI.Color(red: 235 / 255, green: 94 / 255, blue: 69 / 255) }
+    var ready: SwiftUI.Color { SwiftUI.Color(red: 89 / 255, green: 196 / 255, blue: 117 / 255) }
+    var warning: SwiftUI.Color { SwiftUI.Color(red: 247 / 255, green: 184 / 255, blue: 61 / 255) }
+    var neutralStatus: SwiftUI.Color {
+        isDark
+            ? SwiftUI.Color(red: 122 / 255, green: 122 / 255, blue: 122 / 255)
+            : SwiftUI.Color(red: 128 / 255, green: 122 / 255, blue: 117 / 255)
+    }
+    var shadow: SwiftUI.Color { SwiftUI.Color.black.opacity(isDark ? 89 / 255 : 20 / 255) }
+    var shadowRadius: CGFloat { isDark ? 18 : 16 }
+    var shadowYOffset: CGFloat { isDark ? 8 : 6 }
+    var waveformBar: SwiftUI.Color { isDark ? SwiftUI.Color.white : SwiftUI.Color.black }
+    var primaryButtonFill: SwiftUI.Color { text }
+    var primaryButtonText: SwiftUI.Color { isDark ? SwiftUI.Color(red: 20 / 255, green: 20 / 255, blue: 20 / 255) : SwiftUI.Color.white }
+    var activePrimaryButtonText: SwiftUI.Color { isDark ? SwiftUI.Color(red: 18 / 255, green: 18 / 255, blue: 19 / 255) : SwiftUI.Color.white }
+}
+
+private struct PopoverSurfaceBackground: View {
+    let palette: RecordingPopoverPalette
+
+    var body: some View {
+        ZStack {
+            palette.surfaceBase
+            RadialGradient(
+                colors: [palette.surfaceCoolTint, SwiftUI.Color.clear],
+                center: UnitPoint(x: 0.75, y: 0.06),
+                startRadius: 0,
+                endRadius: 440
+            )
+            RadialGradient(
+                colors: [palette.surfaceWarmTint, SwiftUI.Color.clear],
+                center: UnitPoint(x: 0.03, y: 0.01),
+                startRadius: 0,
+                endRadius: 380
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
 }
 
 private struct StatusBadge: View {
@@ -671,76 +794,77 @@ private struct StatusBadge: View {
         HStack(spacing: 7) {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(text)
-                .font(.system(size: 15, weight: .medium, design: .monospaced))
-                .tracking(1)
+                .font(SwiftUI.Font.custom(DS.monoFamily, size: 13).weight(.medium))
+                .tracking(1.5)
                 .foregroundStyle(color)
         }
     }
 }
 
-private struct AnimatedWaveform: View {
+struct MenuHeaderMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width, rect.height) / 18
+        let xOffset = rect.midX - 9 * scale
+        let yOffset = rect.midY - 9 * scale
+
+        func scaledRect(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> CGRect {
+            CGRect(
+                x: xOffset + x * scale,
+                y: yOffset + y * scale,
+                width: width * scale,
+                height: height * scale
+            )
+        }
+
+        var path = Path()
+        let corner = CGSize(width: 0.8 * scale, height: 0.8 * scale)
+        path.addRoundedRect(in: scaledRect(x: 3.0, y: 6.0, width: 2.0, height: 6.0), cornerSize: corner)
+        path.addRoundedRect(in: scaledRect(x: 6.5, y: 3.0, width: 2.0, height: 12.0), cornerSize: corner)
+        path.addRoundedRect(in: scaledRect(x: 10.0, y: 5.0, width: 2.0, height: 8.0), cornerSize: corner)
+        path.addRoundedRect(in: scaledRect(x: 13.0, y: 7.0, width: 2.0, height: 4.0), cornerSize: corner)
+        return path
+    }
+}
+
+private struct StaticWaveform: View {
     let palette: RecordingPopoverPalette
 
-    private let amplitudes: [CGFloat] = [
-        0.18, 0.20, 0.23, 0.19, 0.26, 0.37, 0.45, 0.52, 0.42, 0.70, 0.92, 0.64, 0.55, 0.61,
-        0.44, 0.31, 0.27, 0.30, 0.43, 0.36, 0.25, 0.29, 0.37, 0.49, 0.62, 0.46, 0.59, 0.51,
-        0.47, 0.53, 0.81, 0.72, 0.63, 0.44, 0.38, 0.33, 0.26, 0.22, 0.18, 0.27, 0.34, 0.48,
-        0.74, 0.88, 0.58, 0.42, 0.35, 0.29, 0.21, 0.18, 0.22, 0.31, 0.39, 0.28, 0.22, 0.18
+    private let barHeights: [CGFloat] = [
+        18, 22, 28, 24, 34, 46, 58, 66, 54, 88,
+        108, 78, 68, 76, 56, 38, 34, 38, 54, 46,
+        32, 36, 46, 60, 78, 58, 74, 64, 60, 66,
+        96, 88, 80, 56, 48, 42, 34, 30, 24, 18
     ]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: 3) {
-                ForEach(amplitudes.indices, id: \.self) { i in
-                    let delay = Double(i) * 0.075
-                    let lift = (sin((t * 3.1) + delay) + 1) * 0.18
-                    let height = max(10, 128 * min(1.0, amplitudes[i] + lift))
-                    Capsule()
-                        .fill(palette.waveformBar.opacity(barOpacity(at: i)))
-                        .frame(width: 4, height: height)
-                }
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(barHeights.indices, id: \.self) { i in
+                Capsule()
+                    .fill(palette.waveformBar.opacity(barOpacity(at: i)))
+                    .frame(width: 4, height: barHeights[i])
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.00),
-                        .init(color: .black, location: 0.09),
-                        .init(color: .black, location: 0.91),
-                        .init(color: .clear, location: 1.00)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
         }
-        .background(
-            LinearGradient(
-                colors: [SwiftUI.Color.clear, palette.controlFill, SwiftUI.Color.clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func barOpacity(at index: Int) -> Double {
-        let edge = min(index, amplitudes.count - 1 - index)
+        let edge = min(index, barHeights.count - 1 - index)
         return edge < 5 ? 0.16 + Double(edge) * 0.10 : 0.68
     }
 }
 
 private struct PrimaryPopoverButtonStyle: ButtonStyle {
     let palette: RecordingPopoverPalette
+    var textColor: SwiftUI.Color?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(DS.Font.button)
-            .foregroundStyle(palette.buttonTextOnPrimary)
+            .foregroundStyle(textColor ?? palette.primaryButtonText)
             .padding(.horizontal, 15)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(palette.live.opacity(configuration.isPressed ? 0.82 : 1)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(palette.primaryButtonFill.opacity(configuration.isPressed ? 0.82 : 1)))
     }
 }
 
@@ -753,8 +877,8 @@ private struct SecondaryPopoverButtonStyle: ButtonStyle {
             .foregroundStyle(palette.text)
             .padding(.horizontal, 15)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(palette.controlFill.opacity(configuration.isPressed ? 1.35 : 1)))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(palette.line, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(configuration.isPressed ? palette.hoverFill : SwiftUI.Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(palette.buttonStroke, lineWidth: 1))
     }
 }
 
@@ -764,7 +888,7 @@ private struct GhostPopoverButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(DS.Font.button)
-            .foregroundStyle(palette.text)
+            .foregroundStyle(configuration.isPressed ? palette.text : palette.secondaryText)
             .padding(.horizontal, 16)
             .frame(height: 32)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(configuration.isPressed ? palette.hoverFill : SwiftUI.Color.clear))
@@ -776,9 +900,9 @@ private struct IconButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(configuration.isPressed ? palette.text : palette.secondaryText)
+            .foregroundStyle(configuration.isPressed ? palette.text : palette.tertiaryText)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(configuration.isPressed ? palette.controlFill : SwiftUI.Color.clear)
             )
     }
@@ -811,32 +935,15 @@ private struct MenuRow: View {
                         .truncationMode(.tail)
                     Text(subline)
                         .font(DS.Font.monoSmall)
-                        .tracking(0.3)
-                        .foregroundStyle(palette.tertiaryText)
+                        .tracking(0.1)
+                        .foregroundStyle(palette.metaText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                switch SessionRepairRouting.recentAction(for: entry, localModelReady: localModelReadyForRetry) {
-                case .retry(let sessionDirectory):
-                    Button("Retry") { onRetry(sessionDirectory) }
-                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-                        .controlSize(.small)
-                case .repair(let payload):
-                    Button("Repair") { onRepair(payload.sessionDirectory) }
-                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-                        .controlSize(.small)
-                case .loading:
-                    Button("Checking…") {}
-                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-                        .controlSize(.small)
-                        .disabled(true)
-                case .none:
-                    EmptyView()
-                }
                 Text(relativeTime)
                     .font(DS.Font.monoSmall)
-                    .tracking(0.6)
-                    .foregroundStyle(palette.tertiaryText)
+                    .tracking(0.25)
+                    .foregroundStyle(palette.metaText)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -876,11 +983,12 @@ private struct MenuRow: View {
     /// `.integ-row .mark` is 24x24, 5pt radius, mono 11/600.
     private func badge(palette: RecordingPopoverPalette) -> some View {
         RoundedRectangle(cornerRadius: 5)
-            .fill(palette.controlFill)
+            .fill(palette.badgeFill)
             .overlay(
                 Text(initial)
                     .font(SwiftUI.Font.custom(DS.monoFamily, size: 11).weight(.semibold))
-                    .foregroundStyle(palette.secondaryText)
+                    .tracking(0.1)
+                    .foregroundStyle(palette.badgeText)
             )
             .frame(width: 24, height: 24)
     }
@@ -906,52 +1014,133 @@ private struct MenuRow: View {
     private var relativeTime: String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: entry.createdAt, relativeTo: Date()).uppercased()
+        return formatter
+            .localizedString(for: entry.createdAt, relativeTo: Date())
+            .replacingOccurrences(of: ".", with: "")
+            .uppercased()
     }
 }
 
-private struct LevelBar: View {
-    let label: String
-    let value: Float
-    let systemImage: String
+#if DEBUG
+@MainActor
+enum RecordingMenuVisualSnapshotRenderer {
+    static func renderAll(to directory: URL) throws {
+        let recentsRoot = try makeRecentsRoot()
+        let recents = SessionFolderEnumerator.recents(under: recentsRoot, limit: 3)
+        let cases: [(name: String, theme: AppearanceTheme, model: RecordingMenuModel)] = [
+            ("menu-setup-light", .light, idleModel(setupNeedsAttention: true, recents: [])),
+            ("menu-ready-light", .light, idleModel(setupNeedsAttention: false, recents: recents)),
+            ("menu-recording-light", .light, activeModel(status: .recording, elapsed: 261, source: "Zoom · Design review")),
+            ("menu-starting-light", .light, activeModel(status: .starting, elapsed: 0, source: "Recording", folderName: nil)),
+            ("menu-stopping-light", .light, activeModel(status: .stopping, elapsed: 2838, source: "Zoom · Design review")),
+            ("menu-finalized-light", .light, activeModel(status: .finalized, elapsed: 2838, source: "Zoom · Design review")),
+            ("menu-failed-light", .light, failedModel()),
+            ("menu-setup-dark", .dark, idleModel(setupNeedsAttention: true, recents: [])),
+            ("menu-ready-dark", .dark, idleModel(setupNeedsAttention: false, recents: recents)),
+            ("menu-recording-dark", .dark, activeModel(status: .recording, elapsed: 261, source: "Zoom · Design review")),
+            ("menu-starting-dark", .dark, activeModel(status: .starting, elapsed: 0, source: "Recording", folderName: nil)),
+            ("menu-stopping-dark", .dark, activeModel(status: .stopping, elapsed: 2838, source: "Zoom · Design review")),
+            ("menu-finalized-dark", .dark, activeModel(status: .finalized, elapsed: 2838, source: "Zoom · Design review")),
+            ("menu-failed-dark", .dark, failedModel())
+        ]
 
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(DS.Color.foregroundTertiary)
-                .frame(width: 14)
-            Text(label)
-                .font(DS.Font.monoSmall)
-                .tracking(0.6)
-                .foregroundStyle(DS.Color.foregroundSecondary)
-                .frame(width: 26, alignment: .leading)
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(SwiftUI.Color.white.opacity(0.08))
-                    Capsule()
-                        .fill(levelColor)
-                        .frame(width: max(3, proxy.size.width * CGFloat(clampedValue)))
-                }
-            }
-            .frame(height: 4)
-            Text(levelText)
-                .font(DS.Font.monoSmall)
-                .foregroundStyle(DS.Color.foregroundTertiary)
-                .frame(width: 46, alignment: .trailing)
+        for item in cases {
+            item.model.appearanceTheme = item.theme
+            let view = RecordingPopoverContent(
+                model: item.model,
+                animatesAppearance: false,
+                onAction: { _ in }
+            )
+            .padding(20)
+            .background(Color.black)
+            try DebugVisualSnapshotWriter.write(view, named: item.name, to: directory)
         }
     }
 
-    private var clampedValue: Float { min(max(value, 0), 1) }
-
-    private var levelColor: SwiftUI.Color {
-        clampedValue <= 0.02 ? DS.Color.warning : SwiftUI.Color.white.opacity(0.92)
+    private static func idleModel(
+        setupNeedsAttention: Bool,
+        recents: [SessionFolderEnumerator.Entry]
+    ) -> RecordingMenuModel {
+        let model = RecordingMenuModel(status: .idle)
+        model.setupNeedsAttention = setupNeedsAttention
+        model.recents = recents
+        return model
     }
 
-    private var levelText: String {
-        clampedValue <= 0.02 ? "silent" : "−\(Int((1 - clampedValue) * 36 + 6)) dB"
+    private static func activeModel(
+        status: SessionStatus,
+        elapsed: Int,
+        source: String,
+        folderName: String? = "2026-05-07 09:41 - Design review"
+    ) -> RecordingMenuModel {
+        let model = RecordingMenuModel(status: status)
+        model.recordingSourceLabel = source
+        model.elapsedSeconds = elapsed
+        model.sessionEngineMode = .cloud
+        model.outcomeFolderName = folderName
+        if let folderName {
+            model.outcomeFolderURL = URL(fileURLWithPath: "/tmp/\(folderName)", isDirectory: true)
+        }
+        return model
+    }
+
+    private static func failedModel() -> RecordingMenuModel {
+        let model = RecordingMenuModel(status: .failed)
+        model.outcomeFolderName = "2026-05-07 09:41 - Design review"
+        model.outcomeFolderURL = URL(fileURLWithPath: "/tmp/2026-05-07 09:41 - Design review", isDirectory: true)
+        return model
+    }
+
+    private static func makeRecentsRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scribe-menu-visual-recents", isDirectory: true)
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let now = Date()
+        try writeSession(
+            root: root,
+            directoryName: "2026-05-11 09:00 - Acme Q3 sync",
+            title: "Acme Q3 sync",
+            modified: now.addingTimeInterval(-2 * 60 * 60)
+        )
+        try writeSession(
+            root: root,
+            directoryName: "2026-05-10 14:00 - Design review",
+            title: "Design review",
+            modified: now.addingTimeInterval(-24 * 60 * 60)
+        )
+        try writeSession(
+            root: root,
+            directoryName: "2026-05-08 10:30 - Karen 1:1",
+            title: "Karen 1:1",
+            modified: now.addingTimeInterval(-3 * 24 * 60 * 60)
+        )
+        return root
+    }
+
+    private static func writeSession(
+        root: URL,
+        directoryName: String,
+        title: String,
+        modified: Date
+    ) throws {
+        let directory = root.appendingPathComponent(directoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let transcript = directory.appendingPathComponent("transcript.md")
+        let body = """
+        ---
+        status: complete
+        title: "\(title)"
+        engine: elevenlabs
+        ---
+
+        body
+        """
+        try body.write(to: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: directory.path)
     }
 }
+#endif
 
 /// `NSStatusItem.button` requires a plain `@objc` target/action pair;
 /// it can't bind directly to a SwiftUI / Swift closure. This shared

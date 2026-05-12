@@ -166,6 +166,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FontRegistration.assertLoaded()
         #if DEBUG
         FontRegistration.writeDebugSentinel()
+        if let snapshotDirectory = ProcessInfo.processInfo.environment["SCRIBE_VISUAL_SNAPSHOT_DIR"] {
+            let directory = URL(fileURLWithPath: snapshotDirectory, isDirectory: true)
+            do {
+                try RecordingMenuVisualSnapshotRenderer.renderAll(to: directory)
+                try OnboardingVisualSnapshotRenderer.renderAll(to: directory)
+                NSApp.terminate(nil)
+                return
+            } catch {
+                fputs("Scribe visual snapshot render failed: \(error)\n", stderr)
+                exit(1)
+            }
+        }
         #endif
         // Codex Phase ζ P1.5: don't silently `try?` the mkdir. If the
         // user has pointed outputRoot at an unmounted volume or a path
@@ -1381,11 +1393,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.currentSessionEngineMode = nil
         self.currentDiagnosticsLiveLevels = nil
         stopElapsedTickTimer()
-        menu?.outcomeFolderName = nil
-        menu?.outcomeFolderURL = nil
+        menu?.outcomeFolderName = dir.url.lastPathComponent
+        menu?.outcomeFolderURL = dir.url
         menu?.sessionEngineMode = sessionEngineMode
-        menu?.recordingSourceLabel = "Recording"
-        menu?.elapsedSeconds = 0
+        menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
+        menu?.elapsedSeconds = max(0, Int(endedAt.timeIntervalSince(started)))
         menu?.rebuild(for: status)
         applyTrustIcon()
 
@@ -1393,7 +1405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // broke). Flash the failed glyph and bail before spawning the
         // transcript worker.
         if !stopSucceeded {
-            self.status = .idle
+            self.status = .failed
             menu?.rebuild(for: status)
             markFailureFlash()
             return
@@ -1414,13 +1426,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let outcome = await worker.run()
             await MainActor.run {
                 guard let self else { return }
-                // F-2: spinner ran while the worker was in flight. Now
-                // that it's done, revert status to .idle and either
-                // flash .saved (3s) or surface the sticky .failed.
-                self.status = .idle
-                self.menu?.rebuild(for: self.status)
+                // F-2: spinner ran while the worker was in flight. On
+                // success, revert to idle and flash saved. On failure,
+                // keep the failed popover actionable against the saved
+                // audio folder so Retry has a concrete target.
                 switch outcome {
                 case .complete:
+                    self.status = .idle
+                    self.menu?.outcomeFolderName = nil
+                    self.menu?.outcomeFolderURL = nil
+                    self.menu?.recordingSourceLabel = "Recording"
+                    self.menu?.elapsedSeconds = 0
+                    self.menu?.rebuild(for: self.status)
                     self.menu?.sessionEngineMode = .cloud
                     self.markSavedFlash()
                     self.presentSavedNotification(
@@ -1430,10 +1447,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         engineLabel: engineLabel
                     )
                 case .failed(let reason):
-                    self.menu?.sessionEngineMode = .cloud
+                    self.status = .failed
+                    self.menu?.sessionEngineMode = sessionEngineMode
+                    self.menu?.outcomeFolderName = dir.url.lastPathComponent
+                    self.menu?.outcomeFolderURL = dir.url
+                    self.menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
+                    self.menu?.rebuild(for: self.status)
                     Log.engine.error("Worker terminated with failure: \(reason, privacy: .public)")
                     self.markFailureFlash()
                 case .cancelled:
+                    self.status = .idle
+                    self.menu?.outcomeFolderName = nil
+                    self.menu?.outcomeFolderURL = nil
+                    self.menu?.recordingSourceLabel = "Recording"
+                    self.menu?.elapsedSeconds = 0
+                    self.menu?.rebuild(for: self.status)
                     self.menu?.sessionEngineMode = .cloud
                     // App was quit / session forcibly aborted. Don't
                     // flash either success or failure; just settle

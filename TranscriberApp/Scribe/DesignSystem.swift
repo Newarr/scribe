@@ -184,13 +184,11 @@ enum DS {
     // MARK: - Typography
 
     /// Bundled font family names registered via `Info.plist`
-    /// `ATSApplicationFontsPath`. Geist and Geist Mono replace the
-    /// earlier Inter + JetBrains Mono pairing per the design
-    /// language captured in `Downloads/index.html`. The
-    /// `interFamily` alias is kept for callers that still reference
-    /// it; new code should prefer `sansFamily`.
-    static let sansFamily = "Geist"
-    static let monoFamily = "Geist Mono"
+    /// `ATSApplicationFontsPath`. The product spec and Pencil v1
+    /// surfaces use Inter for sans text and JetBrains Mono for status,
+    /// paths, timestamps, and indicators.
+    static let sansFamily = "Inter Variable"
+    static let monoFamily = "JetBrains Mono"
     /// Legacy alias. Points at `sansFamily` so existing `DS.interFamily`
     /// references keep compiling. Remove in a future cleanup pass.
     static let interFamily = sansFamily
@@ -1010,3 +1008,87 @@ struct DSWaveform: View {
             .frame(width: 3, height: height * CGFloat(amplitude))
     }
 }
+
+enum LucideGlyph: String {
+    case alertTriangle
+    case arrowUpRight
+    case check
+    case folder
+    case info
+    case settings
+
+    var paths: String {
+        switch self {
+        case .alertTriangle:
+            return #"<path d="M12 3l10 17H2L12 3z"/><path d="M12 10v4M12 17h0"/>"#
+        case .arrowUpRight:
+            return #"<path d="M7 7h10v10"/><path d="M7 17L17 7"/>"#
+        case .check:
+            return #"<path d="M5 12l5 5L20 7"/>"#
+        case .folder:
+            return #"<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>"#
+        case .info:
+            return #"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#
+        case .settings:
+            return #"<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>"#
+        }
+    }
+}
+
+struct LucideIcon: View {
+    let glyph: LucideGlyph
+    var strokeWidth: Double = 1.5
+
+    var body: some View {
+        Image(nsImage: nsImage)
+            .resizable()
+            .renderingMode(.template)
+            .aspectRatio(contentMode: .fit)
+    }
+
+    private var nsImage: NSImage {
+        let svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="\(strokeWidth)" stroke-linecap="round" stroke-linejoin="round">
+        \(glyph.paths)
+        </svg>
+        """
+        let image = NSImage(data: Data(svg.utf8)) ?? NSImage(size: NSSize(width: 24, height: 24))
+        image.isTemplate = true
+        return image
+    }
+}
+
+#if DEBUG
+enum DebugVisualSnapshotWriter {
+    enum SnapshotError: LocalizedError {
+        case renderFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .renderFailed(let name): return "Failed to render \(name)"
+            }
+        }
+    }
+
+    @MainActor
+    static func write<V: View>(
+        _ view: V,
+        named name: String,
+        to directory: URL,
+        scale: CGFloat = 2
+    ) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = scale
+        guard let image = renderer.nsImage else {
+            throw SnapshotError.renderFailed(name)
+        }
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw SnapshotError.renderFailed(name)
+        }
+        try png.write(to: directory.appendingPathComponent("\(name).png"), options: .atomic)
+    }
+}
+#endif
