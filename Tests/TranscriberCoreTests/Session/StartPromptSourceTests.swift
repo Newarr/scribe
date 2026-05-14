@@ -32,8 +32,8 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("title: \"Start Recording\""))
         XCTAssertTrue(source.contains("title: \"Not now\""))
         XCTAssertFalse(source.contains("UNNotificationAction(\n                    identifier: Action.suppress"))
-        XCTAssertTrue(source.contains("modal prompt will still be shown"))
-        XCTAssertTrue(source.contains("modal prompt remains active"))
+        XCTAssertTrue(source.contains("modal/menu recovery remain active"))
+        XCTAssertTrue(source.contains("UNNotificationDismissActionIdentifier"))
     }
 
     func testSuppressionLivesBehindClosedMoreOptionsDisclosure() throws {
@@ -43,17 +43,33 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Stop detecting \\(appDisplayName) for 30 minutes"))
     }
 
-    func testDismissalKeepsBackupNotificationRecoverableWhenBackupPosted() throws {
+    func testDismissalKeepsPromptSessionRecoverableUntilResolutionOrExpiry() throws {
         let source = try source
         XCTAssertTrue(source.contains("A close/Esc/dismissal is not an implicit decline"))
-        XCTAssertTrue(source.contains("if backupNotificationPosted"))
-        XCTAssertTrue(source.contains("backup notification remains recoverable"))
+        XCTAssertTrue(source.contains("menu recovery remains active"))
+        XCTAssertTrue(source.contains("scheduleRecoveryTimers(for: entry)"))
     }
 
-    func testDismissalWithoutBackupDoesNotHangPromptTask() throws {
+    func testIgnoredPromptReminderAndExpiryTimersExist() throws {
         let source = try source
-        XCTAssertTrue(source.contains("there is no secondary channel to resolve later"))
-        XCTAssertTrue(source.contains("resolve(identifier: identifier, with: .skipForNow, removeNotification: false)"))
+        XCTAssertTrue(source.contains("var reminderDelay: TimeInterval = 60"))
+        XCTAssertTrue(source.contains("var expiryDelay: TimeInterval = 180"))
+        XCTAssertTrue(source.contains("kind: .reminder"))
+        XCTAssertTrue(source.contains("Start prompt expired without decision"))
+    }
+
+    func testNotificationDismissalDoesNotResolvePrompt() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("Start prompt notification dismissed without decision"))
+        XCTAssertFalse(source.contains("UNNotificationDismissActionIdentifier:\n                self.resolve"))
+    }
+
+    func testMenuRecoveryActionsResolveActivePrompt() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("chooseStartFromRecovery"))
+        XCTAssertTrue(source.contains("chooseNotNowFromRecovery"))
+        XCTAssertTrue(source.contains("chooseSuppressAppFromRecovery"))
+        XCTAssertTrue(source.contains("Ignoring stale start-prompt menu recovery"))
     }
 
     func testPromptPlacementUsesActiveMeetingWindowScreen() throws {

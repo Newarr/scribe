@@ -23,14 +23,43 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         static let notNow = "scribe.detection.action.not-now"
     }
 
-    private struct Pending {
+    private final class Pending {
+        let identifier: String
+        let app: MeetingApp
+        let event: CalendarEvent?
         let continuation: CheckedContinuation<Choice, Never>
+        var notificationIdentifiers: Set<String> = []
+        var reminderTimer: Timer?
+        var expiryTimer: Timer?
+
+        init(
+            identifier: String,
+            app: MeetingApp,
+            event: CalendarEvent?,
+            continuation: CheckedContinuation<Choice, Never>
+        ) {
+            self.identifier = identifier
+            self.app = app
+            self.event = event
+            self.continuation = continuation
+        }
+    }
+
+    private enum NotificationKind: String {
+        case backup
+        case reminder
     }
 
     private var pending: [String: Pending] = [:]
+    private var activePromptIdentifier: String?
     private var registeredCategories = false
     private var authorizationKnown = false
     private var authorizationGranted = false
+
+    /// Test/configuration seam. Production follows the spec: one fresh
+    /// reminder at ~60s, then safe expiry around the 3-minute policy.
+    var reminderDelay: TimeInterval = 60
+    var expiryDelay: TimeInterval = 180
 
     override init() {
         super.init()
@@ -40,48 +69,110 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
         let identifier = UUID().uuidString
         await ensureRegistered()
-        let backupNotificationPosted = await postBackupNotificationIfPossible(
-            identifier: identifier,
-            app: app,
-            event: event
-        )
 
         return await withCheckedContinuation { continuation in
-            pending[identifier] = Pending(continuation: continuation)
-            presentModalPrompt(
+            let entry = Pending(
                 identifier: identifier,
                 app: app,
                 event: event,
-                backupNotificationPosted: backupNotificationPosted
+                continuation: continuation
             )
+            pending[identifier] = entry
+            activePromptIdentifier = identifier
+            scheduleRecoveryTimers(for: entry)
+            Task { @MainActor [weak self] in
+                await self?.postNotificationIfPossible(
+                    promptID: identifier,
+                    kind: .backup,
+                    app: app,
+                    event: event
+                )
+            }
+            presentModalPrompt(identifier: identifier, app: app, event: event)
         }
     }
 
-    private func postBackupNotificationIfPossible(
-        identifier: String,
+    func chooseStartFromRecovery() {
+        guard let identifier = activePromptIdentifier else {
+            Log.lifecycle.info("Ignoring stale start-prompt menu recovery start: no active prompt")
+            return
+        }
+        resolve(identifier: identifier, with: .start, removeNotifications: true)
+    }
+
+    func chooseNotNowFromRecovery() {
+        guard let identifier = activePromptIdentifier else {
+            Log.lifecycle.info("Ignoring stale start-prompt menu recovery Not now: no active prompt")
+            return
+        }
+        resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
+    }
+
+    func chooseSuppressAppFromRecovery() {
+        guard let identifier = activePromptIdentifier else {
+            Log.lifecycle.info("Ignoring stale start-prompt menu recovery suppression: no active prompt")
+            return
+        }
+        resolve(identifier: identifier, with: .notAMeeting, removeNotifications: true)
+    }
+
+    private func scheduleRecoveryTimers(for entry: Pending) {
+        let promptID = entry.identifier
+        entry.reminderTimer = Timer.scheduledTimer(withTimeInterval: reminderDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let entry = self.pending[promptID] else { return }
+                Log.lifecycle.info("Start prompt reminder firing for \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
+                await self.postNotificationIfPossible(
+                    promptID: promptID,
+                    kind: .reminder,
+                    app: entry.app,
+                    event: entry.event
+                )
+            }
+        }
+        entry.expiryTimer = Timer.scheduledTimer(withTimeInterval: expiryDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let entry = self.pending[promptID] else { return }
+                Log.lifecycle.info("Start prompt expired without decision for \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
+                self.resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)
+            }
+        }
+    }
+
+    @discardableResult
+    private func postNotificationIfPossible(
+        promptID: String,
+        kind: NotificationKind,
         app: MeetingApp,
         event: CalendarEvent?
     ) async -> Bool {
         guard await ensureAuthorization() else {
-            Log.lifecycle.info("Start prompt backup notification unavailable for \(app.bundleID, privacy: .public): authorization missing; modal prompt will still be shown")
+            Log.lifecycle.info("Start prompt \(kind.rawValue, privacy: .public) notification unavailable for \(app.bundleID, privacy: .public): authorization missing; modal/menu recovery remain active")
             return false
         }
 
+        let notificationID = "\(promptID).\(kind.rawValue)"
         let content = UNMutableNotificationContent()
         content.title = promptTitle(for: app, event: event)
         content.subtitle = event == nil ? "Detected in \(app.displayName)" : "From Apple Calendar · \(app.displayName)"
-        content.body = "Start recording?"
+        content.body = kind == .reminder ? "Still want to start recording?" : "Start recording?"
         content.categoryIdentifier = Self.categoryIdentifier
-        content.userInfo = ["promptID": identifier, "bundleID": app.bundleID, "displayName": app.displayName]
+        content.userInfo = [
+            "promptID": promptID,
+            "bundleID": app.bundleID,
+            "displayName": app.displayName,
+            "kind": kind.rawValue
+        ]
         content.sound = nil
 
-        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
         do {
             try await UNUserNotificationCenter.current().add(request)
-            Log.lifecycle.info("Start prompt backup notification posted for \(app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
+            pending[promptID]?.notificationIdentifiers.insert(notificationID)
+            Log.lifecycle.info("Start prompt \(kind.rawValue, privacy: .public) notification posted for \(app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
             return true
         } catch {
-            Log.lifecycle.error("Start prompt backup notification failed for \(app.bundleID, privacy: .public): \(error.localizedDescription, privacy: .public); modal prompt remains active")
+            Log.lifecycle.error("Start prompt \(kind.rawValue, privacy: .public) notification failed for \(app.bundleID, privacy: .public): \(error.localizedDescription, privacy: .public); modal/menu recovery remain active")
             return false
         }
     }
@@ -89,8 +180,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private func presentModalPrompt(
         identifier: String,
         app: MeetingApp,
-        event: CalendarEvent?,
-        backupNotificationPosted: Bool
+        event: CalendarEvent?
     ) {
         NSApp.activate(ignoringOtherApps: true)
 
@@ -103,7 +193,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         alert.window.sharingType = WindowChromeSharing.confidential
 
         let accessory = MoreOptionsAccessory(appDisplayName: app.displayName) { [weak self] in
-            self?.resolve(identifier: identifier, with: .notAMeeting, removeNotification: true)
+            self?.resolve(identifier: identifier, with: .notAMeeting, removeNotifications: true)
             NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)
         }
         alert.accessoryView = accessory.view
@@ -115,22 +205,14 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         let response = alert.runModal()
         switch response {
         case .alertFirstButtonReturn:
-            resolve(identifier: identifier, with: .start, removeNotification: true)
+            resolve(identifier: identifier, with: .start, removeNotifications: true)
         case .alertSecondButtonReturn:
-            resolve(identifier: identifier, with: .skipForNow, removeNotification: true)
+            resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
         default:
-            // A close/Esc/dismissal is not an implicit decline. When a
-            // notification was delivered, leave the prompt session pending so
-            // the backup remains recoverable until the prompt-session feature
-            // adds menu-bar recovery. If notification delivery was unavailable,
-            // there is no secondary channel to resolve later, so avoid hanging
-            // the detection task indefinitely.
-            if backupNotificationPosted {
-                Log.lifecycle.info("Start prompt modal dismissed without decision for \(app.bundleID, privacy: .public); backup notification remains recoverable")
-            } else {
-                Log.lifecycle.info("Start prompt modal dismissed without backup notification for \(app.bundleID, privacy: .public); clearing current prompt")
-                resolve(identifier: identifier, with: .skipForNow, removeNotification: false)
-            }
+            // A close/Esc/dismissal is not an implicit decline. Leave the
+            // prompt session pending so menu-bar recovery and reminder
+            // notifications stay available until explicit resolution or expiry.
+            Log.lifecycle.info("Start prompt modal dismissed without decision for \(app.bundleID, privacy: .public); menu recovery remains active (id=\(identifier, privacy: .public))")
         }
     }
 
@@ -205,14 +287,20 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     @MainActor
-    private func resolve(identifier: String, with choice: Choice, removeNotification: Bool) {
+    private func resolve(identifier: String, with choice: Choice, removeNotifications: Bool) {
         guard let entry = pending.removeValue(forKey: identifier) else {
             Log.lifecycle.info("Ignoring stale start-prompt action (id=\(identifier, privacy: .public))")
             return
         }
-        if removeNotification {
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+        if activePromptIdentifier == identifier {
+            activePromptIdentifier = nil
+        }
+        entry.reminderTimer?.invalidate()
+        entry.expiryTimer?.invalidate()
+        if removeNotifications {
+            let ids = Array(entry.notificationIdentifiers)
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         }
         entry.continuation.resume(returning: choice)
     }
@@ -278,19 +366,23 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let identifier = response.notification.request.identifier
+        let notificationIdentifier = response.notification.request.identifier
+        let promptID = response.notification.request.content.userInfo["promptID"] as? String
+        let identifier = promptID
+            ?? notificationIdentifier
+                .replacingOccurrences(of: ".backup", with: "")
+                .replacingOccurrences(of: ".reminder", with: "")
         let actionID = response.actionIdentifier
         completionHandler()
         Task { @MainActor [weak self] in
             guard let self else { return }
             switch actionID {
             case Action.start:
-                self.resolve(identifier: identifier, with: .start, removeNotification: true)
+                self.resolve(identifier: identifier, with: .start, removeNotifications: true)
             case Action.notNow:
-                self.resolve(identifier: identifier, with: .skipForNow, removeNotification: true)
+                self.resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
             case UNNotificationDismissActionIdentifier:
-                Log.lifecycle.info("Start prompt backup notification dismissed without decision (id=\(identifier, privacy: .public)); clearing current prompt")
-                self.resolve(identifier: identifier, with: .skipForNow, removeNotification: false)
+                Log.lifecycle.info("Start prompt notification dismissed without decision (id=\(identifier, privacy: .public)); menu recovery remains active")
             default:
                 NSApp.activate(ignoringOtherApps: true)
             }

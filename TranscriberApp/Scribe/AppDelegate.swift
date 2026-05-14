@@ -763,6 +763,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await presentSetupRequiredPopover()
         case .openDiagnostics:
             diagnosticsWindowController?.show()
+        case .promptStartRecording:
+            startPromptCoordinator.chooseStartFromRecovery()
+        case .promptNotNow:
+            startPromptCoordinator.chooseNotNowFromRecovery()
+        case .promptSuppressApp:
+            startPromptCoordinator.chooseSuppressAppFromRecovery()
         }
     }
 
@@ -1061,16 +1067,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is in cache. Spec line 167: "Start recording 'Acme Weekly'?".
         let event = await calendarWatcher.eventOverlapping(Date())
         Log.calendar.info("Prompt enrichment: matched=\(event != nil ? "yes" : "no", privacy: .public)")
-        // F-2: surface .detected on the menu bar while the user is
-        // deciding. Cleared in defer so any exit path (start, suppress,
-        // skip, auto-dismiss) reverts the icon.
+        // F-2: surface .detected on the menu bar while the prompt is
+        // unresolved. Dismissal/ignore paths intentionally do not clear this;
+        // only explicit resolution or prompt-session expiry returns to idle.
         detectionPromptActive = true
+        menu?.pendingPrompt = PendingPromptRecovery(
+            title: event.map { "Start recording '\($0.title)'?" } ?? "Start recording \(app.displayName)?",
+            subtitle: event == nil ? "Detected in \(app.displayName)." : "From Apple Calendar · \(app.displayName).",
+            appDisplayName: app.displayName
+        )
         applyTrustIcon()
-        defer {
-            detectionPromptActive = false
-            applyTrustIcon()
-        }
         let choice = await startPromptCoordinator.prompt(for: app, event: event)
+        detectionPromptActive = false
+        menu?.pendingPrompt = nil
+        applyTrustIcon()
         switch choice {
         case .start:
             await startRecording()
