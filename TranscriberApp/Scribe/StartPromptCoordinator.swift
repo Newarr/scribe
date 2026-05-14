@@ -1,47 +1,30 @@
 import AppKit
+import CoreGraphics
 import TranscriberCore
 import UserNotifications
 
-/// Surfaces detection candidates as **system notification banners**, not
-/// focus-stealing modals.
-///
-/// Why the banner: dwell-only triggering produced false positives every
-/// time the user opened Signal to read messages or opened Chrome with a
-/// background music tab playing. Even with the per-PID input-device probe
-/// gating ad-hoc fires, the prompt still appears for genuine ambiguous
-/// cases (e.g., Chrome holding the mic for Whereby vs. Photo Booth). The
-/// industry pattern (Granola, MacWhisper, Recall.ai Desktop SDK) is to
-/// surface those as a banner notification with a 10-second auto-dismiss
-/// rather than a modal that steals focus and binds Return to "Start" —
-/// because that turned dictated newlines into accidental recordings.
-///
-/// The async API is preserved so AppDelegate's call site is unchanged.
+/// Presents meeting detections through the spec's redundant-channel start
+/// prompt: a modal AppKit decision surface first, plus a recoverable
+/// Notification Center backup when notifications are available.
 @MainActor
 final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     enum Choice {
         case start
+        /// App-level 30-minute suppression, exposed only behind More options.
         case notAMeeting
+        /// Current prompt declined with Not now.
         case skipForNow
     }
 
-    /// Auto-dismissal sentinel. If the user neither taps the banner nor
-    /// hits an action button within this many seconds, the prompt
-    /// resolves as `.skipForNow` so the next detection candidate isn't
-    /// blocked behind a stale continuation.
-    static let autoDismissAfter: TimeInterval = 60
-
-    /// Notification category that names this app's three actions.
-    /// Registered once on init; macOS de-duplicates by identifier.
     private static let categoryIdentifier = "scribe.detection.candidate"
     private enum Action {
         static let start = "scribe.detection.action.start"
-        static let suppress = "scribe.detection.action.suppress"
+        static let notNow = "scribe.detection.action.not-now"
     }
 
     private struct Pending {
         let continuation: CheckedContinuation<Choice, Never>
-        let timeoutTask: Task<Void, Never>
     }
 
     private var pending: [String: Pending] = [:]
@@ -55,66 +38,114 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
-        await ensureRegistered(for: app)
-
-        let granted = await ensureAuthorization()
-        guard granted else {
-            // Notification permission missing or revoked: don't fall back
-            // to a focus-stealing modal — that's the bug we're fixing.
-            // Log and treat as skip; user can start manually from the
-            // menu bar. The settings UI gates re-asking elsewhere.
-            Log.lifecycle.info("Detection candidate \(app.bundleID, privacy: .public): notification authorization missing, skipping prompt")
-            return .skipForNow
-        }
+        let identifier = UUID().uuidString
+        await ensureRegistered()
+        let backupNotificationPosted = await postBackupNotificationIfPossible(
+            identifier: identifier,
+            app: app,
+            event: event
+        )
 
         return await withCheckedContinuation { continuation in
-            Task { @MainActor in
-                await deliver(for: app, event: event, continuation: continuation)
+            pending[identifier] = Pending(continuation: continuation)
+            presentModalPrompt(
+                identifier: identifier,
+                app: app,
+                event: event,
+                backupNotificationPosted: backupNotificationPosted
+            )
+        }
+    }
+
+    private func postBackupNotificationIfPossible(
+        identifier: String,
+        app: MeetingApp,
+        event: CalendarEvent?
+    ) async -> Bool {
+        guard await ensureAuthorization() else {
+            Log.lifecycle.info("Start prompt backup notification unavailable for \(app.bundleID, privacy: .public): authorization missing; modal prompt will still be shown")
+            return false
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = promptTitle(for: app, event: event)
+        content.subtitle = event == nil ? "Detected in \(app.displayName)" : "From Apple Calendar · \(app.displayName)"
+        content.body = "Start recording?"
+        content.categoryIdentifier = Self.categoryIdentifier
+        content.userInfo = ["promptID": identifier, "bundleID": app.bundleID, "displayName": app.displayName]
+        content.sound = nil
+
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            Log.lifecycle.info("Start prompt backup notification posted for \(app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
+            return true
+        } catch {
+            Log.lifecycle.error("Start prompt backup notification failed for \(app.bundleID, privacy: .public): \(error.localizedDescription, privacy: .public); modal prompt remains active")
+            return false
+        }
+    }
+
+    private func presentModalPrompt(
+        identifier: String,
+        app: MeetingApp,
+        event: CalendarEvent?,
+        backupNotificationPosted: Bool
+    ) {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = promptTitle(for: app, event: event)
+        alert.informativeText = promptSubtitle(for: app, event: event)
+        alert.addButton(withTitle: "Start Recording")
+        alert.addButton(withTitle: "Not now")
+        alert.window.sharingType = WindowChromeSharing.confidential
+
+        let accessory = MoreOptionsAccessory(appDisplayName: app.displayName) { [weak self] in
+            self?.resolve(identifier: identifier, with: .notAMeeting, removeNotification: true)
+            NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)
+        }
+        alert.accessoryView = accessory.view
+
+        place(window: alert.window, nearActiveWindowFor: app)
+        alert.window.makeKeyAndOrderFront(nil)
+        alert.window.orderFrontRegardless()
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            resolve(identifier: identifier, with: .start, removeNotification: true)
+        case .alertSecondButtonReturn:
+            resolve(identifier: identifier, with: .skipForNow, removeNotification: true)
+        default:
+            // A close/Esc/dismissal is not an implicit decline. When a
+            // notification was delivered, leave the prompt session pending so
+            // the backup remains recoverable until the prompt-session feature
+            // adds menu-bar recovery. If notification delivery was unavailable,
+            // there is no secondary channel to resolve later, so avoid hanging
+            // the detection task indefinitely.
+            if backupNotificationPosted {
+                Log.lifecycle.info("Start prompt modal dismissed without decision for \(app.bundleID, privacy: .public); backup notification remains recoverable")
+            } else {
+                Log.lifecycle.info("Start prompt modal dismissed without backup notification for \(app.bundleID, privacy: .public); clearing current prompt")
+                resolve(identifier: identifier, with: .skipForNow, removeNotification: false)
             }
         }
     }
 
-    private func deliver(
-        for app: MeetingApp,
-        event: CalendarEvent?,
-        continuation: CheckedContinuation<Choice, Never>
-    ) async {
-        let identifier = UUID().uuidString
-
-        let content = UNMutableNotificationContent()
+    private func promptTitle(for app: MeetingApp, event: CalendarEvent?) -> String {
         if let event {
-            content.title = event.title
-            content.subtitle = "Detected in \(app.displayName)"
-        } else {
-            content.title = "\(app.displayName) call detected"
-            content.subtitle = "No matching calendar event"
+            return "Start recording '\(event.title)'?"
         }
-        content.body = "Start recording? You can cancel anytime."
-        content.categoryIdentifier = Self.categoryIdentifier
-        content.userInfo = ["bundleID": app.bundleID, "displayName": app.displayName]
-        content.sound = nil
+        return "Start recording \(app.displayName)?"
+    }
 
-        let request = UNNotificationRequest(
-            identifier: identifier,
-            content: content,
-            trigger: nil
-        )
-
-        let timeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.autoDismissAfter * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.resolve(identifier: identifier, with: .skipForNow, removeNotification: true)
+    private func promptSubtitle(for app: MeetingApp, event: CalendarEvent?) -> String {
+        if event != nil {
+            return "From Apple Calendar. Detected in \(app.displayName)."
         }
-
-        pending[identifier] = Pending(continuation: continuation, timeoutTask: timeoutTask)
-
-        do {
-            try await UNUserNotificationCenter.current().add(request)
-            Log.lifecycle.info("Start prompt notification posted for \(app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
-        } catch {
-            Log.lifecycle.error("Start prompt notification failed for \(app.bundleID, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            resolve(identifier: identifier, with: .skipForNow, removeNotification: false)
-        }
+        return "Scribe detected an active call in \(app.displayName)."
     }
 
     private func ensureAuthorization() async -> Bool {
@@ -150,27 +181,23 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func ensureRegistered(for app: MeetingApp) async {
+    private func ensureRegistered() async {
         guard !registeredCategories else { return }
         let category = UNNotificationCategory(
             identifier: Self.categoryIdentifier,
             actions: [
                 UNNotificationAction(
                     identifier: Action.start,
-                    title: "Start recording",
+                    title: "Start Recording",
                     options: [.foreground]
                 ),
                 UNNotificationAction(
-                    identifier: Action.suppress,
-                    title: "Stop detecting for 30 min",
+                    identifier: Action.notNow,
+                    title: "Not now",
                     options: []
                 )
             ],
             intentIdentifiers: [],
-            // .customDismissAction routes a user-issued dismiss through
-            // didReceive (with UNNotificationDismissActionIdentifier).
-            // Without it, the user closing the banner is silent and we
-            // wait the full 60s before resolving as skipForNow.
             options: [.customDismissAction]
         )
         UNUserNotificationCenter.current().setNotificationCategories([category])
@@ -179,13 +206,61 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     @MainActor
     private func resolve(identifier: String, with choice: Choice, removeNotification: Bool) {
-        guard let entry = pending.removeValue(forKey: identifier) else { return }
-        entry.timeoutTask.cancel()
+        guard let entry = pending.removeValue(forKey: identifier) else {
+            Log.lifecycle.info("Ignoring stale start-prompt action (id=\(identifier, privacy: .public))")
+            return
+        }
         if removeNotification {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
         }
         entry.continuation.resume(returning: choice)
+    }
+
+    private func place(window: NSWindow, nearActiveWindowFor app: MeetingApp) {
+        guard let targetScreen = activeScreen(for: app) else {
+            window.center()
+            return
+        }
+        let frame = targetScreen.visibleFrame
+        let size = window.frame.size
+        let origin = CGPoint(
+            x: frame.midX - size.width / 2,
+            y: frame.midY - size.height / 2
+        )
+        window.setFrameOrigin(origin)
+    }
+
+    private func activeScreen(for app: MeetingApp) -> NSScreen? {
+        guard let windowBounds = frontmostWindowBounds(forBundleID: app.bundleID) else { return nil }
+        return NSScreen.screens.max { lhs, rhs in
+            lhs.frame.intersection(windowBounds).area < rhs.frame.intersection(windowBounds).area
+        }
+    }
+
+    private func frontmostWindowBounds(forBundleID bundleID: String) -> CGRect? {
+        let runningPIDs = Set(NSWorkspace.shared.runningApplications.compactMap { running -> pid_t? in
+            running.bundleIdentifier == bundleID ? running.processIdentifier : nil
+        })
+        guard !runningPIDs.isEmpty,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        for info in windows {
+            guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  runningPIDs.contains(pid),
+                  let layer = info[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let boundsDict = info[kCGWindowBounds as String] as? [String: Any] else {
+                continue
+            }
+            var bounds = CGRect.null
+            if CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds), !bounds.isNull, !bounds.isEmpty {
+                return bounds
+            }
+        }
+        return nil
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -195,11 +270,6 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // The app is menu-bar-only (LSUIElement), but notifications still
-        // need to be told to show as a banner when the app is "frontmost"
-        // in NSApp's view of the world (it never really is). .banner on
-        // macOS 11+ replaces the deprecated .alert; including .alert too
-        // for backward-compat on legacy delivery paths.
         completionHandler([.banner, .list])
     }
 
@@ -210,35 +280,67 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     ) {
         let identifier = response.notification.request.identifier
         let actionID = response.actionIdentifier
-        // The completionHandler signals dispatch completion to the
-        // system — it doesn't need to wait for our continuation routing.
-        // Calling it synchronously here keeps strict concurrency happy
-        // (no cross-actor capture) and lets us resolve the continuation
-        // independently on the main actor.
         completionHandler()
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let choice: Choice
             switch actionID {
             case Action.start:
-                choice = .start
-            case Action.suppress:
-                choice = .notAMeeting
-            case UNNotificationDefaultActionIdentifier:
-                // User clicked the banner body (not an action button).
-                // Treat as a soft "open the app" signal: bring our menu
-                // bar visible and let the user start manually.
-                choice = .skipForNow
+                self.resolve(identifier: identifier, with: .start, removeNotification: true)
+            case Action.notNow:
+                self.resolve(identifier: identifier, with: .skipForNow, removeNotification: true)
             case UNNotificationDismissActionIdentifier:
-                choice = .skipForNow
+                Log.lifecycle.info("Start prompt backup notification dismissed without decision (id=\(identifier, privacy: .public)); clearing current prompt")
+                self.resolve(identifier: identifier, with: .skipForNow, removeNotification: false)
             default:
-                choice = .skipForNow
+                NSApp.activate(ignoringOtherApps: true)
             }
-            // Terminal user response — clear the banner from Notification
-            // Center too. Otherwise actioned prompts pile up there, since
-            // willPresent includes .list to keep the banner around for
-            // late-arriving clicks.
-            self.resolve(identifier: identifier, with: choice, removeNotification: true)
         }
+    }
+}
+
+@MainActor
+private final class MoreOptionsAccessory: NSObject {
+    let view = NSStackView()
+    private let suppressButton: NSButton
+    private let onSuppress: @MainActor () -> Void
+
+    init(appDisplayName: String, onSuppress: @escaping @MainActor () -> Void) {
+        self.onSuppress = onSuppress
+        self.suppressButton = NSButton(title: "Stop detecting \(appDisplayName) for 30 minutes", target: nil, action: nil)
+        super.init()
+
+        let disclosure = NSButton(title: "More options ▾", target: self, action: #selector(toggleMoreOptions(_:)))
+        disclosure.bezelStyle = .inline
+        disclosure.setButtonType(.momentaryPushIn)
+        disclosure.alignment = .left
+
+        suppressButton.target = self
+        suppressButton.action = #selector(suppressApp(_:))
+        suppressButton.bezelStyle = .inline
+        suppressButton.alignment = .left
+        suppressButton.isHidden = true
+
+        view.orientation = .vertical
+        view.alignment = .leading
+        view.spacing = 6
+        view.addArrangedSubview(disclosure)
+        view.addArrangedSubview(suppressButton)
+    }
+
+    @objc private func toggleMoreOptions(_ sender: NSButton) {
+        suppressButton.isHidden.toggle()
+        sender.title = suppressButton.isHidden ? "More options ▾" : "More options ▴"
+        view.layoutSubtreeIfNeeded()
+    }
+
+    @objc private func suppressApp(_ sender: NSButton) {
+        onSuppress()
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat {
+        guard !isNull, !isEmpty else { return 0 }
+        return width * height
     }
 }
