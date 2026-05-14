@@ -190,6 +190,55 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(count, 2, "ended calls must clear stale candidate state")
     }
 
+    func testQuitAfterCandidateFiresNotifiesShellForStalePromptInvalidation() async throws {
+        let fired = FireCounter()
+        let ended = AppCapture()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            probe: ConstantProbe(value: true),
+            sleep: immediateSleep,
+            onCandidateEnded: { app in
+                await ended.set(app)
+            }
+        ) { _ in
+            await fired.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        let fireCount = await fired.waitForValue(1)
+        await engine.handleQuit(of: zoom)
+
+        let endedApp = await ended.waitForBundleID(zoom.bundleID)
+        XCTAssertEqual(fireCount, 1, "the active observation should fire one prompt candidate")
+        XCTAssertEqual(endedApp?.bundleID, zoom.bundleID, "quitting an app with an active candidate must notify the app shell to invalidate stale prompt actions")
+    }
+
+    func testFreshCallCanBeRecognizedAfterQuitInvalidatesActiveCandidate() async throws {
+        let fired = FireCounter()
+        let ended = FireCounter()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            probe: ConstantProbe(value: true),
+            sleep: immediateSleep,
+            onCandidateEnded: { _ in
+                await ended.increment()
+            }
+        ) { _ in
+            await fired.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        _ = await fired.waitForValue(1)
+        await engine.handleQuit(of: zoom)
+        _ = await ended.waitForValue(1)
+        await engine.reevaluate(zoom)
+
+        let fireCount = await fired.waitForValue(2)
+        XCTAssertEqual(fireCount, 2, "a fresh call after app quit must be eligible for normal recognition")
+    }
+
     func testEndedActiveCandidateNotifiesShellForStalePromptInvalidation() async throws {
         let fired = FireCounter()
         let ended = AppCapture()

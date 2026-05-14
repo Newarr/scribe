@@ -80,11 +80,14 @@ public actor DetectionEngine {
         startObservation(for: app)
     }
 
-    public func handleQuit(of app: MeetingApp) {
+    public func handleQuit(of app: MeetingApp) async {
         pendingTasks[app.bundleID]?.cancel()
         pendingTasks.removeValue(forKey: app.bundleID)
         pendingObservations.removeValue(forKey: app.bundleID)
-        activeCandidateBundleIDs.remove(app.bundleID)
+        let hadActiveCandidate = activeCandidateBundleIDs.remove(app.bundleID) != nil
+        if hadActiveCandidate {
+            await onCandidateEnded?(app)
+        }
     }
 
     /// Allows the app shell to re-present a still-active candidate after an
