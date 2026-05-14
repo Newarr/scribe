@@ -55,7 +55,7 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("var reminderDelay: TimeInterval = 60"))
         XCTAssertTrue(source.contains("var expiryDelay: TimeInterval = 180"))
         XCTAssertTrue(source.contains("kind: .reminder"))
-        XCTAssertTrue(source.contains("Start prompt expired without decision"))
+        XCTAssertTrue(source.contains("handleIgnoredPromptExpiry(promptID: promptID)"))
     }
 
     func testNotificationDismissalDoesNotResolvePrompt() throws {
@@ -104,6 +104,32 @@ final class StartPromptSourceTests: XCTestCase {
         let source = try source
         XCTAssertTrue(source.contains("guard pending[promptID] != nil else"))
         XCTAssertTrue(source.contains(#"Skipping stale start prompt \(kind.rawValue, privacy: .public) notification after authorization completed"#))
+    }
+
+    func testIgnoredPromptExpiryUsesCallActivitySeamForFinalReminder() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("var callActivityChecker: @MainActor (MeetingApp) async -> Bool"), "expiry must use an injectable call-activity seam instead of untestable wall-clock/UI behavior")
+        XCTAssertTrue(source.contains("CoreAudioInputProbe().isActive(bundleID: app.bundleID) == true"), "production seam should require a positive active-call signal")
+        XCTAssertTrue(source.contains("await self?.handleIgnoredPromptExpiry(promptID: promptID)"), "expiry timer should route through a deterministic policy method")
+        XCTAssertTrue(source.contains("guard callStillActive else"), "inactive or ended calls should take the safe expiry path")
+        XCTAssertTrue(source.contains("kind: .finalReminder"), "still-active calls should get a distinct one-time final reminder")
+        XCTAssertTrue(source.contains("entry.expiryTimer = nil"), "active-call final reminder must not schedule repeated expiry spam")
+        XCTAssertTrue(source.contains("does not start recording, does not auto-decline"), "source should document that final reminder leaves the decision user-controlled")
+    }
+
+    func testInactiveExpiryClearsStaleActionsWithoutStartRecording() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("Start prompt expired for inactive or ended call"))
+        XCTAssertTrue(source.contains("clearing stale recovery actions"))
+        XCTAssertTrue(source.contains("resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)"))
+        XCTAssertFalse(source.contains("resolve(identifier: promptID, with: .start"), "expiry must never auto-start recording")
+    }
+
+    func testFinalReminderNotificationCopyIsDistinctFromSixtySecondReminder() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("case finalReminder"))
+        XCTAssertTrue(source.contains(#"content.body = "Still want to start recording?""#))
+        XCTAssertTrue(source.contains(#"content.body = "Last reminder while this call appears active.""#))
     }
 
 

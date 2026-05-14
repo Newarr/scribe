@@ -50,6 +50,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private enum NotificationKind: String {
         case backup
         case reminder
+        case finalReminder
     }
 
     private var pending: [String: Pending] = [:]
@@ -62,6 +63,13 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     /// reminder at ~60s, then safe expiry around the 3-minute policy.
     var reminderDelay: TimeInterval = 60
     var expiryDelay: TimeInterval = 180
+
+    /// Call-activity seam for the about-3-minute ignored-prompt policy.
+    /// Only a positive call-like activity signal earns the one final reminder;
+    /// inactive, ended, or unknowable calls expire safely without recording.
+    var callActivityChecker: @MainActor (MeetingApp) async -> Bool = { app in
+        await CoreAudioInputProbe().isActive(bundleID: app.bundleID) == true
+    }
 
     override init() {
         super.init()
@@ -150,11 +158,35 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
         entry.expiryTimer = Timer.scheduledTimer(withTimeInterval: expiryDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let entry = self.pending[promptID] else { return }
-                Log.lifecycle.info("Start prompt expired without decision for \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
-                self.resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)
+                await self?.handleIgnoredPromptExpiry(promptID: promptID)
             }
         }
+    }
+
+    private func handleIgnoredPromptExpiry(promptID: String) async {
+        guard let entry = pending[promptID] else { return }
+
+        let callStillActive = await callActivityChecker(entry.app)
+        guard callStillActive else {
+            Log.lifecycle.info("Start prompt expired for inactive or ended call in \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public)); clearing stale recovery actions")
+            resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)
+            return
+        }
+
+        // Spec ignored-prompt policy: at about 3 minutes, active call-like
+        // audio gets exactly one final reminder. This is not a terminal
+        // decision: it does not start recording, does not auto-decline, and
+        // does not schedule repeated spam. Menu-bar recovery remains active
+        // until the user acts or recognition later invalidates the prompt.
+        entry.expiryTimer?.invalidate()
+        entry.expiryTimer = nil
+        Log.lifecycle.info("Start prompt final reminder firing for still-active call in \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public)); prompt remains user-controlled")
+        await postNotificationIfPossible(
+            promptID: promptID,
+            kind: .finalReminder,
+            app: entry.app,
+            event: entry.event
+        )
     }
 
     @discardableResult
@@ -177,7 +209,14 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = promptTitle(for: app, event: event)
         content.subtitle = event == nil ? "Detected in \(app.displayName)" : "From Apple Calendar · \(app.displayName)"
-        content.body = kind == .reminder ? "Still want to start recording?" : "Start recording?"
+        switch kind {
+        case .backup:
+            content.body = "Start recording?"
+        case .reminder:
+            content.body = "Still want to start recording?"
+        case .finalReminder:
+            content.body = "Last reminder while this call appears active."
+        }
         content.categoryIdentifier = Self.categoryIdentifier
         content.userInfo = [
             "promptID": promptID,
