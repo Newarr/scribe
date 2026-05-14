@@ -246,6 +246,21 @@ final class SessionRepairRoutingTests: XCTestCase {
         }
     }
 
+
+    func testPromptStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("private var pendingPromptCalendarEventForStart: CalendarEvent?"))
+        XCTAssertTrue(source.contains("pendingPromptCalendarEventForStart = event"))
+        XCTAssertTrue(source.contains("let promptedEvent = pendingPromptCalendarEventForStart"), "prompt Start Recording must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
+    }
+
+    func testPendingPromptRecoveryUsesLateJoinCopyAndAppleCalendarSource() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("Self.promptRecoveryTitle(for: app, event: event)"))
+        XCTAssertTrue(source.contains("Recording will capture from now onward."))
+        XCTAssertTrue(source.contains("From Apple Calendar · \\(app.displayName)."))
+    }
+
     func testAppDelegatePassesSessionEngineSnapshotToMenuAndSavedNotification() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 

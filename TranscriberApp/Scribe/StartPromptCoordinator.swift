@@ -218,6 +218,9 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     private func promptTitle(for app: MeetingApp, event: CalendarEvent?) -> String {
         if let event {
+            if event.startDate < Date(), event.endDate.timeIntervalSince(Date()) >= 10 * 60 {
+                return "Record '\(event.title)'? This event started \(elapsedMinutesSinceStart(of: event)) minutes ago. Recording will capture from now onward."
+            }
             return "Start recording '\(event.title)'?"
         }
         return "Start recording \(app.displayName)?"
@@ -228,6 +231,10 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             return "From Apple Calendar. Detected in \(app.displayName)."
         }
         return "Scribe detected an active call in \(app.displayName)."
+    }
+
+    private func elapsedMinutesSinceStart(of event: CalendarEvent) -> Int {
+        max(1, Int(Date().timeIntervalSince(event.startDate) / 60))
     }
 
     private func ensureAuthorization() async -> Bool {

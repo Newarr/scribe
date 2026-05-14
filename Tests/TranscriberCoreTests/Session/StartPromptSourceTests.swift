@@ -72,6 +72,24 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Ignoring stale start-prompt menu recovery"))
     }
 
+
+    func testLateJoinCalendarPromptCopyStatesCaptureFromNowOnward() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("Record '\\(event.title)'? This event started"))
+        XCTAssertTrue(source.contains("Recording will capture from now onward."))
+        XCTAssertTrue(source.contains("event.endDate.timeIntervalSince(Date()) >= 10 * 60"))
+    }
+
+    func testNotificationPayloadDoesNotIncludeUnsafeCalendarContext() throws {
+        let source = try source
+        let userInfoStart = try XCTUnwrap(source.range(of: "content.userInfo = ["))
+        let userInfoEnd = try XCTUnwrap(source[userInfoStart.lowerBound...].range(of: "]"))
+        let body = source[userInfoStart.lowerBound..<userInfoEnd.upperBound]
+        XCTAssertFalse(body.contains("event.title"))
+        XCTAssertFalse(body.contains("keyterms"))
+        XCTAssertFalse(body.contains("attendees"))
+    }
+
     func testPromptPlacementUsesActiveMeetingWindowScreen() throws {
         let source = try source
         XCTAssertTrue(source.contains("place(window: alert.window, nearActiveWindowFor: app)"))

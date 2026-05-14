@@ -69,10 +69,19 @@ public final class CalendarLookup: Sendable {
 
     /// True if the EKEvent is plausibly a meeting (timed + busy). All-day entries
     /// like birthdays / holidays / OOO and `.free` blockers are excluded so they
-    /// don't hijack the recording's context.
+    /// don't hijack the recording's context. Declined/tentative/cancelled and
+    /// already-ended events are also skipped so stale or non-committed calendar
+    /// entries cannot enrich recognition or recording state.
     private static func isMeetingContext(_ ek: EKEvent) -> Bool {
         if ek.isAllDay { return false }
         if ek.availability == .free { return false }
+        if ek.endDate <= Date() { return false }
+        if ek.status == .canceled || ek.status == .tentative { return false }
+        if let currentUser = ek.attendees?.first(where: { $0.isCurrentUser }) {
+            if currentUser.participantStatus == .declined || currentUser.participantStatus == .tentative {
+                return false
+            }
+        }
         return true
     }
 

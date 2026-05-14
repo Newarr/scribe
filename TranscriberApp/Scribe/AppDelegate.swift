@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var processWatcher: ProcessWatcher?
     private let startPromptCoordinator = StartPromptCoordinator()
     private var queuedDetectionCandidate: QueuedDetectionCandidate?
+    private var pendingPromptCalendarEventForStart: CalendarEvent?
 
     // F-2: trust-language flags. The menu bar icon is the design's
     // primary trust surface, so its shape encodes more than just
@@ -1099,7 +1100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // only explicit resolution or prompt-session expiry returns to idle.
         detectionPromptActive = true
         menu?.pendingPrompt = PendingPromptRecovery(
-            title: event.map { "Start recording '\($0.title)'?" } ?? "Start recording \(app.displayName)?",
+            title: Self.promptRecoveryTitle(for: app, event: event),
             subtitle: event == nil ? "Detected in \(app.displayName)." : "From Apple Calendar · \(app.displayName).",
             appDisplayName: app.displayName
         )
@@ -1110,7 +1111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyTrustIcon()
         switch choice {
         case .start:
+            pendingPromptCalendarEventForStart = event
             await startRecording()
+            pendingPromptCalendarEventForStart = nil
         case .notAMeeting:
             await detectionEngine?.suppress(app)
             Log.lifecycle.info("User suppressed \(app.bundleID, privacy: .public) for 30 minutes")
@@ -1352,8 +1355,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Slice 6: prefer the watcher cache (already populated, no
             // EventKit round-trip on the start path). Fall back to the
             // direct lookup if the cache hasn't been refreshed yet.
-            let event = await calendarWatcher.eventOverlapping(Date())
-                ?? calendar.eventOverlapping(Date())
+            let promptedEvent = pendingPromptCalendarEventForStart
+            let cachedEvent = promptedEvent == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
+            let event = promptedEvent ?? cachedEvent ?? calendar.eventOverlapping(Date())
             self.currentCalendarEvent = event
             Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
 
@@ -1418,6 +1422,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func recordingSourceLabel(for event: CalendarEvent?) -> String {
         let title = event?.title.trimmingCharacters(in: .whitespaces) ?? ""
         return title.isEmpty ? "Recording" : title
+    }
+
+    private static func promptRecoveryTitle(for app: MeetingApp, event: CalendarEvent?) -> String {
+        guard let event else { return "Start recording \(app.displayName)?" }
+        if event.startDate < Date(), event.endDate.timeIntervalSince(Date()) >= 10 * 60 {
+            let elapsedMinutes = max(1, Int(Date().timeIntervalSince(event.startDate) / 60))
+            return "Record '\(event.title)'? This event started \(elapsedMinutes) minutes ago. Recording will capture from now onward."
+        }
+        return "Start recording '\(event.title)'?"
     }
 
     /// Stand up the per-second tick that drives the popover's

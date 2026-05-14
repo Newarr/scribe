@@ -76,6 +76,19 @@ final class CalendarWatcherTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(count, 2)
         await watcher.stop()
     }
+
+    func testEventKitLookupSkipsDeclinedTentativeCancelledAndPastEventsByPolicy() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/TranscriberCore/Calendar/CalendarLookup.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        XCTAssertTrue(source.contains("ek.endDate <= Date()"))
+        XCTAssertTrue(source.contains("ek.status == .canceled || ek.status == .tentative"))
+        XCTAssertTrue(source.contains("currentUser.participantStatus == .declined || currentUser.participantStatus == .tentative"))
+    }
 }
 
 /// Test double for CalendarLookupProtocol. Returns scripted responses in order;
