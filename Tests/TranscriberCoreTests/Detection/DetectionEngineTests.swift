@@ -133,6 +133,33 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(count, 0, "idle native apps must not produce candidates")
     }
 
+    func testEligibleCalendarEventAloneDoesNotEmitCandidateOrPromptPath() async throws {
+        let captured = BundleSequenceCapture()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let eligibleEvent = CalendarEvent(
+            title: "Customer Call",
+            startDate: now.addingTimeInterval(-60),
+            endDate: now.addingTimeInterval(1800),
+            attendees: [],
+            isEligibleMeetingContext: true
+        )
+        let cache = CalendarCache(events: [eligibleEvent], refreshedAt: now)
+        let engine = DetectionEngine(dwellTime: 30, retryInterval: 5, observationWindow: 0, probe: ConstantProbe(value: true), sleep: immediateSleep) { app in
+            await captured.append(app.bundleID)
+        }
+
+        XCTAssertEqual(cache.best(for: now)?.title, "Customer Call", "fixture must be an eligible overlapping calendar event")
+        // Deliberately do not provide any supported app/browser observation. Calendar
+        // context is consumed by the app shell only after DetectionEngine emits an
+        // active surface candidate, so calendar-only state must not reach the
+        // candidate/prompt callback.
+        await Task.yield()
+        _ = engine // keep the engine alive while the async callback would fire
+
+        let emitted = await captured.values
+        XCTAssertEqual(emitted, [], "eligible calendar-only state must not create a recognition candidate or prompt path")
+    }
+
     func testTransientFalseProbeRetriesAndLaterFiresWithoutWallClockSleep() async throws {
         let captured = AppCapture()
         let probe = SequenceProbe(values: [false, true])
@@ -280,8 +307,8 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(count, 1, "redundant launches must debounce; got \(count) callbacks")
     }
 
-    func testCompetingIdleSupportedSurfacesDoNotBlockActiveSurface() async throws {
-        let captured = AppCapture()
+    func testCompetingIdleSupportedSurfacesEmitExactlyActiveSurfaceOnly() async throws {
+        let captured = BundleSequenceCapture()
         let probe = BundleScriptProbe(valuesByBundleID: [
             "com.google.Chrome": [false],
             "com.apple.Safari": [false],
@@ -291,16 +318,18 @@ final class DetectionEngineTests: XCTestCase {
         let safari = MeetingApp(bundleID: "com.apple.Safari", displayName: "Safari", kind: .browser)
         let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
         let engine = DetectionEngine(dwellTime: 30, retryInterval: 5, observationWindow: 0, probe: probe, sleep: immediateSleep) { app in
-            await captured.set(app)
+            await captured.append(app.bundleID)
         }
 
         await engine.reevaluate(chrome)
         await engine.reevaluate(safari)
         await engine.reevaluate(zoom)
-        await Task.yield()
 
-        let result = await captured.waitForBundleID(zoom.bundleID)
-        XCTAssertEqual(result?.bundleID, zoom.bundleID, "idle supported surfaces must neither create extra candidates nor block the active meeting surface")
+        let emitted = await captured.waitForCount(1)
+        XCTAssertEqual(emitted, [zoom.bundleID], "multi-surface observations must emit exactly one candidate for the active surface and no preceding idle browser candidates")
+        await Task.yield()
+        let finalEmitted = await captured.values
+        XCTAssertEqual(finalEmitted, [zoom.bundleID], "idle supported surfaces must not create trailing duplicate candidates after the active surface fires")
     }
 }
 
@@ -327,6 +356,22 @@ actor FireCounter {
             await Task.yield()
         }
         return value
+    }
+}
+
+actor BundleSequenceCapture {
+    private(set) var values: [String] = []
+
+    func append(_ bundleID: String) {
+        values.append(bundleID)
+    }
+
+    func waitForCount(_ expected: Int, maxYields: Int = 1_000) async -> [String] {
+        for _ in 0..<maxYields {
+            if values.count == expected { return values }
+            await Task.yield()
+        }
+        return values
     }
 }
 

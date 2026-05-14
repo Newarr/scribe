@@ -197,11 +197,12 @@ Before meeting:
 
 At meeting start:
 
-- Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app that has been running for **30 seconds** without quitting fires a candidate; the prompt title is enriched with the overlapping calendar event if one is in cache. Per-bundle suppression via `Stop detecting [App] for 30 minutes` ticks an in-memory map cleared on app restart; suppression is NOT persisted across launches.
+- Trigger is process-detection-with-calendar-enrichment in v1: Scribe monitors supported native apps and supported browsers as possible meeting surfaces, including surfaces that were already running before Scribe launched or before the call began. A merely running app/browser, an ordinary browser tab, or a meeting pre-join/landing page is not enough to fire a candidate when active-call probing can determine inactivity. After the surface has stayed present through the **30 second** dwell/stability window, Scribe probes for active call-like evidence; positive evidence fires one candidate, negative evidence keeps retrying within the observation window, and unavailable/indeterminate probing degrades to the conservative dwell path rather than treating Calendar as proof.
+- Calendar is enrichment only in v1: an overlapping eligible Apple Calendar event may label the prompt and recording context after app/browser active-call recognition succeeds, but an eligible calendar event by itself never creates a recognition candidate, prompt, or `Meeting detected` path. Ineligible events (all-day, free, declined, tentative, cancelled, or already ended) are ignored for enrichment. Per-bundle suppression via `Stop detecting [App] for 30 minutes` ticks an in-memory map cleared on app restart; suppression is NOT persisted across launches.
 - Allowlist (12 bundle IDs in v1; one source of truth in `MeetingApps.allowlist`):
   - Native: `us.zoom.xos`, `com.microsoft.teams2`, `com.microsoft.teams` (legacy), `org.whispersystems.signal-desktop`, `com.apple.FaceTime`.
-  - Browsers (any tab triggers; per-URL detection deferred): `com.google.Chrome`, `com.apple.Safari`, `company.thebrowser.Browser` (Arc), `com.microsoft.Edge`, `org.mozilla.firefox`, `com.brave.Browser`, `im.helium.helium`.
-- The pure calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
+  - Browsers (supported browser surfaces; per-URL tab inspection is deferred, so browser presence is only a possible surface and still requires active-call recognition/probing): `com.google.Chrome`, `com.apple.Safari`, `company.thebrowser.Browser` (Arc), `com.microsoft.Edge`, `org.mozilla.firefox`, `com.brave.Browser`, `im.helium.helium`.
+- The pure calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`), but it is not part of v1 recognition.
 - Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start dominates the politeness cost of the interruption.
 - Two buttons only: `Start Recording` (primary) and `Not now` (secondary). Both standard and late-join prompts use the same two-button shape so the cognitive surface is constant.
 - Below the buttons: a small `More options ▾` disclosure that hides the rare suppression flows. Closed by default. When opened, exposes:
@@ -850,11 +851,11 @@ When any of the above lands in code, delete the corresponding bullet here.
 
 **Calendar Watcher**
 
-- Prompt appears at meeting start (per process-detection trigger with calendar enrichment).
+- Prompt appears at meeting start only after supported app/browser active-call recognition, with Calendar used solely to enrich prompt context.
 - App launches mid-meeting with ≥10 min remaining — prompt fires.
 - App launches mid-meeting with <10 min remaining — menu bar shows `Meeting detected` only.
 - Recurring meeting prompts de-dupe by occurrence.
-- Calendar event updates while app is running.
+- Calendar event updates while app is running update enrichment context only and do not create candidates without active-call recognition.
 - Mac sleeps before meeting and wakes during meeting.
 - Mac wakes after user already dismissed via `Not now` — no re-prompt for that event in this session.
 - All-day, declined, tentative, and stale-past-end events are skipped.

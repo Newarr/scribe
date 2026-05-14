@@ -18,10 +18,10 @@ public protocol AudioActivityProbe: Sendable {
     func isActive(bundleID: String) async -> Bool?
 }
 
-/// Always-nil probe. Used in rc1 because the public API surface for
-/// "PID X is producing audio" doesn't exist. The detection layer
-/// falls back to dwell-only triggering (already shipping in
-/// DetectionEngine), which is the spec-compliant V1 path.
+/// Always-nil probe. Used when the public API surface for
+/// "PID X is producing audio" is unavailable. The detection layer
+/// treats `nil` as indeterminate: it may continue through the dwell path,
+/// but Calendar overlap alone is never promoted to active-call evidence.
 public struct UnknownAudioActivityProbe: AudioActivityProbe {
     public init() {}
     public func isActive(bundleID: String) async -> Bool? { nil }

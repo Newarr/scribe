@@ -33,7 +33,7 @@ public enum MeetingApps {
         .init(bundleID: "com.microsoft.teams",               displayName: "Microsoft Teams (legacy)", kind: .nativeMeetingApp),
         .init(bundleID: "org.whispersystems.signal-desktop", displayName: "Signal",                   kind: .nativeMeetingApp),
         .init(bundleID: "com.apple.FaceTime",                 displayName: "FaceTime",                 kind: .nativeMeetingApp),
-        // Browsers (any tab; per-URL detection deferred per slice 5 light scope)
+        // Browsers (supported surfaces; per-URL tab inspection deferred, active-call evidence still required when probing can determine it)
         .init(bundleID: "com.google.Chrome",                 displayName: "Chrome",   kind: .browser),
         .init(bundleID: "com.apple.Safari",                  displayName: "Safari",   kind: .browser),
         .init(bundleID: "company.thebrowser.Browser",        displayName: "Arc",      kind: .browser),
