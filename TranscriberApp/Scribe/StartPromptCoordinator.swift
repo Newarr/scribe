@@ -29,6 +29,8 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         let event: CalendarEvent?
         let continuation: CheckedContinuation<Choice, Never>
         var notificationIdentifiers: Set<String> = []
+        weak var modalWindow: NSWindow?
+        var isModalVisible = false
         var reminderTimer: Timer?
         var expiryTimer: Timer?
 
@@ -166,6 +168,10 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             Log.lifecycle.info("Start prompt \(kind.rawValue, privacy: .public) notification unavailable for \(app.bundleID, privacy: .public): authorization missing; modal/menu recovery remain active")
             return false
         }
+        guard pending[promptID] != nil else {
+            Log.lifecycle.info("Skipping stale start prompt \(kind.rawValue, privacy: .public) notification after authorization completed (id=\(promptID, privacy: .public))")
+            return false
+        }
 
         let notificationID = "\(promptID).\(kind.rawValue)"
         let content = UNMutableNotificationContent()
@@ -218,7 +224,16 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         alert.window.makeKeyAndOrderFront(nil)
         alert.window.orderFrontRegardless()
 
+        if let entry = pending[identifier] {
+            entry.modalWindow = alert.window
+            entry.isModalVisible = true
+        }
+
         let response = alert.runModal()
+        if let entry = pending[identifier] {
+            entry.isModalVisible = false
+            entry.modalWindow = nil
+        }
         switch response {
         case .alertFirstButtonReturn:
             resolve(identifier: identifier, with: .start, removeNotifications: true)
@@ -320,12 +335,21 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
         entry.reminderTimer?.invalidate()
         entry.expiryTimer?.invalidate()
+        dismissModalIfVisible(for: entry)
         if removeNotifications {
             let ids = Array(entry.notificationIdentifiers)
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         }
         entry.continuation.resume(returning: choice)
+    }
+
+    private func dismissModalIfVisible(for entry: Pending) {
+        guard entry.isModalVisible else { return }
+        entry.isModalVisible = false
+        entry.modalWindow?.orderOut(nil)
+        NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)
+        Log.lifecycle.info("Stopped visible start prompt modal after non-modal resolution (id=\(entry.identifier, privacy: .public))")
     }
 
     private func place(window: NSWindow, nearActiveWindowFor app: MeetingApp) {

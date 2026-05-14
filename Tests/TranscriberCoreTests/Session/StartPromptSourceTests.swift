@@ -80,6 +80,32 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Ignoring stale start-prompt action"), "late modal/notification actions for expired prompt IDs must be inert")
     }
 
+    func testPendingStateInstallsBeforeAsynchronousBackupNotification() throws {
+        let source = try source
+        let pendingRange = try XCTUnwrap(source.range(of: "pending[identifier] = entry"))
+        let notificationRange = try XCTUnwrap(source.range(of: "postNotificationIfPossible("))
+        let modalRange = try XCTUnwrap(source.range(of: "presentModalPrompt(identifier: identifier"))
+        XCTAssertLessThan(pendingRange.lowerBound, notificationRange.lowerBound)
+        XCTAssertLessThan(notificationRange.lowerBound, modalRange.lowerBound)
+        XCTAssertTrue(source.contains("Task { @MainActor [weak self] in"), "backup notification posting should be asynchronous relative to modal presentation")
+    }
+
+    func testResolvedPromptDismissesVisibleModalRunLoop() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("weak var modalWindow: NSWindow?"))
+        XCTAssertTrue(source.contains("var isModalVisible = false"))
+        XCTAssertTrue(source.contains("dismissModalIfVisible(for: entry)"))
+        XCTAssertTrue(source.contains("entry.modalWindow?.orderOut(nil)"))
+        XCTAssertTrue(source.contains("NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)"))
+        XCTAssertTrue(source.contains("Stopped visible start prompt modal after non-modal resolution"))
+    }
+
+    func testStaleAsyncNotificationCompletionCannotPostAfterPromptResolved() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("guard pending[promptID] != nil else"))
+        XCTAssertTrue(source.contains(#"Skipping stale start prompt \(kind.rawValue, privacy: .public) notification after authorization completed"#))
+    }
+
 
     func testLateJoinCalendarPromptCopyStatesCaptureFromNowOnward() throws {
         let source = try source
