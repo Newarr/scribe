@@ -1081,8 +1081,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Engine fires this when an allowlisted app has been running for the
-    /// dwell window without being skipped or quitting. Show the start prompt
+    /// Engine fires this when an allowlisted app/browser has been stable for
+    /// the dwell window and active-call probing is positive or unavailable.
+    /// Calendar lookup below is enrichment-only: it labels the prompt but
+    /// never creates candidates without DetectionEngine app/call activity.
     /// and route the user's choice. Queue candidates while a recording is
     /// active so a second meeting never interrupts capture.
     @MainActor

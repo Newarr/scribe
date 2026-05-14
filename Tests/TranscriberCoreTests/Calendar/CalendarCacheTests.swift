@@ -4,12 +4,18 @@ import XCTest
 final class CalendarCacheTests: XCTestCase {
     private static let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
 
-    private func event(title: String, startsAt: TimeInterval, durationSec: TimeInterval = 1800) -> CalendarEvent {
+    private func event(
+        title: String,
+        startsAt: TimeInterval,
+        durationSec: TimeInterval = 1800,
+        isEligibleMeetingContext: Bool = true
+    ) -> CalendarEvent {
         CalendarEvent(
             title: title,
             startDate: Self.baseDate.addingTimeInterval(startsAt),
             endDate: Self.baseDate.addingTimeInterval(startsAt + durationSec),
-            attendees: []
+            attendees: [],
+            isEligibleMeetingContext: isEligibleMeetingContext
         )
     }
 
@@ -53,6 +59,31 @@ final class CalendarCacheTests: XCTestCase {
             event(title: "Tomorrow", startsAt: 86400),
         ])
         XCTAssertNil(cache.eventClosestTo(Self.baseDate, within: 15 * 60))
+    }
+
+    func testIneligibleEventsAreIgnoredForOverlapAndClosestEnrichment() {
+        let cache = CalendarCache(events: [
+            event(title: "All-day holiday", startsAt: -3600, durationSec: 86400, isEligibleMeetingContext: false),
+            event(title: "Free focus block", startsAt: 60, isEligibleMeetingContext: false),
+            event(title: "Tentative hold", startsAt: -60, isEligibleMeetingContext: false),
+            event(title: "Declined sales call", startsAt: -120, isEligibleMeetingContext: false),
+            event(title: "Cancelled sync", startsAt: -180, isEligibleMeetingContext: false),
+            event(title: "Stale past call", startsAt: -7200, durationSec: 1800, isEligibleMeetingContext: false),
+        ])
+
+        XCTAssertNil(cache.eventOverlapping(Self.baseDate), "all-day/free/declined/tentative/cancelled/stale events must not enrich active recognition")
+        XCTAssertNil(cache.eventClosestTo(Self.baseDate, within: 15 * 60), "ineligible events near now must not be selected as closest enrichment")
+        XCTAssertNil(cache.best(for: Self.baseDate), "calendar-only ineligible context must not produce prompt context")
+    }
+
+    func testEligibleEventWinsOverIneligibleCalendarNoise() {
+        let cache = CalendarCache(events: [
+            event(title: "Free blocker", startsAt: -60, isEligibleMeetingContext: false),
+            event(title: "Customer Call", startsAt: -30, isEligibleMeetingContext: true),
+            event(title: "Cancelled hold", startsAt: 30, isEligibleMeetingContext: false),
+        ])
+
+        XCTAssertEqual(cache.best(for: Self.baseDate)?.title, "Customer Call")
     }
 
     func testBestPrefersOverlapOverClosest() {

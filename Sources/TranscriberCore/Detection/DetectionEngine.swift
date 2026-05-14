@@ -29,6 +29,7 @@ public actor DetectionEngine {
     private let skipState: SkipState
     private let probe: AudioActivityProbe
     private let now: @Sendable () -> Date
+    private let sleep: @Sendable (TimeInterval) async -> Void
     private let onCandidate: OnCandidate
     private let onCandidateEnded: OnCandidateEnded?
     private var pendingTasks: [String: Task<Void, Never>] = [:]
@@ -42,6 +43,7 @@ public actor DetectionEngine {
         skipState: SkipState = SkipState(),
         probe: AudioActivityProbe = UnknownAudioActivityProbe(),
         now: @escaping @Sendable () -> Date = Date.init,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = DetectionEngine.sleep(seconds:),
         onCandidateEnded: OnCandidateEnded? = nil,
         onCandidate: @escaping OnCandidate
     ) {
@@ -51,6 +53,7 @@ public actor DetectionEngine {
         self.skipState = skipState
         self.probe = probe
         self.now = now
+        self.sleep = sleep
         self.onCandidateEnded = onCandidateEnded
         self.onCandidate = onCandidate
     }
@@ -69,8 +72,8 @@ public actor DetectionEngine {
         if await skipState.isSuppressed(app.bundleID, now: now()) { return }
 
         if activeCandidateBundleIDs.contains(app.bundleID) {
-            await clearStaleActiveCandidateIfNeeded(app)
-            return
+            let cleared = await clearStaleActiveCandidateIfNeeded(app)
+            if !cleared { return }
         }
 
         guard pendingTasks[app.bundleID] == nil else { return }
@@ -107,8 +110,9 @@ public actor DetectionEngine {
         let dwell = dwellTime
         let retry = retryInterval
         let window = observationWindow
+        let sleep = sleep
         let task = Task { [weak self] in
-            await Self.sleep(seconds: dwell)
+            await sleep(dwell)
             while !Task.isCancelled {
                 guard let self else { return }
                 if await self.skipState.isSuppressed(bundleID, now: self.now()) {
@@ -118,7 +122,7 @@ public actor DetectionEngine {
 
                 let shouldContinue = await self.evaluatePendingObservation(bundleID: bundleID, observationWindow: window)
                 guard shouldContinue else { return }
-                await Self.sleep(seconds: retry)
+                await sleep(retry)
             }
         }
         pendingTasks[bundleID] = task
@@ -146,12 +150,16 @@ public actor DetectionEngine {
         }
     }
 
-    private func clearStaleActiveCandidateIfNeeded(_ app: MeetingApp) async {
+    /// Returns true when stale active state was cleared and the current
+    /// observation may start a fresh dwell/probe cycle for the same app.
+    private func clearStaleActiveCandidateIfNeeded(_ app: MeetingApp) async -> Bool {
         let isActive = await probe.isActive(bundleID: app.bundleID)
         if isActive == false {
             activeCandidateBundleIDs.remove(app.bundleID)
             await onCandidateEnded?(app)
+            return true
         }
+        return false
     }
 
     private func fireCandidate(for app: MeetingApp) async {
@@ -167,7 +175,7 @@ public actor DetectionEngine {
         pendingObservations.removeValue(forKey: bundleID)
     }
 
-    private static func sleep(seconds: TimeInterval) async {
+    public static func sleep(seconds: TimeInterval) async {
         guard seconds > 0 else { return }
         do {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))

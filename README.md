@@ -49,7 +49,7 @@ The Xcode project is generated from `TranscriberApp/project.yml` via [`xcodegen`
 5. Choose an engine in Settings → Engine. **Cohere (local)** uses the pinned `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` model through `mlx-audio-swift`; **ElevenLabs (cloud)** requires an API key saved securely in your macOS Keychain.
 6. Calendar permission is **optional**. In Cloud mode, granting it sends bounded keyterms (title/attendee names only) as transcription hints; in Local mode, calendar context stays on your Mac.
 
-After that, Scribe sits in the menu bar and either: (a) prompts when a meeting app launches during a calendar event, or (b) waits for you to click **Record now**.
+After that, Scribe sits in the menu bar and either: (a) prompts when a supported native app or browser appears to be in an active call, using Apple Calendar only to label the prompt when an eligible event overlaps, or (b) waits for you to click **Record now**.
 
 ## Where files live
 

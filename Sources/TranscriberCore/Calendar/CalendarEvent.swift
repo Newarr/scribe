@@ -21,12 +21,14 @@ public struct CalendarEvent: Sendable, Equatable {
     public let startDate: Date
     public let endDate: Date
     public let attendees: [Attendee]
+    public let isEligibleMeetingContext: Bool
 
-    public init(title: String, startDate: Date, endDate: Date, attendees: [Attendee]) {
+    public init(title: String, startDate: Date, endDate: Date, attendees: [Attendee], isEligibleMeetingContext: Bool = true) {
         self.title = title
         self.startDate = startDate
         self.endDate = endDate
         self.attendees = attendees
+        self.isEligibleMeetingContext = isEligibleMeetingContext
     }
 
     /// Returns the local user's display name (`isCurrentUser == true`) if the event
