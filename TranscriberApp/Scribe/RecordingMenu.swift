@@ -1077,8 +1077,8 @@ private struct IconButtonStyle: ButtonStyle {
 /// preview: 24x24 mono initial badge, sentence-case title, mono
 /// sub-label with separator dots, right-aligned mono duration and
 /// relative time. Hover background; click opens the transcript file
-/// in Finder. No inline action buttons (the design's recipe doesn't
-/// have them and they were creating row clutter).
+/// in Finder. Failed sessions expose inline retry/repair controls so
+/// recovery stays visible without relying on Finder or a context menu.
 private struct MenuRow: View {
     let entry: SessionFolderEnumerator.Entry
     let onRetry: (URL) -> Void
@@ -1089,37 +1089,42 @@ private struct MenuRow: View {
 
     var body: some View {
         let palette = RecordingPopoverPalette(colorScheme: colorScheme)
-        Button(action: openTranscript) {
-            HStack(alignment: .center, spacing: 10) {
-                badge(palette: palette)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.title)
-                        .font(DS.Font.bodySmall)
-                        .foregroundStyle(palette.text)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(subline)
+        HStack(alignment: .center, spacing: 10) {
+            Button(action: openTranscript) {
+                HStack(alignment: .center, spacing: 10) {
+                    badge(palette: palette)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.title)
+                            .font(DS.Font.bodySmall)
+                            .foregroundStyle(palette.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(subline)
+                            .font(DS.Font.monoSmall)
+                            .tracking(0.1)
+                            .foregroundStyle(palette.metaText)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Text(relativeTime)
                         .font(DS.Font.monoSmall)
-                        .tracking(0.1)
+                        .tracking(0.25)
                         .foregroundStyle(palette.metaText)
-                        .lineLimit(1)
                 }
-                Spacer(minLength: 8)
-                Text(relativeTime)
-                    .font(DS.Font.monoSmall)
-                    .tracking(0.25)
-                    .foregroundStyle(palette.metaText)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(hovering ? palette.hoverFill : SwiftUI.Color.clear)
-            )
-            .contentShape(Rectangle())
+
+            recentActionButton(palette: palette)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(hovering ? palette.hoverFill : SwiftUI.Color.clear)
+        )
         .onHover { hovering = $0 }
         .contextMenu {
             Button("Open transcript") { openTranscript() }
@@ -1135,6 +1140,24 @@ private struct MenuRow: View {
             case .none:
                 EmptyView()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func recentActionButton(palette: RecordingPopoverPalette) -> some View {
+        switch SessionRepairRouting.recentAction(for: entry, localModelReady: localModelReadyForRetry) {
+        case .retry(let sessionDirectory):
+            Button("Retry") { onRetry(sessionDirectory) }
+                .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+        case .repair(let payload):
+            Button("Repair") { onRepair(payload.sessionDirectory) }
+                .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+        case .loading:
+            Button("Checking…") {}
+                .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+                .disabled(true)
+        case .none:
+            EmptyView()
         }
     }
 
