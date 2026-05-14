@@ -319,6 +319,23 @@ final class SessionRepairRoutingTests: XCTestCase {
         }
     }
 
+    func testEndedCallsInvalidatePendingPromptBeforeStaleActionsCanStartRecording() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
+        XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
+        XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
+        XCTAssertTrue(source.contains("guard pendingPromptAppBundleID == app.bundleID"), "only the currently pending prompt may be invalidated by an ended-call signal")
+        XCTAssertTrue(source.contains("startPromptCoordinator.expireActivePrompt(for: app)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
+
+        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
+            return XCTFail("prompt presentation route must exist")
+        }
+        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = app.bundleID"), "prompt presentation must mark the active app for stale invalidation")
+        XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = nil"), "any terminal prompt resolution must clear the stale invalidation marker")
+    }
+
     func testPromptStartClearsRecoveryAndUsesExactlyOneManualStartRoute() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 

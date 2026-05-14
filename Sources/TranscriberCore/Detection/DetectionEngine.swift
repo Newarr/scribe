@@ -16,6 +16,7 @@ import Foundation
 ///     in-flight/active recognition for that app only.
 public actor DetectionEngine {
     public typealias OnCandidate = @Sendable (MeetingApp) async -> Void
+    public typealias OnCandidateEnded = @Sendable (MeetingApp) async -> Void
 
     private struct ObservationState: Sendable {
         let app: MeetingApp
@@ -29,6 +30,7 @@ public actor DetectionEngine {
     private let probe: AudioActivityProbe
     private let now: @Sendable () -> Date
     private let onCandidate: OnCandidate
+    private let onCandidateEnded: OnCandidateEnded?
     private var pendingTasks: [String: Task<Void, Never>] = [:]
     private var pendingObservations: [String: ObservationState] = [:]
     private var activeCandidateBundleIDs: Set<String> = []
@@ -40,6 +42,7 @@ public actor DetectionEngine {
         skipState: SkipState = SkipState(),
         probe: AudioActivityProbe = UnknownAudioActivityProbe(),
         now: @escaping @Sendable () -> Date = Date.init,
+        onCandidateEnded: OnCandidateEnded? = nil,
         onCandidate: @escaping OnCandidate
     ) {
         self.dwellTime = dwellTime
@@ -48,6 +51,7 @@ public actor DetectionEngine {
         self.skipState = skipState
         self.probe = probe
         self.now = now
+        self.onCandidateEnded = onCandidateEnded
         self.onCandidate = onCandidate
     }
 
@@ -146,6 +150,7 @@ public actor DetectionEngine {
         let isActive = await probe.isActive(bundleID: app.bundleID)
         if isActive == false {
             activeCandidateBundleIDs.remove(app.bundleID)
+            await onCandidateEnded?(app)
         }
     }
 

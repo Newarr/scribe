@@ -184,6 +184,34 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(count, 2, "ended calls must clear stale candidate state")
     }
 
+    func testEndedActiveCandidateNotifiesShellForStalePromptInvalidation() async throws {
+        let fired = FireCounter()
+        let ended = AppCapture()
+        let probe = SequenceProbe(values: [true, false])
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 0.01,
+            retryInterval: 0.01,
+            observationWindow: 1,
+            probe: probe,
+            onCandidateEnded: { app in
+                await ended.set(app)
+            }
+        ) { _ in
+            await fired.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let fireCount = await fired.value
+        let endedApp = await ended.value
+        XCTAssertEqual(fireCount, 1, "the first active observation should fire one prompt candidate")
+        XCTAssertEqual(endedApp?.bundleID, zoom.bundleID, "a later inactive observation for the same coalesced candidate should notify the app shell to invalidate stale prompt state")
+    }
+
     func testRedundantLaunchEventsDebounce() async throws {
         let captured = FireCounter()
         // Bump dwellTime + final wait to absorb CI's scheduling jitter — local

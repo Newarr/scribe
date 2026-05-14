@@ -116,6 +116,22 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         resolve(identifier: identifier, with: .notAMeeting, removeNotifications: true)
     }
 
+    /// Invalidates a pending prompt when recognition proves the underlying
+    /// call has ended before the user made a decision. The continuation
+    /// resolves as Not now so AppDelegate clears menu-bar recovery without
+    /// starting capture; any later modal/notification action for the old
+    /// prompt ID is ignored by `resolve` as stale.
+    func expireActivePrompt(for app: MeetingApp) {
+        guard let identifier = activePromptIdentifier,
+              let entry = pending[identifier],
+              entry.app.bundleID == app.bundleID else {
+            Log.lifecycle.info("Ignoring stale start-prompt expiry for \(app.bundleID, privacy: .public): no matching active prompt")
+            return
+        }
+        Log.lifecycle.info("Expiring start prompt for ended call in \(app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
+        resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
+    }
+
     private func scheduleRecoveryTimers(for entry: Pending) {
         let promptID = entry.identifier
         entry.reminderTimer = Timer.scheduledTimer(withTimeInterval: reminderDelay, repeats: false) { [weak self] _ in

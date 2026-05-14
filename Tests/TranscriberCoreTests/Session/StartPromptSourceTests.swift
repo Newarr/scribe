@@ -72,6 +72,14 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Ignoring stale start-prompt menu recovery"))
     }
 
+    func testEndedCallExpiryResolvesPendingPromptWithoutStartingRecording() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("func expireActivePrompt(for app: MeetingApp)"), "prompt coordinator must expose an app-scoped stale-call expiry seam")
+        XCTAssertTrue(source.contains("entry.app.bundleID == app.bundleID"), "stale-call expiry must only resolve the matching active prompt")
+        XCTAssertTrue(source.contains("resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)"), "ended calls should clear recovery like Not now rather than starting capture")
+        XCTAssertTrue(source.contains("Ignoring stale start-prompt action"), "late modal/notification actions for expired prompt IDs must be inert")
+    }
+
 
     func testLateJoinCalendarPromptCopyStatesCaptureFromNowOnward() throws {
         let source = try source

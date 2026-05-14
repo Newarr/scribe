@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let startPromptCoordinator = StartPromptCoordinator()
     private var queuedDetectionCandidate: QueuedDetectionCandidate?
     private var pendingPromptCalendarEventForStart: CalendarEvent?
+    private var pendingPromptAppBundleID: String?
 
     // F-2: trust-language flags. The menu bar icon is the design's
     // primary trust surface, so its shape encodes more than just
@@ -308,7 +309,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // false positives that dwell-on-launch alone produced.
         let engine = DetectionEngine(
             dwellTime: 30,
-            probe: CoreAudioInputProbe()
+            probe: CoreAudioInputProbe(),
+            onCandidateEnded: { [weak self] app in
+                await self?.handleEndedDetectionCandidate(app)
+            }
         ) { [weak self] app in
             await self?.handleDetectionCandidate(app)
         }
@@ -1099,6 +1103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // unresolved. Dismissal/ignore paths intentionally do not clear this;
         // only explicit resolution or prompt-session expiry returns to idle.
         detectionPromptActive = true
+        pendingPromptAppBundleID = app.bundleID
         menu?.pendingPrompt = PendingPromptRecovery(
             title: Self.promptRecoveryTitle(for: app, event: event),
             subtitle: event == nil ? "Detected in \(app.displayName)." : "From Apple Calendar · \(app.displayName).",
@@ -1107,6 +1112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyTrustIcon()
         let choice = await startPromptCoordinator.prompt(for: app, event: event)
         detectionPromptActive = false
+        pendingPromptAppBundleID = nil
         menu?.pendingPrompt = nil
         applyTrustIcon()
         switch choice {
@@ -1125,6 +1131,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .skipForNow:
             Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now")
         }
+    }
+
+
+    @MainActor
+    private func handleEndedDetectionCandidate(_ app: MeetingApp) async {
+        guard pendingPromptAppBundleID == app.bundleID else { return }
+        Log.lifecycle.info("Detection candidate ended before prompt resolution: \(app.bundleID, privacy: .public)")
+        startPromptCoordinator.expireActivePrompt(for: app)
     }
 
     @MainActor
