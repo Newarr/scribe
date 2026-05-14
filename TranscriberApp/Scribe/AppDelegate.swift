@@ -15,6 +15,28 @@ import TranscriberCore
 /// correct.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private struct QueuedDetectionCandidate {
+        let app: MeetingApp
+        let event: CalendarEvent?
+
+        var displayTitle: String {
+            let title = event?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return title.isEmpty ? app.displayName : title
+        }
+
+        var displayTime: String {
+            guard let startDate = event?.startDate else { return "after this recording" }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: startDate)
+        }
+
+        func isStillActive(at now: Date) -> Bool {
+            guard let event else { return true }
+            return event.startDate <= now && now < event.endDate
+        }
+    }
+
     private var statusItem: NSStatusItem?
     private var menu: RecordingMenu?
     private var hotKeyRegistrar: StartStopHotKeyRegistrar?
@@ -45,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var detectionEngine: DetectionEngine?
     private var processWatcher: ProcessWatcher?
     private let startPromptCoordinator = StartPromptCoordinator()
+    private var queuedDetectionCandidate: QueuedDetectionCandidate?
 
     // F-2: trust-language flags. The menu bar icon is the design's
     // primary trust surface, so its shape encodes more than just
@@ -1055,17 +1078,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Engine fires this when an allowlisted app has been running for the
     /// dwell window without being skipped or quitting. Show the start prompt
-    /// and route the user's choice. Ignore if a recording is already active.
+    /// and route the user's choice. Queue candidates while a recording is
+    /// active so a second meeting never interrupts capture.
     @MainActor
     func handleDetectionCandidate(_ app: MeetingApp) async {
-        guard status != .recording, status != .starting else {
-            Log.lifecycle.info("Detection candidate \(app.bundleID, privacy: .public) ignored: already \(self.status.rawValue, privacy: .public)")
+        let event = await calendarWatcher.eventOverlapping(Date())
+        if status == .recording || status == .starting {
+            queueDetectionCandidate(app, event: event)
             return
         }
+        await presentStartPrompt(for: app, event: event)
+    }
+
+    @MainActor
+    private func presentStartPrompt(for app: MeetingApp, event: CalendarEvent?) async {
         Log.lifecycle.info("Detection candidate: \(app.bundleID, privacy: .public)")
-        // Enrich the prompt with the overlapping calendar event title if one
-        // is in cache. Spec line 167: "Start recording 'Acme Weekly'?".
-        let event = await calendarWatcher.eventOverlapping(Date())
         Log.calendar.info("Prompt enrichment: matched=\(event != nil ? "yes" : "no", privacy: .public)")
         // F-2: surface .detected on the menu bar while the prompt is
         // unresolved. Dismissal/ignore paths intentionally do not clear this;
@@ -1094,6 +1121,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             scheduleRearm(for: app, after: 30 * 60)
         case .skipForNow:
             Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now")
+        }
+    }
+
+    @MainActor
+    private func queueDetectionCandidate(_ app: MeetingApp, event: CalendarEvent?) {
+        let queued = QueuedDetectionCandidate(app: app, event: event)
+        queuedDetectionCandidate = queued
+        menu?.queuedNextMeeting = RecordingMenuQueuedMeeting(title: queued.displayTitle, time: queued.displayTime)
+        Log.lifecycle.info("Detection candidate \(app.bundleID, privacy: .public) queued: already \(self.status.rawValue, privacy: .public)")
+    }
+
+    @MainActor
+    private func clearQueuedDetectionCandidate() {
+        queuedDetectionCandidate = nil
+        menu?.queuedNextMeeting = nil
+    }
+
+    @MainActor
+    private func reevaluateQueuedDetectionCandidateAfterStop() {
+        guard let queued = queuedDetectionCandidate else { return }
+        clearQueuedDetectionCandidate()
+        let now = Date()
+        guard queued.isStillActive(at: now) else {
+            Log.lifecycle.info("Queued detection candidate \(queued.app.bundleID, privacy: .public) dropped: expired before stop")
+            return
+        }
+        Log.lifecycle.info("Queued detection candidate \(queued.app.bundleID, privacy: .public) re-evaluating after stop")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.detectionEngine?.releaseActiveCandidate(for: queued.app)
+            await self.detectionEngine?.reevaluate(queued.app)
         }
     }
 
@@ -1332,6 +1390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu?.outcomeFolderURL = nil
             menu?.sessionEngineMode = .cloud
             menu?.recordingSourceLabel = "Recording"
+            menu?.queuedNextMeeting = nil
             menu?.elapsedSeconds = 0
             menu?.rebuild(for: status)
             applyTrustIcon()
@@ -1421,6 +1480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // transcript worker.
         if !stopSucceeded {
             self.status = .failed
+            clearQueuedDetectionCandidate()
             menu?.rebuild(for: status)
             markFailureFlash()
             return
@@ -1487,6 +1547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self?.removeTask(id: id)
         }
         inflightTasks[id] = task
+        reevaluateQueuedDetectionCandidateAfterStop()
     }
 
     @MainActor

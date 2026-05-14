@@ -24,6 +24,11 @@ struct PendingPromptRecovery: Equatable {
     let appDisplayName: String
 }
 
+struct RecordingMenuQueuedMeeting: Equatable {
+    let title: String
+    let time: String
+}
+
 @MainActor
 final class RecordingMenu: NSObject, NSPopoverDelegate {
     enum Action {
@@ -50,6 +55,10 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
 
     var pendingPrompt: PendingPromptRecovery? {
         didSet { model.pendingPrompt = pendingPrompt }
+    }
+
+    var queuedNextMeeting: RecordingMenuQueuedMeeting? {
+        didSet { model.queuedNextMeeting = queuedNextMeeting }
     }
 
     /// `outputRoot` powers the recents enumerator. Updated by
@@ -294,6 +303,7 @@ final class RecordingMenuModel: ObservableObject {
     @Published var status: SessionStatus
     @Published var setupNeedsAttention: Bool = false
     @Published var pendingPrompt: PendingPromptRecovery? = nil
+    @Published var queuedNextMeeting: RecordingMenuQueuedMeeting? = nil
     @Published var recents: [SessionFolderEnumerator.Entry] = []
     @Published var elapsedSeconds: Int = 0
     @Published var micLevel: Float = 0
@@ -379,13 +389,13 @@ private struct RecordingPopoverContent: View {
             if model.setupNeedsAttention { return 167 }
             return model.recents.isEmpty ? nil : 336
         case .starting:
-            return 311
+            return 365
         case .recording:
-            return 355
+            return model.queuedNextMeeting == nil ? 409 : 445
         case .stopping:
-            return 377
+            return model.queuedNextMeeting == nil ? 431 : 467
         case .finalized:
-            return 357
+            return model.queuedNextMeeting == nil ? 411 : 447
         case .failed:
             return 196
         }
@@ -556,10 +566,33 @@ private struct RecordingPopoverContent: View {
                 isAnimating: model.status == .recording
             )
                 .frame(height: 118)
+            privacyStatusBlock(palette: palette)
             Text(activeStatusCopy)
                 .font(activeStatusFont)
                 .foregroundStyle(palette.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let queued = model.queuedNextMeeting {
+                HStack(spacing: 8) {
+                    LucideIcon(glyph: .calendar)
+                        .frame(width: 12, height: 12)
+                    Text("Next: '\(queued.title)' at \(queued.time)")
+                        .font(DS.Font.monoSmall)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(palette.metaText)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(palette.controlFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(palette.controlStroke, lineWidth: 1)
+                )
+            }
             if shouldShowOutcomeFolder, let folder = model.outcomeFolderName {
                 HStack(spacing: 8) {
                     LucideIcon(glyph: .folder)
@@ -603,6 +636,34 @@ private struct RecordingPopoverContent: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
+    }
+
+    private func privacyStatusBlock(palette: RecordingPopoverPalette) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Audio: local · \(model.outcomeFolderName ?? "Scribe session")")
+            Text("Captured: mic + system audio · no video, no screenshots")
+            Text("Engine: \(activeEngineLabel)")
+        }
+        .font(DS.Font.monoSmall)
+        .foregroundStyle(palette.metaText)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(palette.controlFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(palette.controlStroke, lineWidth: 1)
+        )
+    }
+
+    private var activeEngineLabel: String {
+        switch model.sessionEngineMode {
+        case .local: return "Cohere (local)"
+        case .cloud: return "ElevenLabs (cloud)"
+        }
     }
 
     private var activeStatusCopy: String {

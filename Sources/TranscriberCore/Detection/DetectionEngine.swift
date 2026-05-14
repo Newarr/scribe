@@ -80,6 +80,13 @@ public actor DetectionEngine {
         activeCandidateBundleIDs.remove(app.bundleID)
     }
 
+    /// Allows the app shell to re-present a still-active candidate after an
+    /// intervening recording has stopped. This keeps active-recording queueing
+    /// non-interruptive without permanently coalescing the queued app.
+    public func releaseActiveCandidate(for app: MeetingApp) {
+        activeCandidateBundleIDs.remove(app.bundleID)
+    }
+
     /// Suppresses `app` for `duration` seconds and cancels any in-flight or
     /// coalesced active candidate for that app. Defaults to 30 minutes per spec.
     public func suppress(_ app: MeetingApp, for duration: TimeInterval = 30 * 60) async {

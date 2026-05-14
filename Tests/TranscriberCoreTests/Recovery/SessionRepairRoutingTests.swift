@@ -304,6 +304,65 @@ final class SessionRepairRoutingTests: XCTestCase {
         }
     }
 
+    func testPromptStartClearsRecoveryAndUsesExactlyOneManualStartRoute() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
+            return XCTFail("prompt Start Recording handler must be factored for source-inspection")
+        }
+        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(promptBody.contains("case .start:"), "prompt handler must handle Start Recording decisions")
+        XCTAssertTrue(promptBody.contains("await startRecording()"), "prompt Start Recording must enter the normal manual Record Now startRecording route")
+        XCTAssertEqual(promptBody.components(separatedBy: "await startRecording()").count - 1, 1, "one prompt decision must invoke the normal start route exactly once")
+        XCTAssertTrue(promptBody.contains("detectionPromptActive = false"), "explicit prompt resolution must clear Meeting detected trust state before recording starts")
+        XCTAssertTrue(promptBody.contains("menu?.pendingPrompt = nil"), "explicit prompt resolution must clear stale menu recovery actions")
+
+        guard let startRange = source.range(of: "private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
+            return XCTFail("normal startRecording route must exist")
+        }
+        let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(7600, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(startBody.contains("guard status != .recording, status != .starting"), "normal start route must guard against duplicate capture sessions")
+        XCTAssertTrue(startBody.contains("let report = await preflightDoctor.audit"), "normal start route must surface preflight blockers for prompt and manual starts")
+        XCTAssertTrue(startBody.contains("try await session.start()"), "normal start route must be the capture session start point")
+    }
+
+    func testActiveRecordingQueuesCandidateAndReevaluatesAfterStop() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private struct QueuedDetectionCandidate"), "AppDelegate must store queued candidates while recording.")
+        XCTAssertTrue(source.contains("private var queuedDetectionCandidate"), "AppDelegate must retain exactly one active-recording queued candidate.")
+        XCTAssertTrue(source.contains("queueDetectionCandidate(app, event: event)"), "detection during recording must queue instead of dropping.")
+        XCTAssertTrue(source.contains("menu?.queuedNextMeeting = RecordingMenuQueuedMeeting"), "queued context must be surfaced to the active recording popover.")
+        XCTAssertTrue(source.contains("reevaluateQueuedDetectionCandidateAfterStop()"), "stop flow must re-evaluate queued candidates after the active session is finalized to durable audio.")
+        XCTAssertTrue(source.contains("queued.isStillActive(at: now)"), "expired queued calendar candidates must be dropped after stop.")
+        XCTAssertTrue(source.contains("releaseActiveCandidate(for: queued.app)"), "still-active queued candidates must be allowed to prompt again after coalescing during recording.")
+        XCTAssertTrue(source.contains("detectionEngine?.reevaluate(queued.app)"), "still-active queued candidates must pass through detection re-evaluation after stop instead of prompting stale state directly.")
+
+        guard let handlerRange = source.range(of: "func handleDetectionCandidate") else {
+            return XCTFail("detection handler must exist")
+        }
+        let handlerBody = String(source[handlerRange.lowerBound..<source.index(handlerRange.lowerBound, offsetBy: min(900, source.distance(from: handlerRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(handlerBody.contains("if status == .recording || status == .starting"), "active recording and starting states must suppress intrusive prompts")
+        XCTAssertFalse(handlerBody.contains("startPromptCoordinator.prompt"), "active recording branch must not present a new prompt directly")
+    }
+
+    func testPromptStopPathWritesPendingTranscriptBeforeQueueReevaluation() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        guard let stopRange = source.range(of: "private func stopRecording() async") else {
+            return XCTFail("stopRecording route must exist")
+        }
+        let stopBody = String(source[stopRange.lowerBound..<source.index(stopRange.lowerBound, offsetBy: min(5200, source.distance(from: stopRange.lowerBound, to: source.endIndex)))])
+        guard let stopCall = stopBody.range(of: "try await session.stop()"),
+              let pendingWrite = stopBody.range(of: "TranscriptWriter.writePending"),
+              let workerCreation = stopBody.range(of: "let worker = Self.makeWorker"),
+              let queueReeval = stopBody.range(of: "reevaluateQueuedDetectionCandidateAfterStop()") else {
+            return XCTFail("stopRecording must stop capture, write pending transcript, create worker, and then re-evaluate queue")
+        }
+        XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: stopCall.lowerBound), stopBody.distance(from: stopBody.startIndex, to: pendingWrite.lowerBound), "durable capture stop/finalize must precede transcript state writes")
+        XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: pendingWrite.lowerBound), stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), "pending transcript must be written before transcription worker runs")
+        XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), stopBody.distance(from: stopBody.startIndex, to: queueReeval.lowerBound), "queued prompt re-evaluation must wait until the stopped recording has a durable worker path")
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
