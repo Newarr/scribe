@@ -1190,6 +1190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard pendingPromptAppBundleID == app.bundleID else { return }
         Log.lifecycle.info("Detection candidate ended before prompt resolution: \(app.bundleID, privacy: .public)")
         startPromptCoordinator.expireActivePrompt(for: app)
+        detectionPromptActive = false
+        pendingPromptAppBundleID = nil
+        pendingPromptCalendarEventForStart = nil
+        menu?.pendingPrompt = nil
+        applyTrustIcon()
     }
 
     @MainActor

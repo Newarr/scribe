@@ -326,7 +326,17 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
         XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
         XCTAssertTrue(source.contains("guard pendingPromptAppBundleID == app.bundleID"), "only the currently pending prompt may be invalidated by an ended-call signal")
-        XCTAssertTrue(source.contains("startPromptCoordinator.expireActivePrompt(for: app)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
+
+        guard let endedRange = source.range(of: "private func handleEndedDetectionCandidate") else {
+            return XCTFail("ended candidate handler must exist")
+        }
+        let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(900, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(endedBody.contains("startPromptCoordinator.expireActivePrompt(for: app)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
+        XCTAssertTrue(endedBody.contains("detectionPromptActive = false"), "ended calls must clear retained setup-blocked Meeting detected trust state")
+        XCTAssertTrue(endedBody.contains("pendingPromptAppBundleID = nil"), "ended calls must clear the stale invalidation marker so later actions require fresh recognition")
+        XCTAssertTrue(endedBody.contains("pendingPromptCalendarEventForStart = nil"), "ended calls must clear retained setup-blocked calendar context before stale menu Start Recording can retry")
+        XCTAssertTrue(endedBody.contains("menu?.pendingPrompt = nil"), "ended calls must remove stale menu Start Recording / Not now recovery actions")
+        XCTAssertTrue(endedBody.contains("applyTrustIcon()"), "ended calls must refresh the menu-bar trust surface after clearing retained recovery")
 
         guard let promptRange = source.range(of: "private func presentStartPrompt") else {
             return XCTFail("prompt presentation route must exist")
