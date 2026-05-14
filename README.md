@@ -7,7 +7,7 @@ It stays out of the way until it matters: a meeting starts, audio drops, a permi
 ## What it does today (V1.0)
 
 - **Records mic + call audio** simultaneously via ScreenCaptureKit.
-- **Auto-detects** Zoom, Google Meet, FaceTime, Microsoft Teams, etc., and asks once whether to record. Ignores you for 30 minutes if you say it's not a meeting.
+- **Auto-detects** supported native calls (Zoom, Microsoft Teams, Signal, FaceTime) and browser-based calls (Google Meet and other meeting tabs in supported browsers), then asks once whether to record. Ignores you for 30 minutes if you say it's not a meeting.
 - **Auto-stops** after 30 seconds of silence, with a 10-second countdown HUD you can cancel.
 - **Transcribes** with your selected engine: ElevenLabs (cloud) or Cohere (local), then saves Markdown next to the audio in `~/Scribe/`.
 - **Recovers** from a crash, relaunch and any session that was mid-recording or mid-transcription resumes itself.

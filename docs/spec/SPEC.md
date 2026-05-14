@@ -199,7 +199,7 @@ At meeting start:
 
 - Trigger is process-detection-with-calendar-enrichment in v1: an allowlisted meeting app that has been running for **30 seconds** without quitting fires a candidate; the prompt title is enriched with the overlapping calendar event if one is in cache. Per-bundle suppression via `Stop detecting [App] for 30 minutes` ticks an in-memory map cleared on app restart; suppression is NOT persisted across launches.
 - Allowlist (12 bundle IDs in v1; one source of truth in `MeetingApps.allowlist`):
-  - Native: `us.zoom.xos`, `com.microsoft.teams2`, `com.microsoft.teams` (legacy), `org.whispersystems.signal-desktop`.
+  - Native: `us.zoom.xos`, `com.microsoft.teams2`, `com.microsoft.teams` (legacy), `org.whispersystems.signal-desktop`, `com.apple.FaceTime`.
   - Browsers (any tab triggers; per-URL detection deferred): `com.google.Chrome`, `com.apple.Safari`, `company.thebrowser.Browser` (Arc), `com.microsoft.Edge`, `org.mozilla.firefox`, `com.brave.Browser`, `im.helium.helium`.
 - The pure calendar-event-at-scheduled-start trigger may layer in as a secondary path later (see `q_calendar_or_process_first_trigger`).
 - Delivery is an `NSAlert` modal with `NSApp.activate(ignoringOtherApps: true)`. Focus-stealing is intentional: missing the start dominates the politeness cost of the interruption.

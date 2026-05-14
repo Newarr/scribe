@@ -18,6 +18,7 @@ final class MeetingAppsTests: XCTestCase {
             "us.zoom.xos",
             "com.microsoft.teams2",
             "org.whispersystems.signal-desktop",
+            "com.apple.FaceTime",
             "com.google.Chrome",
             "com.apple.Safari",
             "com.microsoft.Edge",
@@ -28,6 +29,13 @@ final class MeetingAppsTests: XCTestCase {
         for id in required {
             XCTAssertNotNil(MeetingApps.appFor(bundleID: id), "missing required allowlist entry for \(id)")
         }
+    }
+
+    func testAllowlistHasTwelveSpecEntriesIncludingFaceTime() {
+        XCTAssertEqual(MeetingApps.allowlist.count, 12)
+        let faceTime = MeetingApps.appFor(bundleID: "com.apple.FaceTime")
+        XCTAssertEqual(faceTime?.displayName, "FaceTime")
+        XCTAssertEqual(faceTime?.kind, .nativeMeetingApp)
     }
 
     func testAllowlistEntriesAreUnique() {

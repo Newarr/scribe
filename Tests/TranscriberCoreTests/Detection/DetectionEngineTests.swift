@@ -104,6 +104,86 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(result?.bundleID, "us.zoom.xos", "probe returning nil must pass through")
     }
 
+    func testIdleBrowserDoesNotEmitCandidate() async throws {
+        let captured = FireCounter()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let engine = DetectionEngine(dwellTime: 0.01, retryInterval: 0.01, observationWindow: 0, probe: ConstantProbe(value: false)) { _ in
+            await captured.increment()
+        }
+
+        await engine.reevaluate(chrome)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let count = await captured.value
+        XCTAssertEqual(count, 0, "idle supported browsers must not produce candidates")
+    }
+
+    func testIdleNativeAppDoesNotEmitCandidate() async throws {
+        let captured = FireCounter()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(dwellTime: 0.01, retryInterval: 0.01, observationWindow: 0, probe: ConstantProbe(value: false)) { _ in
+            await captured.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let count = await captured.value
+        XCTAssertEqual(count, 0, "idle native apps must not produce candidates")
+    }
+
+    func testTransientFalseProbeRetriesAndLaterFires() async throws {
+        let captured = AppCapture()
+        let probe = SequenceProbe(values: [false, true])
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(dwellTime: 0.01, retryInterval: 0.01, observationWindow: 1, probe: probe) { app in
+            await captured.set(app)
+        }
+
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let result = await captured.value
+        XCTAssertEqual(result?.bundleID, zoom.bundleID, "early false observations must not permanently suppress later active calls")
+    }
+
+    func testRepeatedObservationsCoalesceIntoOneCandidate() async throws {
+        let captured = FireCounter()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(dwellTime: 0.01, retryInterval: 0.01, observationWindow: 1, probe: ConstantProbe(value: true)) { _ in
+            await captured.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        await engine.reevaluate(zoom)
+        await engine.handleLaunch(of: zoom)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let count = await captured.value
+        XCTAssertEqual(count, 1, "repeated observations for one active call must coalesce")
+    }
+
+    func testStaleCandidateClearsAfterCallEnds() async throws {
+        let captured = FireCounter()
+        let probe = SequenceProbe(values: [true, false, true])
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(dwellTime: 0.01, retryInterval: 0.01, observationWindow: 1, probe: probe) { _ in
+            await captured.increment()
+        }
+
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await engine.reevaluate(zoom)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let count = await captured.value
+        XCTAssertEqual(count, 2, "ended calls must clear stale candidate state")
+    }
+
     func testRedundantLaunchEventsDebounce() async throws {
         let captured = FireCounter()
         // Bump dwellTime + final wait to absorb CI's scheduling jitter — local
@@ -138,4 +218,18 @@ actor FireCounter {
 struct ConstantProbe: AudioActivityProbe {
     let value: Bool?
     func isActive(bundleID: String) async -> Bool? { value }
+}
+
+
+actor SequenceProbe: AudioActivityProbe {
+    private var values: [Bool?]
+
+    init(values: [Bool?]) {
+        self.values = values
+    }
+
+    func isActive(bundleID: String) async -> Bool? {
+        if values.isEmpty { return false }
+        return values.removeFirst()
+    }
 }
