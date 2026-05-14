@@ -792,11 +792,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .openDiagnostics:
             diagnosticsWindowController?.show()
         case .promptStartRecording:
-            startPromptCoordinator.chooseStartFromRecovery()
+            if startPromptCoordinator.hasActivePrompt {
+                startPromptCoordinator.chooseStartFromRecovery()
+            } else if detectionPromptActive {
+                let event = pendingPromptCalendarEventForStart
+                await startRecording()
+                if setupNeedsAttention {
+                    pendingPromptCalendarEventForStart = event
+                    applyTrustIcon()
+                } else {
+                    pendingPromptCalendarEventForStart = nil
+                    detectionPromptActive = false
+                    pendingPromptAppBundleID = nil
+                    menu?.pendingPrompt = nil
+                    applyTrustIcon()
+                }
+            }
         case .promptNotNow:
-            startPromptCoordinator.chooseNotNowFromRecovery()
+            if startPromptCoordinator.hasActivePrompt {
+                startPromptCoordinator.chooseNotNowFromRecovery()
+            } else {
+                detectionPromptActive = false
+                pendingPromptAppBundleID = nil
+                pendingPromptCalendarEventForStart = nil
+                menu?.pendingPrompt = nil
+                applyTrustIcon()
+            }
         case .promptSuppressApp:
-            startPromptCoordinator.chooseSuppressAppFromRecovery()
+            if startPromptCoordinator.hasActivePrompt {
+                startPromptCoordinator.chooseSuppressAppFromRecovery()
+            } else {
+                detectionPromptActive = false
+                pendingPromptAppBundleID = nil
+                pendingPromptCalendarEventForStart = nil
+                menu?.pendingPrompt = nil
+                applyTrustIcon()
+            }
         }
     }
 
@@ -1113,15 +1144,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         applyTrustIcon()
         let choice = await startPromptCoordinator.prompt(for: app, event: event)
-        detectionPromptActive = false
-        pendingPromptAppBundleID = nil
-        menu?.pendingPrompt = nil
+        let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention
+        if shouldClearPendingPrompt {
+            detectionPromptActive = false
+            pendingPromptAppBundleID = nil
+            menu?.pendingPrompt = nil
+        }
         applyTrustIcon()
         switch choice {
         case .start:
             pendingPromptCalendarEventForStart = event
             await startRecording()
-            pendingPromptCalendarEventForStart = nil
+            if setupNeedsAttention {
+                pendingPromptCalendarEventForStart = event
+                detectionPromptActive = true
+                pendingPromptAppBundleID = app.bundleID
+                menu?.pendingPrompt = PendingPromptRecovery(
+                    title: Self.promptRecoveryTitle(for: app, event: event),
+                    subtitle: event == nil ? "Detected in \(app.displayName). Fix setup, then start recording." : "From Apple Calendar · \(app.displayName). Fix setup, then start recording.",
+                    appDisplayName: app.displayName
+                )
+            } else {
+                pendingPromptCalendarEventForStart = nil
+                detectionPromptActive = false
+                pendingPromptAppBundleID = nil
+                menu?.pendingPrompt = nil
+            }
+            applyTrustIcon()
         case .notAMeeting:
             await detectionEngine?.suppress(app)
             Log.lifecycle.info("User suppressed \(app.bundleID, privacy: .public) for 30 minutes")

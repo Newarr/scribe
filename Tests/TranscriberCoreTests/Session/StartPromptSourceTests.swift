@@ -157,3 +157,52 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("NSScreen.screens.max"))
     }
 }
+
+final class PromptPreflightRecoverySourceTests: XCTestCase {
+    private var appDelegateSource: String {
+        get throws {
+            let path = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("TranscriberApp/Scribe/AppDelegate.swift")
+            return try String(contentsOf: path, encoding: .utf8)
+        }
+    }
+
+    private var startPromptSource: String {
+        get throws {
+            let path = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("TranscriberApp/Scribe/StartPromptCoordinator.swift")
+            return try String(contentsOf: path, encoding: .utf8)
+        }
+    }
+
+    func testPromptStartPreflightDenialKeepsPendingRecoveryActions() throws {
+        let source = try appDelegateSource
+        XCTAssertTrue(source.contains("let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention"), "prompt start should not unconditionally clear pending recovery before preflight outcome is known")
+        XCTAssertTrue(source.contains("if setupNeedsAttention {\n                pendingPromptCalendarEventForStart = event"), "preflight denial should preserve prompt calendar context for a later recovery retry")
+        XCTAssertTrue(source.contains("Fix setup, then start recording."), "setup-required pending prompt copy should keep meeting recovery actionable")
+        XCTAssertTrue(source.contains("menu?.pendingPrompt = PendingPromptRecovery"), "AppDelegate should restore menu-bar Start/Not now recovery after a blocked prompt start")
+    }
+
+    func testMenuRecoveryCanRetryAfterPromptCoordinatorResolved() throws {
+        let appDelegate = try appDelegateSource
+        let coordinator = try startPromptSource
+        XCTAssertTrue(coordinator.contains("var hasActivePrompt: Bool { activePromptIdentifier != nil }"), "AppDelegate needs to distinguish live modal/notification prompts from retained setup-blocked recovery")
+        XCTAssertTrue(appDelegate.contains("if startPromptCoordinator.hasActivePrompt"))
+        XCTAssertTrue(appDelegate.contains("} else if detectionPromptActive {\n                let event = pendingPromptCalendarEventForStart\n                await startRecording()"), "retained pending prompt recovery should retry the normal preflight/start path after setup is fixed")
+    }
+
+    func testRequiredSetupOutranksDetectedIconButDoesNotRemovePendingPromptModel() throws {
+        let appDelegate = try appDelegateSource
+        XCTAssertTrue(appDelegate.contains("setupNeedsAttention = true"), "required preflight denial should surface Setup Required")
+        XCTAssertTrue(appDelegate.contains("menu?.setupNeedsAttention = true"), "required preflight denial should mark the popover setup state")
+        XCTAssertTrue(appDelegate.contains("menu?.pendingPrompt = PendingPromptRecovery"), "setup-required state must coexist with pending meeting actions")
+    }
+}

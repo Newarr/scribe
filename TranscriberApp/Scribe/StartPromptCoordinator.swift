@@ -59,6 +59,8 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private var authorizationKnown = false
     private var authorizationGranted = false
 
+    var hasActivePrompt: Bool { activePromptIdentifier != nil }
+
     /// Test/configuration seam. Production follows the spec: one fresh
     /// reminder at ~60s, then safe expiry around the 3-minute policy.
     var reminderDelay: TimeInterval = 60

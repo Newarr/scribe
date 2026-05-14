@@ -77,18 +77,22 @@ extension TrustState {
         default:         break
         }
 
-        // 2. Mid-flight detection prompt is the next-strongest
+        // 2. A required setup blocker must remain visible even when a
+        //    meeting prompt is pending. The popover can still expose the
+        //    pending Start/Not now recovery actions, but the trust icon
+        //    should communicate that recording cannot proceed yet.
+        if inputs.setupNeedsAttention { return .setupRequired }
+
+        // 3. Mid-flight detection prompt is the next-strongest
         //    signal: it's awaiting a user decision, so the icon
-        //    should pulse to draw the eye.
+        //    should pulse to draw the eye when recording is otherwise
+        //    allowed.
         if inputs.detectionPromptActive { return .detected }
 
-        // 3. A terminal failure outranks setup-required because the
-        //    user just tried to record and it failed — that needs
+        // 4. A terminal failure outranks the transient saved flash because
+        //    the user just tried to record and it failed — that needs
         //    to stay visible until they take an action.
         if inputs.lastFailureAt != nil { return .failed }
-
-        // 4. Setup blocker on the permission stack.
-        if inputs.setupNeedsAttention { return .setupRequired }
 
         // 5. Transient saved confirmation, after a successful save.
         if let saved = inputs.lastSavedAt,

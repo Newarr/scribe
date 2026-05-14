@@ -45,8 +45,18 @@ final class TrustStateTests: XCTestCase {
         XCTAssertEqual(s, .detected)
     }
 
-    func testFailureBeatsSetupBlocker() {
+    func testSetupBlockerBeatsDetectedPromptIcon() {
+        let s = TrustState.resolve(inputs(setupNeedsAttention: true, detectionPromptActive: true))
+        XCTAssertEqual(s, .setupRequired)
+    }
+
+    func testSetupBlockerBeatsFailure() {
         let s = TrustState.resolve(inputs(setupNeedsAttention: true, lastFailureAt: now))
+        XCTAssertEqual(s, .setupRequired)
+    }
+
+    func testFailureWhenIdleWithoutSetupBlocker() {
+        let s = TrustState.resolve(inputs(lastFailureAt: now))
         XCTAssertEqual(s, .failed)
     }
 
