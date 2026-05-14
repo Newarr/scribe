@@ -207,9 +207,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            Task { [weak self] in
-                Log.calendar.info("Wake-from-sleep: forcing calendar refresh")
+            Task { @MainActor [weak self] in
+                Log.calendar.info("Wake-from-sleep: forcing calendar refresh and detection re-evaluation")
                 await self?.calendarWatcher.refreshNow()
+                self?.processWatcher?.reevaluateRunningMeetingApps()
             }
         }
 
@@ -222,9 +223,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            Task { [weak self] in
-                Log.calendar.info("Calendar store changed: forcing refresh")
+            Task { @MainActor [weak self] in
+                Log.calendar.info("Calendar store changed: forcing refresh and detection re-evaluation")
                 await self?.calendarWatcher.refreshNow()
+                self?.processWatcher?.reevaluateRunningMeetingApps()
             }
         }
 
@@ -293,6 +295,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onQuit: { app in
                 Task { await engine.handleQuit(of: app) }
+            },
+            onReevaluate: { app in
+                Task { await engine.reevaluate(app) }
             }
         )
         self.processWatcher = watcher

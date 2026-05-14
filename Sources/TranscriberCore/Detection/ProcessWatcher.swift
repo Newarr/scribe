@@ -15,16 +15,23 @@ public final class ProcessWatcher: @unchecked Sendable {
     private let workspace: NSWorkspace
     private let onLaunch: Handler
     private let onQuit: Handler
+    private let onReevaluate: Handler
+    private let reevaluationInterval: TimeInterval
     private var observers: [NSObjectProtocol] = []
+    private var reevaluationTimer: Timer?
 
     public init(
         workspace: NSWorkspace = .shared,
+        reevaluationInterval: TimeInterval = 5,
         onLaunch: @escaping Handler,
-        onQuit: @escaping Handler
+        onQuit: @escaping Handler,
+        onReevaluate: Handler? = nil
     ) {
         self.workspace = workspace
+        self.reevaluationInterval = reevaluationInterval
         self.onLaunch = onLaunch
         self.onQuit = onQuit
+        self.onReevaluate = onReevaluate ?? onLaunch
     }
 
     /// Only consider a cold-start app as "just launched" if its
@@ -43,13 +50,52 @@ public final class ProcessWatcher: @unchecked Sendable {
         }
         observers.append(contentsOf: [launch, terminate])
 
-        // Cold-start: emit launches ONLY for native meeting apps that
-        // launched within the last 60 seconds. Browsers being open is
-        // the steady state for most users (Chrome, Arc, Safari running
-        // all day) so cold-starting them produces a flood of false
-        // positives. Native meeting apps idling in the tray are also
-        // common, hence the launchDate window — we want "Zoom just
-        // started" not "Zoom has been parked since 9am".
+        // Cold-start: launches remain a strong signal for native meeting apps
+        // that just appeared, but app/browser presence alone is not enough to
+        // prompt. Separately re-evaluate every currently running allowlisted
+        // surface so Scribe launch into an already-active call and long-running
+        // browsers can reach the audio-probed DetectionEngine path.
+        emitRecentNativeLaunches()
+        reevaluateRunningMeetingApps()
+        startReevaluationTimer()
+    }
+
+    public func stop() {
+        reevaluationTimer?.invalidate()
+        reevaluationTimer = nil
+        for obs in observers { workspace.notificationCenter.removeObserver(obs) }
+        observers.removeAll()
+    }
+
+    /// Re-scan currently running supported apps/browsers. Safe to call on
+    /// launch, wake, calendar refresh, or a polling tick; DetectionEngine
+    /// coalesces duplicates and uses CoreAudioInputProbe to reject idle apps.
+    public func reevaluateRunningMeetingApps() {
+        for app in Self.meetingApps(from: workspace.runningApplications.compactMap(\.bundleIdentifier)) {
+            onReevaluate(app)
+        }
+    }
+
+    public static func meetingApps(from bundleIDs: [String]) -> [MeetingApp] {
+        var seen = Set<String>()
+        var apps: [MeetingApp] = []
+        for bundleID in bundleIDs {
+            guard let app = MeetingApps.appFor(bundleID: bundleID), seen.insert(app.bundleID).inserted else { continue }
+            apps.append(app)
+        }
+        return apps
+    }
+
+    private func startReevaluationTimer() {
+        guard reevaluationInterval > 0 else { return }
+        let timer = Timer(timeInterval: reevaluationInterval, repeats: true) { [weak self] _ in
+            self?.reevaluateRunningMeetingApps()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        reevaluationTimer = timer
+    }
+
+    private func emitRecentNativeLaunches() {
         let now = Date()
         let window = Self.coldStartLaunchWindow
         for runningApp in workspace.runningApplications {
@@ -62,11 +108,6 @@ public final class ProcessWatcher: @unchecked Sendable {
             else { continue }
             onLaunch(meetingApp)
         }
-    }
-
-    public func stop() {
-        for obs in observers { workspace.notificationCenter.removeObserver(obs) }
-        observers.removeAll()
     }
 
     private func handleLaunch(_ note: Notification) {
