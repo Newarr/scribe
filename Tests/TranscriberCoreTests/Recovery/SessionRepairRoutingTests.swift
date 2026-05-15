@@ -405,17 +405,44 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), stopBody.distance(from: stopBody.startIndex, to: queueReeval.lowerBound), "queued prompt re-evaluation must wait until the stopped recording has a durable worker path")
     }
 
+    func testAppDelegateMakeContextPropagatesCalendarOccurrenceIdentity() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        guard let contextRange = source.range(of: "nonisolated static func makeContext") else {
+            return XCTFail("AppDelegate.makeContext must exist")
+        }
+        let body = String(source[contextRange.lowerBound..<source.index(contextRange.lowerBound, offsetBy: min(1600, source.distance(from: contextRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(body.contains("calendarEventID: event?.calendarEventID"), "makeContext must propagate event ID plus occurrence start into TranscriptContext.calendarEventID")
+    }
+
+    func testCalendarLookupMapsEventKitIdentifierAndOccurrenceDate() throws {
+        let source = try String(contentsOfFile: coreSourcePath("Calendar/CalendarLookup.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("eventIdentifier: ek.eventIdentifier"), "CalendarLookup must preserve EventKit eventIdentifier")
+        XCTAssertTrue(source.contains("occurrenceStartDate: ek.occurrenceDate ?? ek.startDate"), "CalendarLookup must preserve recurring occurrence identity")
+    }
+
     private func appSourcePath(_ file: String) -> String {
+        repoRoot()
+            .appendingPathComponent("TranscriberApp/Scribe")
+            .appendingPathComponent(file)
+            .path
+    }
+
+    private func coreSourcePath(_ file: String) -> String {
+        repoRoot()
+            .appendingPathComponent("Sources/TranscriberCore")
+            .appendingPathComponent(file)
+            .path
+    }
+
+    private func repoRoot() -> URL {
         let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
+        return testFile
             .deletingLastPathComponent() // Recovery
             .deletingLastPathComponent() // TranscriberCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
-        return repoRoot
-            .appendingPathComponent("TranscriberApp/Scribe")
-            .appendingPathComponent(file)
-            .path
     }
 
 }

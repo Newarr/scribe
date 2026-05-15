@@ -1,6 +1,22 @@
 import Foundation
 
 public struct CalendarEvent: Sendable, Equatable {
+    public struct OccurrenceIdentity: Sendable, Equatable, Hashable {
+        public let eventIdentifier: String
+        public let occurrenceStartDate: Date
+
+        public init(eventIdentifier: String, occurrenceStartDate: Date) {
+            self.eventIdentifier = eventIdentifier
+            self.occurrenceStartDate = occurrenceStartDate
+        }
+
+        public var rawValue: String {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return "\(eventIdentifier)#\(formatter.string(from: occurrenceStartDate))"
+        }
+    }
+
     public struct Attendee: Sendable, Equatable {
         public let name: String
         public let email: String?
@@ -22,13 +38,37 @@ public struct CalendarEvent: Sendable, Equatable {
     public let endDate: Date
     public let attendees: [Attendee]
     public let isEligibleMeetingContext: Bool
+    public let eventIdentifier: String?
+    public let occurrenceStartDate: Date?
 
-    public init(title: String, startDate: Date, endDate: Date, attendees: [Attendee], isEligibleMeetingContext: Bool = true) {
+    public init(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        attendees: [Attendee],
+        isEligibleMeetingContext: Bool = true,
+        eventIdentifier: String? = nil,
+        occurrenceStartDate: Date? = nil
+    ) {
         self.title = title
         self.startDate = startDate
         self.endDate = endDate
         self.attendees = attendees
         self.isEligibleMeetingContext = isEligibleMeetingContext
+        self.eventIdentifier = eventIdentifier
+        self.occurrenceStartDate = occurrenceStartDate
+    }
+
+    public var occurrenceIdentity: OccurrenceIdentity? {
+        guard let eventIdentifier, !eventIdentifier.isEmpty else { return nil }
+        return OccurrenceIdentity(
+            eventIdentifier: eventIdentifier,
+            occurrenceStartDate: occurrenceStartDate ?? startDate
+        )
+    }
+
+    public var calendarEventID: String? {
+        occurrenceIdentity?.rawValue ?? eventIdentifier
     }
 
     /// Returns the local user's display name (`isCurrentUser == true`) if the event

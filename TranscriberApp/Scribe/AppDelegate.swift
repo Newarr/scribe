@@ -1968,6 +1968,7 @@ extension AppDelegate {
             scheduledEnd: event.map { isoFmt.string(from: $0.endDate) },
             actualStart: isoFmt.string(from: startedAt),
             actualEnd: isoFmt.string(from: endedAt),
+            calendarEventID: event?.calendarEventID,
             joinedLate: joinedLate,
             elapsedAtStartSeconds: joinedLate == true ? elapsed : nil,
             attendees: (event?.attendees ?? []).map(\.transcriptPerson),

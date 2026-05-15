@@ -66,4 +66,38 @@ final class CalendarEventTests: XCTestCase {
         XCTAssertEqual(event.firstRemoteAttendee, "Faris")
         XCTAssertFalse(event.isOneOnOne)
     }
+    func testCalendarEventPreservesEventIdentifierAndOccurrenceStartIdentity() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let occurrence = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let event = CalendarEvent(
+            title: "Weekly Sync",
+            startDate: start,
+            endDate: start.addingTimeInterval(1800),
+            attendees: [],
+            eventIdentifier: "event-123",
+            occurrenceStartDate: occurrence
+        )
+
+        XCTAssertEqual(event.eventIdentifier, "event-123")
+        XCTAssertEqual(event.occurrenceStartDate, occurrence)
+        XCTAssertEqual(event.occurrenceIdentity?.eventIdentifier, "event-123")
+        XCTAssertEqual(event.occurrenceIdentity?.occurrenceStartDate, occurrence)
+        XCTAssertTrue(event.calendarEventID?.contains("event-123#") == true)
+        XCTAssertTrue(event.calendarEventID?.contains("2023-11-21") == true)
+    }
+
+    func testCalendarEventFallsBackToStartDateForOccurrenceIdentity() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let event = CalendarEvent(
+            title: "One-off",
+            startDate: start,
+            endDate: start.addingTimeInterval(1800),
+            attendees: [],
+            eventIdentifier: "event-456"
+        )
+
+        XCTAssertEqual(event.occurrenceIdentity?.eventIdentifier, "event-456")
+        XCTAssertEqual(event.occurrenceIdentity?.occurrenceStartDate, start)
+    }
+
 }

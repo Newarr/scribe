@@ -34,6 +34,14 @@ public struct CalendarCache: Sendable, Equatable {
     }
 
     private var eligibleEvents: [CalendarEvent] {
-        events.filter(\.isEligibleMeetingContext)
+        var seen = Set<CalendarEvent.OccurrenceIdentity>()
+        var deduped: [CalendarEvent] = []
+        for event in events where event.isEligibleMeetingContext {
+            if let identity = event.occurrenceIdentity {
+                guard seen.insert(identity).inserted else { continue }
+            }
+            deduped.append(event)
+        }
+        return deduped
     }
 }

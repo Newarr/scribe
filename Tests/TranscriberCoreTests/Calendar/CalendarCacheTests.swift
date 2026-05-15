@@ -8,14 +8,18 @@ final class CalendarCacheTests: XCTestCase {
         title: String,
         startsAt: TimeInterval,
         durationSec: TimeInterval = 1800,
-        isEligibleMeetingContext: Bool = true
+        isEligibleMeetingContext: Bool = true,
+        eventIdentifier: String? = nil,
+        occurrenceStartOffset: TimeInterval? = nil
     ) -> CalendarEvent {
         CalendarEvent(
             title: title,
             startDate: Self.baseDate.addingTimeInterval(startsAt),
             endDate: Self.baseDate.addingTimeInterval(startsAt + durationSec),
             attendees: [],
-            isEligibleMeetingContext: isEligibleMeetingContext
+            isEligibleMeetingContext: isEligibleMeetingContext,
+            eventIdentifier: eventIdentifier,
+            occurrenceStartDate: occurrenceStartOffset.map { Self.baseDate.addingTimeInterval($0) }
         )
     }
 
@@ -102,4 +106,49 @@ final class CalendarCacheTests: XCTestCase {
         // Lookup at baseDate: no overlap (event starts in 10 min), closest within 15 min is "Soon".
         XCTAssertEqual(cache.best(for: Self.baseDate)?.title, "Soon")
     }
+    func testSameTitleRecurringOccurrencesRemainDistinctByOccurrenceStart() {
+        let first = event(
+            title: "Weekly Sync",
+            startsAt: -60,
+            eventIdentifier: "recurring-event",
+            occurrenceStartOffset: -60
+        )
+        let second = event(
+            title: "Weekly Sync",
+            startsAt: 7 * 24 * 60 * 60,
+            eventIdentifier: "recurring-event",
+            occurrenceStartOffset: 7 * 24 * 60 * 60
+        )
+        let cache = CalendarCache(events: [first, second], refreshedAt: Self.baseDate)
+
+        XCTAssertEqual(cache.events.count, 2)
+        XCTAssertEqual(cache.eventOverlapping(Self.baseDate)?.occurrenceStartDate, first.occurrenceStartDate)
+        XCTAssertEqual(
+            cache.eventOverlapping(Self.baseDate.addingTimeInterval(7 * 24 * 60 * 60))?.occurrenceStartDate,
+            second.occurrenceStartDate
+        )
+    }
+
+    func testSameOccurrenceRefreshDedupesByEventIDAndOccurrenceStart() {
+        let original = event(
+            title: "Weekly Sync",
+            startsAt: -60,
+            eventIdentifier: "recurring-event",
+            occurrenceStartOffset: -60
+        )
+        let refresh = event(
+            title: "Weekly Sync renamed",
+            startsAt: -30,
+            eventIdentifier: "recurring-event",
+            occurrenceStartOffset: -60
+        )
+        let cache = CalendarCache(events: [original, refresh], refreshedAt: Self.baseDate)
+
+        XCTAssertEqual(
+            cache.eventOverlapping(Self.baseDate)?.title,
+            "Weekly Sync",
+            "a refresh for the same occurrence must not be treated as a new active event just because title/start metadata changed"
+        )
+    }
+
 }

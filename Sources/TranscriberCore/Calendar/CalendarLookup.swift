@@ -96,7 +96,9 @@ public final class CalendarLookup: Sendable {
             startDate: ek.startDate,
             endDate: ek.endDate,
             attendees: attendees,
-            isEligibleMeetingContext: true
+            isEligibleMeetingContext: true,
+            eventIdentifier: ek.eventIdentifier,
+            occurrenceStartDate: ek.occurrenceDate ?? ek.startDate
         )
     }
 
