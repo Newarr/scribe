@@ -25,17 +25,27 @@ final class MeetingAppsTests: XCTestCase {
             "org.mozilla.firefox",
             "com.brave.Browser",
             "company.thebrowser.Browser", // Arc
+            "net.imput.helium",
+            "im.helium.helium",
         ]
         for id in required {
             XCTAssertNotNil(MeetingApps.appFor(bundleID: id), "missing required allowlist entry for \(id)")
         }
     }
 
-    func testAllowlistHasTwelveSpecEntriesIncludingFaceTime() {
-        XCTAssertEqual(MeetingApps.allowlist.count, 12)
+    func testAllowlistHasThirteenSpecEntriesIncludingFaceTimeAndHeliumAlias() {
+        XCTAssertEqual(MeetingApps.allowlist.count, 13)
         let faceTime = MeetingApps.appFor(bundleID: "com.apple.FaceTime")
         XCTAssertEqual(faceTime?.displayName, "FaceTime")
         XCTAssertEqual(faceTime?.kind, .nativeMeetingApp)
+
+        let currentHelium = MeetingApps.appFor(bundleID: "net.imput.helium")
+        XCTAssertEqual(currentHelium?.displayName, "Helium")
+        XCTAssertEqual(currentHelium?.kind, .browser)
+
+        let legacyHelium = MeetingApps.appFor(bundleID: "im.helium.helium")
+        XCTAssertEqual(legacyHelium?.displayName, "Helium")
+        XCTAssertEqual(legacyHelium?.kind, .browser)
     }
 
     func testAllowlistEntriesAreUnique() {

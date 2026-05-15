@@ -21,6 +21,14 @@ final class CoreAudioInputProbeTests: XCTestCase {
             allowlistBundle: "org.whispersystems.signal-desktop",
             processBundle: "org.whispersystems.signal-desktop.helper.Renderer"
         ))
+        XCTAssertTrue(CoreAudioInputProbe.matches(
+            allowlistBundle: "net.imput.helium",
+            processBundle: "net.imput.helium.helper.renderer"
+        ))
+        XCTAssertTrue(CoreAudioInputProbe.matches(
+            allowlistBundle: "net.imput.helium",
+            processBundle: "net.imput.helium.helper.GPU"
+        ))
     }
 
     func testSiblingBundleDoesNotMatch() {
@@ -30,6 +38,10 @@ final class CoreAudioInputProbeTests: XCTestCase {
         XCTAssertFalse(CoreAudioInputProbe.matches(
             allowlistBundle: "com.google.Chrome",
             processBundle: "com.google.ChromeHelper"
+        ))
+        XCTAssertFalse(CoreAudioInputProbe.matches(
+            allowlistBundle: "net.imput.helium",
+            processBundle: "net.imput.heliumHelper"
         ))
     }
 

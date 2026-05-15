@@ -40,6 +40,7 @@ public enum MeetingApps {
         .init(bundleID: "com.microsoft.Edge",                displayName: "Edge",     kind: .browser),
         .init(bundleID: "org.mozilla.firefox",               displayName: "Firefox",  kind: .browser),
         .init(bundleID: "com.brave.Browser",                 displayName: "Brave",    kind: .browser),
+        .init(bundleID: "net.imput.helium",                  displayName: "Helium",   kind: .browser),
         .init(bundleID: "im.helium.helium",                  displayName: "Helium",   kind: .browser),
     ]
 
