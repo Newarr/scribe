@@ -25,8 +25,10 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     private final class Pending {
         let identifier: String
-        let app: MeetingApp
+        let candidate: DetectionCandidate
         let event: CalendarEvent?
+
+        var app: MeetingApp { candidate.app }
         let continuation: CheckedContinuation<Choice, Never>
         var notificationIdentifiers: Set<String> = []
         weak var modalWindow: NSWindow?
@@ -36,12 +38,12 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
         init(
             identifier: String,
-            app: MeetingApp,
+            candidate: DetectionCandidate,
             event: CalendarEvent?,
             continuation: CheckedContinuation<Choice, Never>
         ) {
             self.identifier = identifier
-            self.app = app
+            self.candidate = candidate
             self.event = event
             self.continuation = continuation
         }
@@ -79,13 +81,20 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
-        let identifier = UUID().uuidString
+        await prompt(for: DetectionCandidate(app: app, triggerIdentity: DetectionEngine.defaultTriggerIdentity(for: app)), event: event)
+    }
+
+    func prompt(for candidate: DetectionCandidate, event: CalendarEvent? = nil) async -> Choice {
+        let identifier = candidate.triggerIdentity
         await ensureRegistered()
 
         return await withCheckedContinuation { continuation in
+            if let activeIdentifier = activePromptIdentifier, activeIdentifier == identifier {
+                Log.lifecycle.info("Coalescing duplicate start prompt for trigger identity \(identifier, privacy: .public)")
+            }
             let entry = Pending(
                 identifier: identifier,
-                app: app,
+                candidate: candidate,
                 event: event,
                 continuation: continuation
             )
@@ -96,11 +105,11 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
                 await self?.postNotificationIfPossible(
                     promptID: identifier,
                     kind: .backup,
-                    app: app,
+                    app: candidate.app,
                     event: event
                 )
             }
-            presentModalPrompt(identifier: identifier, app: app, event: event)
+            presentModalPrompt(identifier: identifier, app: candidate.app, event: event)
         }
     }
 
@@ -134,13 +143,17 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     /// starting capture; any later modal/notification action for the old
     /// prompt ID is ignored by `resolve` as stale.
     func expireActivePrompt(for app: MeetingApp) {
+        expireActivePrompt(for: DetectionCandidate(app: app, triggerIdentity: DetectionEngine.defaultTriggerIdentity(for: app)))
+    }
+
+    func expireActivePrompt(for candidate: DetectionCandidate) {
         guard let identifier = activePromptIdentifier,
               let entry = pending[identifier],
-              entry.app.bundleID == app.bundleID else {
-            Log.lifecycle.info("Ignoring stale start-prompt expiry for \(app.bundleID, privacy: .public): no matching active prompt")
+              (entry.candidate.triggerIdentity == candidate.triggerIdentity || entry.app.bundleID == candidate.app.bundleID) else {
+            Log.lifecycle.info("Ignoring stale start-prompt expiry for \(candidate.app.bundleID, privacy: .public): no matching active prompt")
             return
         }
-        Log.lifecycle.info("Expiring start prompt for ended call in \(app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
+        Log.lifecycle.info("Expiring start prompt for ended call in \(candidate.app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
         resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
     }
 
@@ -222,6 +235,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = Self.categoryIdentifier
         content.userInfo = [
             "promptID": promptID,
+            "triggerIdentity": promptID,
             "bundleID": app.bundleID,
             "displayName": app.displayName,
             "kind": kind.rawValue

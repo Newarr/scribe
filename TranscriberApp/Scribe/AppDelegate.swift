@@ -16,8 +16,10 @@ import TranscriberCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private struct QueuedDetectionCandidate {
-        let app: MeetingApp
+        let candidate: DetectionCandidate
         let event: CalendarEvent?
+
+        var app: MeetingApp { candidate.app }
 
         var displayTitle: String {
             let title = event?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -70,6 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var queuedDetectionCandidate: QueuedDetectionCandidate?
     private var pendingPromptCalendarEventForStart: CalendarEvent?
     private var pendingPromptAppBundleID: String?
+    private var pendingPromptTriggerIdentity: String?
+    private var dismissedPromptTriggerIdentities: Set<String> = []
 
     // F-2: trust-language flags. The menu bar icon is the design's
     // primary trust surface, so its shape encodes more than just
@@ -310,11 +314,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let engine = DetectionEngine(
             dwellTime: 30,
             probe: CoreAudioInputProbe(),
-            onCandidateEnded: { [weak self] app in
-                await self?.handleEndedDetectionCandidate(app)
+            triggerIdentity: { [weak self] app in
+                await self?.triggerIdentity(for: app) ?? DetectionEngine.defaultTriggerIdentity(for: app)
+            },
+            onCandidateEnded: { [weak self] candidate in
+                await self?.handleEndedDetectionCandidate(candidate)
             }
-        ) { [weak self] app in
-            await self?.handleDetectionCandidate(app)
+        ) { [weak self] candidate in
+            await self?.handleDetectionCandidate(candidate)
         }
         self.detectionEngine = engine
         let watcher = ProcessWatcher(
@@ -804,6 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     pendingPromptCalendarEventForStart = nil
                     detectionPromptActive = false
                     pendingPromptAppBundleID = nil
+                    pendingPromptTriggerIdentity = nil
                     menu?.pendingPrompt = nil
                     applyTrustIcon()
                 }
@@ -814,6 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 detectionPromptActive = false
                 pendingPromptAppBundleID = nil
+                pendingPromptTriggerIdentity = nil
                 pendingPromptCalendarEventForStart = nil
                 menu?.pendingPrompt = nil
                 applyTrustIcon()
@@ -824,6 +833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 detectionPromptActive = false
                 pendingPromptAppBundleID = nil
+                pendingPromptTriggerIdentity = nil
                 pendingPromptCalendarEventForStart = nil
                 menu?.pendingPrompt = nil
                 applyTrustIcon()
@@ -1119,35 +1129,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and route the user's choice. Queue candidates while a recording is
     /// active so a second meeting never interrupts capture.
     @MainActor
-    func handleDetectionCandidate(_ app: MeetingApp) async {
+    private func triggerIdentity(for app: MeetingApp) async -> String {
         let event = await calendarWatcher.eventOverlapping(Date())
-        if status == .recording || status == .starting {
-            queueDetectionCandidate(app, event: event)
-            return
+        if let identity = event?.occurrenceIdentity?.rawValue {
+            return "calendar:\(identity)"
         }
-        await presentStartPrompt(for: app, event: event)
+        return DetectionEngine.defaultTriggerIdentity(for: app)
     }
 
     @MainActor
-    private func presentStartPrompt(for app: MeetingApp, event: CalendarEvent?) async {
-        Log.lifecycle.info("Detection candidate: \(app.bundleID, privacy: .public)")
+    func handleDetectionCandidate(_ candidate: DetectionCandidate) async {
+        let event = await calendarWatcher.eventOverlapping(Date())
+        if dismissedPromptTriggerIdentities.contains(candidate.triggerIdentity) {
+            Log.lifecycle.info("Detection candidate skipped for dismissed trigger identity: \(candidate.triggerIdentity, privacy: .public)")
+            return
+        }
+        if status == .recording || status == .starting {
+            queueDetectionCandidate(candidate, event: event)
+            return
+        }
+        await presentStartPrompt(for: candidate, event: event)
+    }
+
+    @MainActor
+    private func presentStartPrompt(for candidate: DetectionCandidate, event: CalendarEvent?) async {
+        let app = candidate.app
+        Log.lifecycle.info("Detection candidate: \(app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)")
         Log.calendar.info("Prompt enrichment: matched=\(event != nil ? "yes" : "no", privacy: .public)")
         // F-2: surface .detected on the menu bar while the prompt is
         // unresolved. Dismissal/ignore paths intentionally do not clear this;
         // only explicit resolution or prompt-session expiry returns to idle.
         detectionPromptActive = true
         pendingPromptAppBundleID = app.bundleID
+        pendingPromptTriggerIdentity = candidate.triggerIdentity
         menu?.pendingPrompt = PendingPromptRecovery(
             title: Self.promptRecoveryTitle(for: app, event: event),
             subtitle: event == nil ? "Detected in \(app.displayName)." : "From Apple Calendar · \(app.displayName).",
             appDisplayName: app.displayName
         )
         applyTrustIcon()
-        let choice = await startPromptCoordinator.prompt(for: app, event: event)
+        let choice = await startPromptCoordinator.prompt(for: candidate, event: event)
         let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention
         if shouldClearPendingPrompt {
             detectionPromptActive = false
             pendingPromptAppBundleID = nil
+            pendingPromptTriggerIdentity = nil
             menu?.pendingPrompt = nil
         }
         applyTrustIcon()
@@ -1159,6 +1185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingPromptCalendarEventForStart = event
                 detectionPromptActive = true
                 pendingPromptAppBundleID = app.bundleID
+                pendingPromptTriggerIdentity = candidate.triggerIdentity
                 menu?.pendingPrompt = PendingPromptRecovery(
                     title: Self.promptRecoveryTitle(for: app, event: event),
                     subtitle: event == nil ? "Detected in \(app.displayName). Fix setup, then start recording." : "From Apple Calendar · \(app.displayName). Fix setup, then start recording.",
@@ -1168,6 +1195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingPromptCalendarEventForStart = nil
                 detectionPromptActive = false
                 pendingPromptAppBundleID = nil
+                pendingPromptTriggerIdentity = nil
                 menu?.pendingPrompt = nil
             }
             applyTrustIcon()
@@ -1180,29 +1208,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch event 30 minutes later if the app is still running.
             scheduleRearm(for: app, after: 30 * 60)
         case .skipForNow:
-            Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now")
+            dismissedPromptTriggerIdentities.insert(candidate.triggerIdentity)
+            Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now (trigger=\(candidate.triggerIdentity, privacy: .public))")
         }
     }
 
 
     @MainActor
-    private func handleEndedDetectionCandidate(_ app: MeetingApp) async {
-        guard pendingPromptAppBundleID == app.bundleID else { return }
-        Log.lifecycle.info("Detection candidate ended before prompt resolution: \(app.bundleID, privacy: .public)")
-        startPromptCoordinator.expireActivePrompt(for: app)
+    private func handleEndedDetectionCandidate(_ candidate: DetectionCandidate) async {
+        guard pendingPromptTriggerIdentity == candidate.triggerIdentity || pendingPromptAppBundleID == candidate.app.bundleID else { return }
+        Log.lifecycle.info("Detection candidate ended before prompt resolution: \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)")
+        startPromptCoordinator.expireActivePrompt(for: candidate)
         detectionPromptActive = false
         pendingPromptAppBundleID = nil
+        pendingPromptTriggerIdentity = nil
         pendingPromptCalendarEventForStart = nil
         menu?.pendingPrompt = nil
         applyTrustIcon()
     }
 
     @MainActor
-    private func queueDetectionCandidate(_ app: MeetingApp, event: CalendarEvent?) {
-        let queued = QueuedDetectionCandidate(app: app, event: event)
+    private func queueDetectionCandidate(_ candidate: DetectionCandidate, event: CalendarEvent?) {
+        let queued = QueuedDetectionCandidate(candidate: candidate, event: event)
         queuedDetectionCandidate = queued
         menu?.queuedNextMeeting = RecordingMenuQueuedMeeting(title: queued.displayTitle, time: queued.displayTime)
-        Log.lifecycle.info("Detection candidate \(app.bundleID, privacy: .public) queued: already \(self.status.rawValue, privacy: .public)")
+        Log.lifecycle.info("Detection candidate \(candidate.app.bundleID, privacy: .public) queued: already \(self.status.rawValue, privacy: .public)")
     }
 
     @MainActor
@@ -1223,7 +1253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.lifecycle.info("Queued detection candidate \(queued.app.bundleID, privacy: .public) re-evaluating after stop")
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.detectionEngine?.releaseActiveCandidate(for: queued.app)
+            await self.detectionEngine?.releaseActiveCandidate(queued.candidate)
             await self.detectionEngine?.reevaluate(queued.app)
         }
     }

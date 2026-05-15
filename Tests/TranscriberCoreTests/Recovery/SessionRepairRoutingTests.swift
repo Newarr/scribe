@@ -155,11 +155,11 @@ final class SessionRepairRoutingTests: XCTestCase {
     func testVisibleMeetingPromptStartSharesManualPreflightFocusRouting() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 
-        guard let detectionRange = source.range(of: "func handleDetectionCandidate") else {
+        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
             return XCTFail("meeting detection prompt handler must exist")
         }
-        let detectionBody = String(source[detectionRange.lowerBound..<source.index(detectionRange.lowerBound, offsetBy: min(1800, source.distance(from: detectionRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(detectionBody.contains("await startRecording()"), "meeting prompt Start Recording must enter the same startRecording preflight denial path as manual Record Now")
+        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(promptBody.contains("await startRecording()"), "meeting prompt Start Recording must enter the same startRecording preflight denial path as manual Record Now")
 
         guard let startRange = source.range(of: "private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
             return XCTFail("startRecording must exist")
@@ -325,13 +325,13 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(source.contains("private var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
         XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
-        XCTAssertTrue(source.contains("guard pendingPromptAppBundleID == app.bundleID"), "only the currently pending prompt may be invalidated by an ended-call signal")
+        XCTAssertTrue(source.contains("pendingPromptTriggerIdentity == candidate.triggerIdentity"), "only the currently pending trigger identity may be invalidated by an ended-call signal")
 
         guard let endedRange = source.range(of: "private func handleEndedDetectionCandidate") else {
             return XCTFail("ended candidate handler must exist")
         }
         let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(900, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(endedBody.contains("startPromptCoordinator.expireActivePrompt(for: app)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
+        XCTAssertTrue(endedBody.contains("startPromptCoordinator.expireActivePrompt(for: candidate)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
         XCTAssertTrue(endedBody.contains("detectionPromptActive = false"), "ended calls must clear retained setup-blocked Meeting detected trust state")
         XCTAssertTrue(endedBody.contains("pendingPromptAppBundleID = nil"), "ended calls must clear the stale invalidation marker so later actions require fresh recognition")
         XCTAssertTrue(endedBody.contains("pendingPromptCalendarEventForStart = nil"), "ended calls must clear retained setup-blocked calendar context before stale menu Start Recording can retry")
@@ -373,11 +373,11 @@ final class SessionRepairRoutingTests: XCTestCase {
 
         XCTAssertTrue(source.contains("private struct QueuedDetectionCandidate"), "AppDelegate must store queued candidates while recording.")
         XCTAssertTrue(source.contains("private var queuedDetectionCandidate"), "AppDelegate must retain exactly one active-recording queued candidate.")
-        XCTAssertTrue(source.contains("queueDetectionCandidate(app, event: event)"), "detection during recording must queue instead of dropping.")
+        XCTAssertTrue(source.contains("queueDetectionCandidate(candidate, event: event)"), "detection during recording must queue instead of dropping.")
         XCTAssertTrue(source.contains("menu?.queuedNextMeeting = RecordingMenuQueuedMeeting"), "queued context must be surfaced to the active recording popover.")
         XCTAssertTrue(source.contains("reevaluateQueuedDetectionCandidateAfterStop()"), "stop flow must re-evaluate queued candidates after the active session is finalized to durable audio.")
         XCTAssertTrue(source.contains("queued.isStillActive(at: now)"), "expired queued calendar candidates must be dropped after stop.")
-        XCTAssertTrue(source.contains("releaseActiveCandidate(for: queued.app)"), "still-active queued candidates must be allowed to prompt again after coalescing during recording.")
+        XCTAssertTrue(source.contains("releaseActiveCandidate(queued.candidate)"), "still-active queued candidates must be allowed to prompt again after coalescing during recording.")
         XCTAssertTrue(source.contains("detectionEngine?.reevaluate(queued.app)"), "still-active queued candidates must pass through detection re-evaluation after stop instead of prompting stale state directly.")
 
         guard let handlerRange = source.range(of: "func handleDetectionCandidate") else {

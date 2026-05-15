@@ -293,6 +293,69 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(endedApp?.bundleID, zoom.bundleID, "a later inactive observation for the same coalesced candidate should notify the app shell to invalidate stale prompt state")
     }
 
+
+    func testDistinctRecurringOccurrenceIdentitiesDoNotCoalesceByBundleID() async throws {
+        let captured = CandidateSequenceCapture()
+        let identities = SequenceIdentityProvider(values: [
+            "calendar:series-1#2026-05-15T09:00:00.000Z",
+            "calendar:series-1#2026-05-22T09:00:00.000Z",
+        ])
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            probe: ConstantProbe(value: true),
+            sleep: immediateSleep,
+            triggerIdentity: identities.identity(for:)
+        ) { candidate in
+            await captured.append(candidate)
+        }
+
+        await engine.reevaluate(zoom)
+        _ = await captured.waitForCount(1)
+        await engine.reevaluate(zoom)
+
+        let emitted = await captured.waitForCount(2)
+        XCTAssertEqual(emitted.map(\.triggerIdentity), [
+            "calendar:series-1#2026-05-15T09:00:00.000Z",
+            "calendar:series-1#2026-05-22T09:00:00.000Z",
+        ], "same-app recurring occurrences with different occurrence starts must remain distinct")
+    }
+
+    func testSameOccurrenceRefreshDedupesByTriggerIdentity() async throws {
+        let captured = CandidateSequenceCapture()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            probe: ConstantProbe(value: true),
+            sleep: immediateSleep,
+            triggerIdentity: { _ in "calendar:series-1#2026-05-15T09:00:00.000Z" }
+        ) { candidate in
+            await captured.append(candidate)
+        }
+
+        await engine.reevaluate(zoom)
+        await engine.reevaluate(zoom)
+        _ = await captured.waitForCount(1)
+        await engine.reevaluate(zoom)
+        await Task.yield()
+
+        let emitted = await captured.values
+        XCTAssertEqual(emitted.map(\.triggerIdentity), ["calendar:series-1#2026-05-15T09:00:00.000Z"], "refreshes of the same occurrence must not duplicate prompts")
+    }
+
+    func testTriggerIdentityFallsBackToAppSignatureWithoutCalendarIdentity() async throws {
+        let captured = CandidateSequenceCapture()
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(dwellTime: 30, probe: ConstantProbe(value: true), sleep: immediateSleep) { candidate in
+            await captured.append(candidate)
+        }
+
+        await engine.reevaluate(zoom)
+
+        let emitted = await captured.waitForCount(1)
+        XCTAssertEqual(emitted.first?.triggerIdentity, "app:us.zoom.xos")
+    }
+
     func testRedundantLaunchEventsDebounceWithoutWallClockSleep() async throws {
         let captured = FireCounter()
         let engine = DetectionEngine(dwellTime: 30, sleep: immediateSleep) { _ in
@@ -336,6 +399,7 @@ final class DetectionEngineTests: XCTestCase {
 actor AppCapture {
     private(set) var value: MeetingApp?
     func set(_ app: MeetingApp) { value = app }
+    func set(_ candidate: DetectionCandidate) { value = candidate.app }
 
     func waitForBundleID(_ bundleID: String, maxYields: Int = 1_000) async -> MeetingApp? {
         for _ in 0..<maxYields {
@@ -356,6 +420,22 @@ actor FireCounter {
             await Task.yield()
         }
         return value
+    }
+}
+
+actor CandidateSequenceCapture {
+    private(set) var values: [DetectionCandidate] = []
+
+    func append(_ candidate: DetectionCandidate) {
+        values.append(candidate)
+    }
+
+    func waitForCount(_ expected: Int, maxYields: Int = 1_000) async -> [DetectionCandidate] {
+        for _ in 0..<maxYields {
+            if values.count == expected { return values }
+            await Task.yield()
+        }
+        return values
     }
 }
 
@@ -437,5 +517,17 @@ actor BundleScriptProbe: AudioActivityProbe {
         let next = values.isEmpty ? false : values.removeFirst()
         valuesByBundleID[bundleID] = values
         return next
+    }
+}
+
+actor SequenceIdentityProvider {
+    private var values: [String]
+
+    init(values: [String]) {
+        self.values = values
+    }
+
+    func identity(for app: MeetingApp) async -> String {
+        values.isEmpty ? DetectionEngine.defaultTriggerIdentity(for: app) : values.removeFirst()
     }
 }

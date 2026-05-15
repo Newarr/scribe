@@ -1,6 +1,20 @@
 import Foundation
 
-/// Wires `ProcessWatcher` and running-app observations through a per-bundle
+public struct DetectionCandidate: Sendable, Equatable, Hashable {
+    public let app: MeetingApp
+    public let triggerIdentity: String
+
+    public init(app: MeetingApp, triggerIdentity: String) {
+        self.app = app
+        self.triggerIdentity = triggerIdentity
+    }
+
+    public var bundleID: String { app.bundleID }
+    public var displayName: String { app.displayName }
+    public var kind: MeetingApp.Kind { app.kind }
+}
+
+/// Wires `ProcessWatcher` and running-app observations through a per-trigger
 /// dwell window, app-level suppression, audio activity probing, duplicate
 /// coalescing, and stale-candidate cleanup.
 ///
@@ -9,17 +23,20 @@ import Foundation
 ///     determine inactivity.
 ///   - A transient inactive probe result does not permanently black-hole a
 ///     plausible app; observation retries until the observation window expires.
-///   - Repeated observations for the same ongoing app/call coalesce into one
-///     user-facing candidate until the app quits or a later inactive probe
-///     clears the stale active candidate.
+///   - Repeated observations for the same ongoing app/call/calendar occurrence
+///     coalesce into one user-facing candidate until the app quits or a later
+///     inactive probe clears the stale active candidate.
+///   - Calendar-enriched candidates key by event ID plus occurrence start when
+///     available; app/browser-only candidates fall back to an app signature.
 ///   - App-level suppression is delegated to in-memory `SkipState` and cancels
 ///     in-flight/active recognition for that app only.
 public actor DetectionEngine {
-    public typealias OnCandidate = @Sendable (MeetingApp) async -> Void
-    public typealias OnCandidateEnded = @Sendable (MeetingApp) async -> Void
+    public typealias TriggerIdentityProvider = @Sendable (MeetingApp) async -> String
+    public typealias OnCandidate = @Sendable (DetectionCandidate) async -> Void
+    public typealias OnCandidateEnded = @Sendable (DetectionCandidate) async -> Void
 
     private struct ObservationState: Sendable {
-        let app: MeetingApp
+        let candidate: DetectionCandidate
         let startedAt: Date
     }
 
@@ -30,11 +47,12 @@ public actor DetectionEngine {
     private let probe: AudioActivityProbe
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
+    private let triggerIdentity: TriggerIdentityProvider
     private let onCandidate: OnCandidate
     private let onCandidateEnded: OnCandidateEnded?
     private var pendingTasks: [String: Task<Void, Never>] = [:]
     private var pendingObservations: [String: ObservationState] = [:]
-    private var activeCandidateBundleIDs: Set<String> = []
+    private var activeCandidates: [String: DetectionCandidate] = [:]
 
     public init(
         dwellTime: TimeInterval = 30,
@@ -44,6 +62,7 @@ public actor DetectionEngine {
         probe: AudioActivityProbe = UnknownAudioActivityProbe(),
         now: @escaping @Sendable () -> Date = Date.init,
         sleep: @escaping @Sendable (TimeInterval) async -> Void = DetectionEngine.sleep(seconds:),
+        triggerIdentity: @escaping TriggerIdentityProvider = DetectionEngine.defaultTriggerIdentity(for:),
         onCandidateEnded: OnCandidateEnded? = nil,
         onCandidate: @escaping OnCandidate
     ) {
@@ -54,6 +73,7 @@ public actor DetectionEngine {
         self.probe = probe
         self.now = now
         self.sleep = sleep
+        self.triggerIdentity = triggerIdentity
         self.onCandidateEnded = onCandidateEnded
         self.onCandidate = onCandidate
     }
@@ -67,49 +87,67 @@ public actor DetectionEngine {
 
     /// Re-evaluates a supported app/browser that is currently running. This is
     /// safe to call from polling, launch, calendar refresh, wake, or audio-change
-    /// signals: duplicate observations coalesce by bundle ID.
+    /// signals: duplicate observations coalesce by trigger identity.
     public func reevaluate(_ app: MeetingApp) async {
         if await skipState.isSuppressed(app.bundleID, now: now()) { return }
 
-        if activeCandidateBundleIDs.contains(app.bundleID) {
-            let cleared = await clearStaleActiveCandidateIfNeeded(app)
+        let identity = await triggerIdentity(app)
+        let candidate = DetectionCandidate(app: app, triggerIdentity: identity)
+        if activeCandidates[identity] != nil {
+            let cleared = await clearStaleActiveCandidateIfNeeded(candidate)
             if !cleared { return }
         }
 
-        guard pendingTasks[app.bundleID] == nil else { return }
-        startObservation(for: app)
+        guard pendingTasks[identity] == nil else { return }
+        startObservation(for: candidate)
     }
 
     public func handleQuit(of app: MeetingApp) async {
-        pendingTasks[app.bundleID]?.cancel()
-        pendingTasks.removeValue(forKey: app.bundleID)
-        pendingObservations.removeValue(forKey: app.bundleID)
-        let hadActiveCandidate = activeCandidateBundleIDs.remove(app.bundleID) != nil
-        if hadActiveCandidate {
-            await onCandidateEnded?(app)
+        for (identity, observation) in pendingObservations where observation.candidate.app.bundleID == app.bundleID {
+            pendingTasks[identity]?.cancel()
+            pendingTasks.removeValue(forKey: identity)
+            pendingObservations.removeValue(forKey: identity)
+        }
+        let ended = activeCandidates.values.filter { $0.app.bundleID == app.bundleID }
+        for candidate in ended {
+            activeCandidates.removeValue(forKey: candidate.triggerIdentity)
+            await onCandidateEnded?(candidate)
         }
     }
 
     /// Allows the app shell to re-present a still-active candidate after an
     /// intervening recording has stopped. This keeps active-recording queueing
-    /// non-interruptive without permanently coalescing the queued app.
+    /// non-interruptive without permanently coalescing the queued trigger.
+    public func releaseActiveCandidate(_ candidate: DetectionCandidate) {
+        activeCandidates.removeValue(forKey: candidate.triggerIdentity)
+    }
+
+    /// Backward-compatible app-scoped release for callers without trigger
+    /// context. Removes all active identities for the app.
     public func releaseActiveCandidate(for app: MeetingApp) {
-        activeCandidateBundleIDs.remove(app.bundleID)
+        for identity in activeCandidates.keys where activeCandidates[identity]?.app.bundleID == app.bundleID {
+            activeCandidates.removeValue(forKey: identity)
+        }
     }
 
     /// Suppresses `app` for `duration` seconds and cancels any in-flight or
     /// coalesced active candidate for that app. Defaults to 30 minutes per spec.
     public func suppress(_ app: MeetingApp, for duration: TimeInterval = 30 * 60) async {
         await skipState.suppress(app.bundleID, for: duration, now: now())
-        pendingTasks[app.bundleID]?.cancel()
-        pendingTasks.removeValue(forKey: app.bundleID)
-        pendingObservations.removeValue(forKey: app.bundleID)
-        activeCandidateBundleIDs.remove(app.bundleID)
+        for (identity, observation) in pendingObservations where observation.candidate.app.bundleID == app.bundleID {
+            pendingTasks[identity]?.cancel()
+            pendingTasks.removeValue(forKey: identity)
+            pendingObservations.removeValue(forKey: identity)
+        }
+        for identity in activeCandidates.keys where activeCandidates[identity]?.app.bundleID == app.bundleID {
+            activeCandidates.removeValue(forKey: identity)
+        }
     }
 
-    private func startObservation(for app: MeetingApp) {
-        let bundleID = app.bundleID
-        pendingObservations[bundleID] = ObservationState(app: app, startedAt: now())
+    private func startObservation(for candidate: DetectionCandidate) {
+        let identity = candidate.triggerIdentity
+        let bundleID = candidate.app.bundleID
+        pendingObservations[identity] = ObservationState(candidate: candidate, startedAt: now())
         let dwell = dwellTime
         let retry = retryInterval
         let window = observationWindow
@@ -119,34 +157,34 @@ public actor DetectionEngine {
             while !Task.isCancelled {
                 guard let self else { return }
                 if await self.skipState.isSuppressed(bundleID, now: self.now()) {
-                    await self.finishObservation(bundleID: bundleID)
+                    await self.finishObservation(identity: identity)
                     return
                 }
 
-                let shouldContinue = await self.evaluatePendingObservation(bundleID: bundleID, observationWindow: window)
+                let shouldContinue = await self.evaluatePendingObservation(identity: identity, observationWindow: window)
                 guard shouldContinue else { return }
                 await sleep(retry)
             }
         }
-        pendingTasks[bundleID] = task
+        pendingTasks[identity] = task
     }
 
     /// Returns true when the observation should retry after `retryInterval`.
-    private func evaluatePendingObservation(bundleID: String, observationWindow: TimeInterval) async -> Bool {
-        guard let observation = pendingObservations[bundleID] else { return false }
-        let isActive = await probe.isActive(bundleID: bundleID)
+    private func evaluatePendingObservation(identity: String, observationWindow: TimeInterval) async -> Bool {
+        guard let observation = pendingObservations[identity] else { return false }
+        let isActive = await probe.isActive(bundleID: observation.candidate.app.bundleID)
         if Task.isCancelled {
-            finishObservation(bundleID: bundleID)
+            finishObservation(identity: identity)
             return false
         }
 
         switch isActive {
         case true, nil:
-            await fireCandidate(for: observation.app)
+            await fireCandidate(observation.candidate)
             return false
         case false:
             if now().timeIntervalSince(observation.startedAt) >= observationWindow {
-                finishObservation(bundleID: bundleID)
+                finishObservation(identity: identity)
                 return false
             }
             return true
@@ -154,28 +192,32 @@ public actor DetectionEngine {
     }
 
     /// Returns true when stale active state was cleared and the current
-    /// observation may start a fresh dwell/probe cycle for the same app.
-    private func clearStaleActiveCandidateIfNeeded(_ app: MeetingApp) async -> Bool {
-        let isActive = await probe.isActive(bundleID: app.bundleID)
+    /// observation may start a fresh dwell/probe cycle for the same trigger.
+    private func clearStaleActiveCandidateIfNeeded(_ candidate: DetectionCandidate) async -> Bool {
+        let isActive = await probe.isActive(bundleID: candidate.app.bundleID)
         if isActive == false {
-            activeCandidateBundleIDs.remove(app.bundleID)
-            await onCandidateEnded?(app)
+            let ended = activeCandidates.removeValue(forKey: candidate.triggerIdentity) ?? candidate
+            await onCandidateEnded?(ended)
             return true
         }
         return false
     }
 
-    private func fireCandidate(for app: MeetingApp) async {
-        finishObservation(bundleID: app.bundleID)
-        guard !activeCandidateBundleIDs.contains(app.bundleID) else { return }
-        activeCandidateBundleIDs.insert(app.bundleID)
-        await onCandidate(app)
+    private func fireCandidate(_ candidate: DetectionCandidate) async {
+        finishObservation(identity: candidate.triggerIdentity)
+        guard activeCandidates[candidate.triggerIdentity] == nil else { return }
+        activeCandidates[candidate.triggerIdentity] = candidate
+        await onCandidate(candidate)
     }
 
-    private func finishObservation(bundleID: String) {
-        pendingTasks[bundleID]?.cancel()
-        pendingTasks.removeValue(forKey: bundleID)
-        pendingObservations.removeValue(forKey: bundleID)
+    private func finishObservation(identity: String) {
+        pendingTasks[identity]?.cancel()
+        pendingTasks.removeValue(forKey: identity)
+        pendingObservations.removeValue(forKey: identity)
+    }
+
+    public static func defaultTriggerIdentity(for app: MeetingApp) -> String {
+        "app:\(app.bundleID)"
     }
 
     public static func sleep(seconds: TimeInterval) async {

@@ -74,8 +74,8 @@ final class StartPromptSourceTests: XCTestCase {
 
     func testEndedCallExpiryResolvesPendingPromptWithoutStartingRecording() throws {
         let source = try source
-        XCTAssertTrue(source.contains("func expireActivePrompt(for app: MeetingApp)"), "prompt coordinator must expose an app-scoped stale-call expiry seam")
-        XCTAssertTrue(source.contains("entry.app.bundleID == app.bundleID"), "stale-call expiry must only resolve the matching active prompt")
+        XCTAssertTrue(source.contains("func expireActivePrompt(for candidate: DetectionCandidate)"), "prompt coordinator must expose a trigger-scoped stale-call expiry seam")
+        XCTAssertTrue(source.contains("entry.candidate.triggerIdentity == candidate.triggerIdentity"), "stale-call expiry must prefer matching the exact active trigger identity")
         XCTAssertTrue(source.contains("resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)"), "ended calls should clear recovery like Not now rather than starting capture")
         XCTAssertTrue(source.contains("Ignoring stale start-prompt action"), "late modal/notification actions for expired prompt IDs must be inert")
     }
@@ -148,6 +148,13 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertFalse(body.contains("event.title"))
         XCTAssertFalse(body.contains("keyterms"))
         XCTAssertFalse(body.contains("attendees"))
+    }
+
+    func testPromptIdentifierUsesTriggerIdentity() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("func prompt(for candidate: DetectionCandidate"), "prompt coordinator should accept the detection candidate with trigger identity")
+        XCTAssertTrue(source.contains("let identifier = candidate.triggerIdentity"), "prompt ID must use calendar occurrence identity when DetectionEngine provides it")
+        XCTAssertTrue(source.contains(#""triggerIdentity": promptID"#), "notification payload should carry the same trigger identity for stale action de-dupe")
     }
 
     func testPromptPlacementUsesActiveMeetingWindowScreen() throws {
