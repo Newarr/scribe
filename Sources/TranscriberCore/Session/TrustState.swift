@@ -34,6 +34,7 @@ extension TrustState {
         public var status: SessionStatus
         public var setupNeedsAttention: Bool
         public var detectionPromptActive: Bool
+        public var endPromptActive: Bool
         public var lastSavedAt: Date?
         public var lastFailureAt: Date?
         public var now: Date
@@ -45,6 +46,7 @@ extension TrustState {
             status: SessionStatus,
             setupNeedsAttention: Bool,
             detectionPromptActive: Bool,
+            endPromptActive: Bool = false,
             lastSavedAt: Date? = nil,
             lastFailureAt: Date? = nil,
             now: Date = Date(),
@@ -53,6 +55,7 @@ extension TrustState {
             self.status = status
             self.setupNeedsAttention = setupNeedsAttention
             self.detectionPromptActive = detectionPromptActive
+            self.endPromptActive = endPromptActive
             self.lastSavedAt = lastSavedAt
             self.lastFailureAt = lastFailureAt
             self.now = now
@@ -71,7 +74,7 @@ extension TrustState {
         //    a blocker that fires mid-recording is the wrong icon to
         //    show until the session finishes.
         switch inputs.status {
-        case .recording: return .recording
+        case .recording: return inputs.endPromptActive ? .stopping : .recording
         case .stopping:  return .stopping
         case .finalized: return .finalizing
         default:         break

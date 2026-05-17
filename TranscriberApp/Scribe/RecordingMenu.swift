@@ -29,6 +29,12 @@ struct RecordingMenuQueuedMeeting: Equatable {
     let time: String
 }
 
+struct RecordingMenuEndPrompt: Equatable {
+    let generation: Int
+    let reason: String
+    let secondsRemaining: Int
+}
+
 @MainActor
 final class RecordingMenu: NSObject, NSPopoverDelegate {
     enum Action {
@@ -44,6 +50,8 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         case promptStartRecording
         case promptNotNow
         case promptSuppressApp
+        case endPromptKeepRecording(generation: Int)
+        case endPromptStopNow(generation: Int)
     }
 
     /// Codex PM-review UX-7 (preserved): "Setup Required…" vs
@@ -59,6 +67,10 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
 
     var queuedNextMeeting: RecordingMenuQueuedMeeting? {
         didSet { model.queuedNextMeeting = queuedNextMeeting }
+    }
+
+    var endPrompt: RecordingMenuEndPrompt? {
+        didSet { model.endPrompt = endPrompt }
     }
 
     /// `outputRoot` powers the recents enumerator. Updated by
@@ -304,6 +316,7 @@ final class RecordingMenuModel: ObservableObject {
     @Published var setupNeedsAttention: Bool = false
     @Published var pendingPrompt: PendingPromptRecovery? = nil
     @Published var queuedNextMeeting: RecordingMenuQueuedMeeting? = nil
+    @Published var endPrompt: RecordingMenuEndPrompt? = nil
     @Published var recents: [SessionFolderEnumerator.Entry] = []
     @Published var elapsedSeconds: Int = 0
     @Published var micLevel: Float = 0
@@ -391,6 +404,7 @@ private struct RecordingPopoverContent: View {
         case .starting:
             return 365
         case .recording:
+            if model.endPrompt != nil { return model.queuedNextMeeting == nil ? 485 : 521 }
             return model.queuedNextMeeting == nil ? 409 : 445
         case .stopping:
             return model.queuedNextMeeting == nil ? 431 : 467
@@ -549,7 +563,7 @@ private struct RecordingPopoverContent: View {
     private func recordingLayout(palette: RecordingPopoverPalette) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle().fill(palette.live).frame(width: 8, height: 8)
+                Circle().fill(model.endPrompt == nil ? palette.live : palette.warning).frame(width: 8, height: 8)
                 Text(model.recordingSourceLabel)
                     .font(menuHeadingFont)
                     .foregroundStyle(palette.text)
@@ -571,6 +585,9 @@ private struct RecordingPopoverContent: View {
                 .font(activeStatusFont)
                 .foregroundStyle(palette.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let endPrompt = model.endPrompt {
+                endPromptBlock(endPrompt, palette: palette)
+            }
             if let queued = model.queuedNextMeeting {
                 HStack(spacing: 8) {
                     LucideIcon(glyph: .calendar)
@@ -618,7 +635,13 @@ private struct RecordingPopoverContent: View {
             HStack(spacing: 8) {
                 settingsGear(palette: palette)
                 Spacer()
-                if activeActionIsPrimary {
+                if let endPrompt = model.endPrompt {
+                    Button("Stop now") { onAction(.endPromptStopNow(generation: endPrompt.generation)) }
+                        .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+                    Button("Keep recording") { onAction(.endPromptKeepRecording(generation: endPrompt.generation)) }
+                        .keyboardShortcut("k", modifiers: [.command])
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+                } else if activeActionIsPrimary {
                     Button(activeActionTitle) {
                         if !activeActionIsDisabled { onAction(.stop) }
                     }
@@ -636,6 +659,39 @@ private struct RecordingPopoverContent: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
+    }
+
+    private func endPromptBlock(_ prompt: RecordingMenuEndPrompt, palette: RecordingPopoverPalette) -> some View {
+        HStack(spacing: 10) {
+            Text("\(max(0, prompt.secondsRemaining))")
+                .font(SwiftUI.Font.custom(DS.monoFamily, size: 32).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(palette.warning)
+                .frame(width: 48, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Call seems over")
+                    .font(SwiftUI.Font.custom(DS.sansFamily, size: 14).weight(.semibold))
+                    .foregroundStyle(palette.text)
+                Text("Scribe will stop unless you keep recording.")
+                    .font(DS.Font.monoSmall)
+                    .foregroundStyle(palette.metaText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 54)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(palette.controlFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(palette.controlStroke, lineWidth: 1)
+        )
+        .accessibilityLabel("Stopping soon, \(max(0, prompt.secondsRemaining)) seconds remaining, \(prompt.reason)")
     }
 
     private func privacyStatusBlock(palette: RecordingPopoverPalette) -> some View {
@@ -667,6 +723,9 @@ private struct RecordingPopoverContent: View {
     }
 
     private var activeStatusCopy: String {
+        if let endPrompt = model.endPrompt {
+            return "Stopping soon · \(endPrompt.reason). Capture is still live."
+        }
         switch (model.status, model.sessionEngineMode) {
         case (.stopping, _):
             return "Saving the recording. Finishing the last few seconds of capture."
@@ -682,6 +741,9 @@ private struct RecordingPopoverContent: View {
     }
 
     private var activeStatusFont: SwiftUI.Font {
+        if model.endPrompt != nil {
+            return DS.Font.body
+        }
         switch model.status {
         case .recording, .starting:
             return SwiftUI.Font.custom(DS.sansFamily, size: 13).weight(.regular)
@@ -760,6 +822,9 @@ private struct RecordingPopoverContent: View {
     }
 
     private var headerStatusText: String {
+        if let endPrompt = model.endPrompt {
+            return "STOPPING \(max(0, endPrompt.secondsRemaining))"
+        }
         switch model.status {
         case .recording, .stopping: return "LIVE"
         case .starting: return "STARTING"
@@ -772,6 +837,9 @@ private struct RecordingPopoverContent: View {
     }
 
     private func headerStatusColor(palette: RecordingPopoverPalette) -> SwiftUI.Color {
+        if model.endPrompt != nil {
+            return palette.warning
+        }
         switch model.status {
         case .recording, .stopping: return palette.live
         case .failed: return palette.warning

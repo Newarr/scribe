@@ -293,6 +293,37 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(endedApp?.bundleID, zoom.bundleID, "a later inactive observation for the same coalesced candidate should notify the app shell to invalidate stale prompt state")
     }
 
+    func testEndedCandidateNotifiesWhenTriggerIdentityChangedAfterCalendarEnd() async throws {
+        let fired = CandidateSequenceCapture()
+        let ended = CandidateSequenceCapture()
+        let identities = SequenceIdentityProvider(values: [
+            "calendar:series-1#2026-05-15T09:00:00.000Z",
+            "app:us.zoom.xos"
+        ])
+        let probe = SequenceProbe(values: [true, false, false])
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let engine = DetectionEngine(
+            dwellTime: 30,
+            retryInterval: 5,
+            observationWindow: 0,
+            probe: probe,
+            sleep: immediateSleep,
+            triggerIdentity: identities.identity(for:),
+            onCandidateEnded: { candidate in
+                await ended.append(candidate)
+            }
+        ) { candidate in
+            await fired.append(candidate)
+        }
+
+        await engine.reevaluate(zoom)
+        let firedCandidates = await fired.waitForCount(1)
+        XCTAssertEqual(firedCandidates.first?.triggerIdentity, "calendar:series-1#2026-05-15T09:00:00.000Z")
+
+        await engine.reevaluate(zoom)
+        let endedCandidates = await ended.waitForCount(1)
+        XCTAssertEqual(endedCandidates.first?.triggerIdentity, "calendar:series-1#2026-05-15T09:00:00.000Z", "calendar-scoped candidates must still end after the calendar identity falls out of the current lookup")
+    }
 
     func testDistinctRecurringOccurrenceIdentitiesDoNotCoalesceByBundleID() async throws {
         let captured = CandidateSequenceCapture()
@@ -354,6 +385,39 @@ final class DetectionEngineTests: XCTestCase {
 
         let emitted = await captured.waitForCount(1)
         XCTAssertEqual(emitted.first?.triggerIdentity, "app:us.zoom.xos")
+    }
+
+    func testEndedCandidatePromptMatchingIsTriggerScoped() {
+        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
+        let teams = MeetingApp(bundleID: "com.microsoft.teams2", displayName: "Microsoft Teams", kind: .nativeMeetingApp)
+        let calendarA = "calendar:series-1#2026-05-15T09:00:00.000Z"
+        let calendarB = "calendar:series-1#2026-05-22T09:00:00.000Z"
+
+        XCTAssertTrue(DetectionTriggerIdentity.matchesEndedCandidate(
+            pendingTriggerIdentity: calendarA,
+            pendingBundleID: zoom.bundleID,
+            endedCandidate: DetectionCandidate(app: zoom, triggerIdentity: calendarA)
+        ))
+        XCTAssertFalse(DetectionTriggerIdentity.matchesEndedCandidate(
+            pendingTriggerIdentity: calendarA,
+            pendingBundleID: zoom.bundleID,
+            endedCandidate: DetectionCandidate(app: zoom, triggerIdentity: calendarB)
+        ))
+        XCTAssertFalse(DetectionTriggerIdentity.matchesEndedCandidate(
+            pendingTriggerIdentity: calendarA,
+            pendingBundleID: zoom.bundleID,
+            endedCandidate: DetectionCandidate(app: teams, triggerIdentity: calendarA)
+        ))
+        XCTAssertTrue(DetectionTriggerIdentity.matchesEndedCandidate(
+            pendingTriggerIdentity: calendarA,
+            pendingBundleID: zoom.bundleID,
+            endedCandidate: DetectionCandidate(app: zoom, triggerIdentity: DetectionEngine.defaultTriggerIdentity(for: zoom))
+        ))
+        XCTAssertFalse(DetectionTriggerIdentity.matchesEndedCandidate(
+            pendingTriggerIdentity: DetectionEngine.defaultTriggerIdentity(for: zoom),
+            pendingBundleID: zoom.bundleID,
+            endedCandidate: DetectionCandidate(app: zoom, triggerIdentity: calendarA)
+        ))
     }
 
     func testRedundantLaunchEventsDebounceWithoutWallClockSleep() async throws {

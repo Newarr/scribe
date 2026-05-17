@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scribe end call stop prompt review handoff</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171b23;
+      --panel-2: #1f2530;
+      --text: #eef2f7;
+      --muted: #a7b0be;
+      --border: #303847;
+      --p1: #ff7a59;
+      --p2: #ffd166;
+      --ok: #7bd88f;
+      --link: #8ab4ff;
+      --code: #0a0d12;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #1f2635 0, var(--bg) 42rem);
+      color: var(--text);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1120px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 44px 0 64px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+    }
+
+    h1 { font-size: clamp(32px, 5vw, 56px); }
+    h2 { font-size: 26px; margin-top: 34px; }
+    h3 { font-size: 18px; margin-bottom: 10px; }
+
+    p { margin: 10px 0 0; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .hero {
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(31,37,48,0.96), rgba(23,27,35,0.90));
+      border-radius: 24px;
+      padding: 30px;
+      box-shadow: 0 20px 80px rgba(0, 0, 0, 0.28);
+    }
+
+    .eyebrow {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.13em;
+      margin-bottom: 14px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .summary-card, .issue, .section-card {
+      border: 1px solid var(--border);
+      background: rgba(23, 27, 35, 0.82);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .summary-card strong {
+      display: block;
+      font-size: 22px;
+    }
+
+    .summary-card span { color: var(--muted); }
+
+    .status-ok { color: var(--ok); }
+
+    .issue {
+      margin-top: 14px;
+      border-left: 5px solid var(--border);
+    }
+
+    .issue.p1 { border-left-color: var(--p1); }
+    .issue.p2 { border-left-color: var(--p2); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      margin-bottom: 12px;
+    }
+
+    .badge.p1 { color: #1a0c07; background: var(--p1); }
+    .badge.p2 { color: #1f1800; background: var(--p2); }
+    .badge.info { color: var(--text); background: var(--panel-2); border: 1px solid var(--border); }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 8px;
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+    }
+
+    code {
+      background: rgba(10, 13, 18, 0.7);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      padding: 1px 5px;
+      color: #d8e3f8;
+    }
+
+    pre {
+      overflow: auto;
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      color: #d8e3f8;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    ul { margin: 10px 0 0 20px; padding: 0; }
+    li + li { margin-top: 6px; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .toc {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .toc a {
+      border: 1px solid var(--border);
+      background: rgba(23,27,35,0.72);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .footer {
+      color: var(--muted);
+      margin-top: 30px;
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+    }
+
+    @media (max-width: 800px) {
+      .summary-grid, .two-col { grid-template-columns: 1fr; }
+      main { width: min(100vw - 24px, 1120px); padding-top: 20px; }
+      .hero { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Scribe implementation review handoff</div>
+    <h1>End call stop prompt review</h1>
+    <p>
+      This handoff is for a follow up reviewer or implementation agent. It summarizes the issues found after wiring
+      <code>EndGuard</code>, <code>DetectionEngine.onCandidateEnded</code>, and <code>EndCountdownWindowController</code>
+      into the active recording flow.
+    </p>
+
+    <div class="summary-grid">
+      <div class="summary-card">
+        <strong>5</strong>
+        <span>code review findings</span>
+      </div>
+      <div class="summary-card">
+        <strong>5</strong>
+        <span>UX review findings</span>
+      </div>
+      <div class="summary-card">
+        <strong class="status-ok">Passed</strong>
+        <span><code>swift test</code> and Xcode build</span>
+      </div>
+    </div>
+
+    <div class="toc">
+      <a href="#context">Context</a>
+      <a href="#code-review">Code findings</a>
+      <a href="#ux-review">UX findings</a>
+      <a href="#acceptance">Acceptance checklist</a>
+      <a href="#commands">Validation commands</a>
+    </div>
+  </section>
+
+  <section id="context" class="section-card" style="margin-top: 18px;">
+    <span class="badge info">Context</span>
+    <h2 style="margin-top: 0;">What changed</h2>
+    <ul>
+      <li><code>Sources/TranscriberCore/Capture/EndGuard.swift</code> now has <code>Reason.callEnded</code> and <code>suspectCallEnded(at:)</code>.</li>
+      <li><code>Sources/TranscriberCore/Detection/DetectionEngine.swift</code> now notifies ended candidates when a stale calendar identity changes to an app identity.</li>
+      <li><code>TranscriberApp/Scribe/AppDelegate.swift</code> now starts an <code>EndGuard</code> for live recordings, feeds RMS levels to it, and shows the stop HUD.</li>
+      <li><code>TranscriberApp/Scribe/EndCountdownWindow.swift</code> now displays call ended copy.</li>
+    </ul>
+    <p class="meta">
+      Important repo note: worktree also contains unrelated or preexisting changes in <code>StartPromptCoordinator.swift</code>,
+      <code>PromptModalWindow.swift</code>, and the Xcode project. Do not assume every changed file belongs to this feature.
+    </p>
+  </section>
+
+  <section id="code-review">
+    <h2>Code reviewer findings</h2>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>Stale Stop now can still stop recording</h3>
+      <p>
+        <code>AppDelegate.handleEndGuardPrompt</code> reads the prompt generation, but the button closures do not capture it.
+        <code>stopRecordingFromEndPrompt()</code> uses <code>activeEndPromptGeneration</code> at click time and calls
+        <code>stopRecording()</code> unconditionally.
+      </p>
+      <p class="meta">Relevant code: <code>TranscriberApp/Scribe/AppDelegate.swift:1639-1654</code> and <code>:1689-1694</code>.</p>
+      <pre><code>let generation = await endGuard.promptGeneration
+activeEndPromptGeneration = generation
+...
+onStopNow: { await self?.stopRecordingFromEndPrompt() }
+...
+await endGuard.stopNow(generation: activeEndPromptGeneration)
+await stopRecording()</code></pre>
+      <p><strong>Risk:</strong> if the prompt was canceled, raced, or replaced, <code>EndGuard.stopNow</code> can no op while AppDelegate still stops the recording.</p>
+      <p><strong>Suggested fix:</strong> capture <code>generation</code> in the HUD closures. Make <code>EndGuard.keepRecording</code> and <code>EndGuard.stopNow</code> return <code>Bool</code>, then only stop or cancel if the generation was accepted.</p>
+    </article>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>Stop prompt changes live capture status to stopping too early</h3>
+      <p>
+        While the 10 second HUD is open, capture is still live, but <code>handleEndGuardPrompt</code> sets
+        <code>status = .stopping</code>. The start detection handler only queues new candidates for <code>.recording</code>
+        and <code>.starting</code>.
+      </p>
+      <p class="meta">Relevant code: <code>AppDelegate.swift:1171-1175</code> and <code>:1641</code>.</p>
+      <pre><code>if status == .recording || status == .starting {
+    queueDetectionCandidate(candidate, event: event)
+    return
+}
+...
+status = .stopping</code></pre>
+      <p><strong>Risk:</strong> a new detection candidate during the countdown can present a start prompt while the current recording is still active.</p>
+      <p><strong>Suggested fix:</strong> keep <code>status</code> as <code>.recording</code> while the HUD is counting down, and add explicit end prompt state. Alternatively, include <code>.stopping</code> in the active capture queue path when <code>session != nil</code>.</p>
+    </article>
+
+    <article class="issue p2">
+      <span class="badge p2">P2</span>
+      <h3>Ended candidate matching is too broad</h3>
+      <p>
+        <code>isEndedCandidateForCurrentRecording</code> accepts any candidate with the same bundle ID as the current recording.
+      </p>
+      <p class="meta">Relevant code: <code>AppDelegate.swift:1266-1269</code>.</p>
+      <pre><code>if currentRecordingAppBundleID == candidate.app.bundleID { return true }
+return currentRecordingTriggerIdentity == candidate.triggerIdentity</code></pre>
+      <p><strong>Risk:</strong> a queued, stale, or different meeting in the same app can trigger a stop prompt for the current recording.</p>
+      <p><strong>Suggested fix:</strong> prefer trigger identity. Use bundle fallback only for a deliberately modeled identity migration case, such as calendar identity to app identity after calendar expiry.</p>
+    </article>
+
+    <article class="issue p2">
+      <span class="badge p2">P2</span>
+      <h3>Silence cancel does not suppress re prompt for 60 seconds</h3>
+      <p>
+        The spec says audio resume during grace or countdown cancels the stop flow and suppresses re prompt for at least 60 seconds. Current <code>EndGuard</code> returns directly to <code>.watching</code>.
+      </p>
+      <p class="meta">Relevant code: <code>EndGuard.swift:214-231</code>.</p>
+      <p><strong>Risk:</strong> a long quiet meeting can flap between HUD and cancellation.</p>
+      <p><strong>Suggested fix:</strong> introduce a short cancel suppression state or timestamp. During that period, observe audio normally but do not fire a new silence based prompt.</p>
+    </article>
+
+    <article class="issue p2">
+      <span class="badge p2">P2</span>
+      <h3>AppDelegate behavior tests are too brittle and indirect</h3>
+      <p>
+        The core <code>EndGuard</code> unit tests are useful, but AppDelegate tests mostly inspect source text. They would not catch stale generation clicks or the <code>.stopping</code> start prompt race.
+      </p>
+      <p><strong>Suggested fix:</strong> extract a small end prompt coordinator seam. Add tests with fake <code>EndGuard</code> and fake HUD that assert generation capture, status transitions, and queued candidate behavior.</p>
+    </article>
+  </section>
+
+  <section id="ux-review">
+    <h2>UX reviewer findings</h2>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>HUD may not appear over fullscreen meetings or other Spaces</h3>
+      <p>
+        The HUD uses a floating nonactivating <code>NSPanel</code>, but does not set collection behavior such as
+        <code>.canJoinAllSpaces</code> and <code>.fullScreenAuxiliary</code>.
+      </p>
+      <p class="meta">Relevant code: <code>EndCountdownWindow.swift:43-61</code>.</p>
+      <p><strong>Risk:</strong> the stop prompt can be invisible during fullscreen Zoom, Google Meet, or Teams.</p>
+      <p><strong>Suggested fix:</strong> set suitable <code>collectionBehavior</code> and verify in fullscreen Spaces with active meeting apps.</p>
+    </article>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>Destructive action is styled as primary and default</h3>
+      <p>
+        The spec says the primary action is <code>Keep Recording</code>. Current UI makes <code>Stop now</code> the primary styled button and Return default.
+      </p>
+      <p class="meta">Relevant code: <code>EndCountdownWindow.swift:127-139</code>.</p>
+      <p><strong>Risk:</strong> users can accidentally stop recording by pressing Return or by following visual emphasis.</p>
+      <p><strong>Suggested fix:</strong> make <code>Keep recording</code> primary and default. Make <code>Stop now</code> secondary. Keep Escape mapped to keep recording or cancel stop.</p>
+    </article>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>Copy says Stopping too early</h3>
+      <p>
+        The HUD eyebrow says <code>Stopping · call ended</code> before the user has accepted the stop or the countdown has elapsed.
+      </p>
+      <p class="meta">Relevant code: <code>EndCountdownWindow.swift:76-83</code>.</p>
+      <p><strong>Risk:</strong> users may think recording already stopped, when the app is still recording and waiting for input.</p>
+      <p><strong>Suggested fix:</strong> use <code>Call seems over</code> as the main message, with supporting copy like <code>Scribe will stop in 10 seconds unless you keep recording.</code></p>
+    </article>
+
+    <article class="issue p1">
+      <span class="badge p1">P1</span>
+      <h3>Menu fallback is misleading while countdown is active</h3>
+      <p>
+        While the countdown HUD is active, the menu popover text for <code>.stopping</code> says the app is saving the recording and disables the action. Capture is still live and the user can still keep recording from the HUD.
+      </p>
+      <p class="meta">Relevant code: <code>RecordingMenu.swift:669-719</code>.</p>
+      <p><strong>Risk:</strong> if the HUD is hidden, the menu bar backup gives the wrong state and no recovery action.</p>
+      <p><strong>Suggested fix:</strong> add a distinct <code>Stopping soon</code> or <code>Stop prompt active</code> state with countdown and both actions.</p>
+    </article>
+
+    <article class="issue p2">
+      <span class="badge p2">P2</span>
+      <h3>No redundant notification channel</h3>
+      <p>
+        The start prompt has redundant channels. The stop prompt spec also calls for a notification in parallel, especially for users who walked away from the screen.
+      </p>
+      <p><strong>Suggested fix:</strong> add a notification with <code>Keep recording</code> and <code>Stop now</code> actions. Ensure action routing uses the same generation guard as the HUD.</p>
+    </article>
+  </section>
+
+  <section id="acceptance" class="section-card" style="margin-top: 18px;">
+    <span class="badge info">Checklist for follow up agent</span>
+    <h2 style="margin-top: 0;">Acceptance checklist</h2>
+    <div class="two-col">
+      <div>
+        <h3>Correctness</h3>
+        <ul>
+          <li>End detection for the active recording opens exactly one stop prompt.</li>
+          <li>Keep Recording snoozes both call ended and silence based prompts for 15 minutes.</li>
+          <li>Stale HUD or notification actions cannot stop the current recording.</li>
+          <li>New start candidates are queued while the stop prompt is open.</li>
+          <li>Silence resume cancels the stop flow and suppresses re prompt for at least 60 seconds.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>UX</h3>
+        <ul>
+          <li>HUD is visible over fullscreen meeting apps and across Spaces.</li>
+          <li>HUD does not steal focus.</li>
+          <li>Keep Recording is the visually primary and default safe action.</li>
+          <li>Menu bar gives a truthful fallback during countdown.</li>
+          <li>Notification actions match HUD actions and respect generation guards.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="commands" class="section-card" style="margin-top: 18px;">
+    <span class="badge info">Validation</span>
+    <h2 style="margin-top: 0;">Commands already run</h2>
+    <pre><code>cd Documents/code/active/scribe
+swift test
+xcodebuild -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Debug -destination 'platform=macOS' build</code></pre>
+    <p class="meta">Both commands passed before this handoff was written.</p>
+  </section>
+
+  <p class="footer">
+    File intended for local review in a browser or as a compact briefing for another coding agent.
+  </p>
+</main>
+</body>
+</html>

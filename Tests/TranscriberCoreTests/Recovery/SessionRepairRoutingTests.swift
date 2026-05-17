@@ -325,13 +325,14 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(source.contains("private var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
         XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
-        XCTAssertTrue(source.contains("pendingPromptTriggerIdentity == candidate.triggerIdentity"), "only the currently pending trigger identity may be invalidated by an ended-call signal")
+        XCTAssertTrue(source.contains("DetectionTriggerIdentity.matchesEndedCandidate"), "only the current trigger identity or the explicit calendar-to-app transition may be invalidated by an ended-call signal")
 
         guard let endedRange = source.range(of: "private func handleEndedDetectionCandidate") else {
             return XCTFail("ended candidate handler must exist")
         }
-        let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(900, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
+        let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(1400, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(endedBody.contains("startPromptCoordinator.expireActivePrompt(for: candidate)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
+        XCTAssertFalse(endedBody.contains("pendingPromptAppBundleID == candidate.app.bundleID"), "same-app candidates from a different meeting must not expire the active prompt")
         XCTAssertTrue(endedBody.contains("detectionPromptActive = false"), "ended calls must clear retained setup-blocked Meeting detected trust state")
         XCTAssertTrue(endedBody.contains("pendingPromptAppBundleID = nil"), "ended calls must clear the stale invalidation marker so later actions require fresh recognition")
         XCTAssertTrue(endedBody.contains("pendingPromptCalendarEventForStart = nil"), "ended calls must clear retained setup-blocked calendar context before stale menu Start Recording can retry")
@@ -344,6 +345,34 @@ final class SessionRepairRoutingTests: XCTestCase {
         let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = app.bundleID"), "prompt presentation must mark the active app for stale invalidation")
         XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = nil"), "any terminal prompt resolution must clear the stale invalidation marker")
+    }
+
+    func testEndedCurrentRecordingRoutesToEndGuardStopPrompt() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("private var endGuard: EndGuard?"), "AppDelegate must own the recording end guard")
+        XCTAssertTrue(source.contains("private let endCountdownController = EndCountdownWindowController()"), "AppDelegate must own the stop-prompt HUD")
+        XCTAssertTrue(source.contains("await endGuard?.suspectCallEnded(at: Date())"), "ended-call recognition during recording must enter the stop-prompt flow")
+        XCTAssertTrue(source.contains("await startEndGuard(startedAt:"), "recording start must arm the end guard")
+        XCTAssertTrue(source.contains("endGuard.observeAudioLevel"), "live mic/system levels must feed the silence fallback")
+        XCTAssertTrue(source.contains("keepRecordingFromEndPrompt"), "stop prompt must expose Keep Recording")
+        XCTAssertTrue(source.contains("stopRecordingFromEndPrompt"), "stop prompt must expose Stop Now")
+    }
+
+    func testMenuEndPromptActionsCarryGeneration() throws {
+        let menuSource = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+        XCTAssertTrue(menuSource.contains("let generation: Int"), "menu prompt model must retain the prompt generation")
+        XCTAssertTrue(menuSource.contains("case endPromptKeepRecording(generation: Int)"), "Keep Recording menu actions must be prompt-scoped")
+        XCTAssertTrue(menuSource.contains("case endPromptStopNow(generation: Int)"), "Stop Now menu actions must be prompt-scoped")
+        XCTAssertTrue(menuSource.contains("onAction(.endPromptKeepRecording(generation: endPrompt.generation))"), "menu Keep Recording must send the captured generation")
+        XCTAssertTrue(menuSource.contains("onAction(.endPromptStopNow(generation: endPrompt.generation))"), "menu Stop Now must send the captured generation")
+
+        let appSource = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        guard let keepRange = appSource.range(of: "case .endPromptKeepRecording(let generation):"),
+              let stopRange = appSource.range(of: "case .endPromptStopNow(let generation):") else {
+            return XCTFail("AppDelegate must route prompt-scoped menu actions")
+        }
+        let actionBody = String(appSource[keepRange.lowerBound..<appSource.index(stopRange.upperBound, offsetBy: min(160, appSource.distance(from: stopRange.upperBound, to: appSource.endIndex)))])
+        XCTAssertFalse(actionBody.contains("activeEndPromptGeneration"), "menu actions must not read the live prompt generation at click handling time")
     }
 
     func testPromptStartClearsRecoveryAndUsesExactlyOneManualStartRoute() throws {

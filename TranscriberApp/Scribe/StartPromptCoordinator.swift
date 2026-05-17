@@ -18,9 +18,14 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private static let categoryIdentifier = "scribe.detection.candidate"
+    private static let endCategoryIdentifier = "scribe.recording.end-prompt"
     private enum Action {
         static let start = "scribe.detection.action.start"
         static let notNow = "scribe.detection.action.not-now"
+    }
+    private enum EndAction {
+        static let keepRecording = "scribe.end-prompt.action.keep-recording"
+        static let stopNow = "scribe.end-prompt.action.stop-now"
     }
 
     private final class Pending {
@@ -49,6 +54,26 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    private final class PendingEndPrompt {
+        let identifier: String
+        let generation: Int
+        let onKeep: @MainActor @Sendable (Int) async -> Void
+        let onStopNow: @MainActor @Sendable (Int) async -> Void
+        var notificationIdentifiers: Set<String> = []
+
+        init(
+            identifier: String,
+            generation: Int,
+            onKeep: @escaping @MainActor @Sendable (Int) async -> Void,
+            onStopNow: @escaping @MainActor @Sendable (Int) async -> Void
+        ) {
+            self.identifier = identifier
+            self.generation = generation
+            self.onKeep = onKeep
+            self.onStopNow = onStopNow
+        }
+    }
+
     private enum NotificationKind: String {
         case backup
         case reminder
@@ -56,6 +81,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private var pending: [String: Pending] = [:]
+    private var pendingEndPrompts: [String: PendingEndPrompt] = [:]
     private var activePromptIdentifier: String?
     private var registeredCategories = false
     private var authorizationKnown = false
@@ -149,12 +175,74 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     func expireActivePrompt(for candidate: DetectionCandidate) {
         guard let identifier = activePromptIdentifier,
               let entry = pending[identifier],
-              (entry.candidate.triggerIdentity == candidate.triggerIdentity || entry.app.bundleID == candidate.app.bundleID) else {
+              DetectionTriggerIdentity.matchesEndedCandidate(
+                  pendingTriggerIdentity: entry.candidate.triggerIdentity,
+                  pendingBundleID: entry.app.bundleID,
+                  endedCandidate: candidate
+              ) else {
             Log.lifecycle.info("Ignoring stale start-prompt expiry for \(candidate.app.bundleID, privacy: .public): no matching active prompt")
             return
         }
         Log.lifecycle.info("Expiring start prompt for ended call in \(candidate.app.bundleID, privacy: .public) (id=\(identifier, privacy: .public))")
         resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
+    }
+
+    @discardableResult
+    func postEndPromptNotificationIfPossible(
+        promptID: String,
+        generation: Int,
+        reason: EndGuard.Reason,
+        secondsRemaining: Int,
+        onKeep: @escaping @MainActor @Sendable (Int) async -> Void,
+        onStopNow: @escaping @MainActor @Sendable (Int) async -> Void
+    ) async -> Bool {
+        await ensureRegistered()
+        pendingEndPrompts[promptID] = PendingEndPrompt(
+            identifier: promptID,
+            generation: generation,
+            onKeep: onKeep,
+            onStopNow: onStopNow
+        )
+
+        guard await ensureAuthorization() else {
+            Log.lifecycle.info("End prompt notification unavailable: authorization missing; HUD/menu recovery remain active (id=\(promptID, privacy: .public))")
+            return false
+        }
+        guard pendingEndPrompts[promptID] != nil else {
+            Log.lifecycle.info("Skipping stale end prompt notification after authorization completed (id=\(promptID, privacy: .public))")
+            return false
+        }
+
+        let notificationID = "\(promptID).end"
+        let content = UNMutableNotificationContent()
+        content.title = "Call seems over"
+        content.subtitle = Self.endPromptSubtitle(for: reason)
+        content.body = "Scribe will stop in \(max(0, secondsRemaining)) seconds unless you keep recording."
+        content.categoryIdentifier = Self.endCategoryIdentifier
+        content.userInfo = [
+            "promptID": promptID,
+            "generation": generation,
+            "reason": Self.endPromptReasonPayload(reason)
+        ]
+        content.sound = nil
+
+        let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            pendingEndPrompts[promptID]?.notificationIdentifiers.insert(notificationID)
+            Log.lifecycle.info("End prompt notification posted: \(Self.endPromptReasonPayload(reason), privacy: .public) (id=\(promptID, privacy: .public), generation=\(generation, privacy: .public))")
+            return true
+        } catch {
+            Log.lifecycle.error("End prompt notification failed: \(error.localizedDescription, privacy: .public); HUD/menu recovery remain active (id=\(promptID, privacy: .public))")
+            return false
+        }
+    }
+
+    func clearEndPromptNotification(promptID: String) {
+        guard let entry = pendingEndPrompts.removeValue(forKey: promptID) else { return }
+        let ids = Array(entry.notificationIdentifiers)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
     }
 
     private func scheduleRecoveryTimers(for entry: Pending) {
@@ -261,40 +349,35 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     ) {
         NSApp.activate(ignoringOtherApps: true)
 
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = promptTitle(for: app, event: event)
-        alert.informativeText = promptSubtitle(for: app, event: event)
-        alert.addButton(withTitle: "Start Recording")
-        alert.addButton(withTitle: "Not now")
-        alert.window.sharingType = WindowChromeSharing.confidential
-
-        let accessory = MoreOptionsAccessory(appDisplayName: app.displayName) { [weak self] in
-            self?.resolve(identifier: identifier, with: .notAMeeting, removeNotifications: true)
-            NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)
-        }
-        alert.accessoryView = accessory.view
-
-        place(window: alert.window, nearActiveWindowFor: app)
-        alert.window.makeKeyAndOrderFront(nil)
-        alert.window.orderFrontRegardless()
-
-        if let entry = pending[identifier] {
-            entry.modalWindow = alert.window
-            entry.isModalVisible = true
-        }
-
-        let response = alert.runModal()
+        let decision = PromptModalWindow.run(
+            model: PromptModalWindow.Model(
+                badge: app.displayName,
+                title: promptTitle(for: app, event: event),
+                message: promptSubtitle(for: app, event: event),
+                secondaryTitle: "Not now",
+                primaryTitle: "Start Recording"
+            ),
+            place: { [weak self] window in
+                self?.place(window: window, nearActiveWindowFor: app)
+            },
+            onWindowReady: { window in
+                if let entry = pending[identifier] {
+                    entry.modalWindow = window
+                    entry.isModalVisible = true
+                }
+            }
+        )
         if let entry = pending[identifier] {
             entry.isModalVisible = false
             entry.modalWindow = nil
         }
-        switch response {
-        case .alertFirstButtonReturn:
+        switch decision {
+        case .primary:
             resolve(identifier: identifier, with: .start, removeNotifications: true)
-        case .alertSecondButtonReturn:
+        case .secondary:
             resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)
-        default:
+        case .dismissed:
+            guard pending[identifier] != nil else { return }
             // A close/Esc/dismissal is not an implicit decline. Leave the
             // prompt session pending so menu-bar recovery and reminder
             // notifications stay available until explicit resolution or expiry.
@@ -358,7 +441,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     private func ensureRegistered() async {
         guard !registeredCategories else { return }
-        let category = UNNotificationCategory(
+        let startCategory = UNNotificationCategory(
             identifier: Self.categoryIdentifier,
             actions: [
                 UNNotificationAction(
@@ -375,7 +458,24 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+        let endCategory = UNNotificationCategory(
+            identifier: Self.endCategoryIdentifier,
+            actions: [
+                UNNotificationAction(
+                    identifier: EndAction.keepRecording,
+                    title: "Keep Recording",
+                    options: []
+                ),
+                UNNotificationAction(
+                    identifier: EndAction.stopNow,
+                    title: "Stop Now",
+                    options: [.destructive]
+                )
+            ],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([startCategory, endCategory])
         registeredCategories = true
     }
 
@@ -405,6 +505,31 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         entry.modalWindow?.orderOut(nil)
         NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)
         Log.lifecycle.info("Stopped visible start prompt modal after non-modal resolution (id=\(entry.identifier, privacy: .public))")
+    }
+
+    private func resolveEndPromptNotification(
+        promptID: String,
+        generation: Int?,
+        actionID: String
+    ) async {
+        guard let entry = pendingEndPrompts[promptID],
+              generation == entry.generation else {
+            Log.lifecycle.info("Ignoring stale end prompt notification action (id=\(promptID, privacy: .public))")
+            return
+        }
+
+        switch actionID {
+        case EndAction.keepRecording:
+            clearEndPromptNotification(promptID: promptID)
+            await entry.onKeep(entry.generation)
+        case EndAction.stopNow:
+            clearEndPromptNotification(promptID: promptID)
+            await entry.onStopNow(entry.generation)
+        case UNNotificationDismissActionIdentifier:
+            Log.lifecycle.info("End prompt notification dismissed without decision (id=\(promptID, privacy: .public)); HUD/menu recovery remains active")
+        default:
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     private func place(window: NSWindow, nearActiveWindowFor app: MeetingApp) {
@@ -453,6 +578,25 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         return nil
     }
 
+    private static func endPromptSubtitle(for reason: EndGuard.Reason) -> String {
+        switch reason {
+        case .bidirectionalSilence:
+            return "Audio has been quiet"
+        case .callEnded:
+            return "Call ended"
+        case .maxSessionDurationReached:
+            return "Session reached 4 hours"
+        }
+    }
+
+    private static func endPromptReasonPayload(_ reason: EndGuard.Reason) -> String {
+        switch reason {
+        case .bidirectionalSilence: return "bidirectional_silence"
+        case .callEnded: return "call_ended"
+        case .maxSessionDurationReached: return "max_session_duration"
+        }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     nonisolated func userNotificationCenter(
@@ -469,15 +613,25 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let notificationIdentifier = response.notification.request.identifier
+        let categoryIdentifier = response.notification.request.content.categoryIdentifier
         let promptID = response.notification.request.content.userInfo["promptID"] as? String
         let identifier = promptID
             ?? notificationIdentifier
                 .replacingOccurrences(of: ".backup", with: "")
                 .replacingOccurrences(of: ".reminder", with: "")
         let actionID = response.actionIdentifier
+        let generation = response.notification.request.content.userInfo["generation"] as? Int
         completionHandler()
         Task { @MainActor [weak self] in
             guard let self else { return }
+            if categoryIdentifier == Self.endCategoryIdentifier {
+                await self.resolveEndPromptNotification(
+                    promptID: identifier.replacingOccurrences(of: ".end", with: ""),
+                    generation: generation,
+                    actionID: actionID
+                )
+                return
+            }
             switch actionID {
             case Action.start:
                 self.resolve(identifier: identifier, with: .start, removeNotifications: true)
@@ -489,46 +643,6 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
-    }
-}
-
-@MainActor
-private final class MoreOptionsAccessory: NSObject {
-    let view = NSStackView()
-    private let suppressButton: NSButton
-    private let onSuppress: @MainActor () -> Void
-
-    init(appDisplayName: String, onSuppress: @escaping @MainActor () -> Void) {
-        self.onSuppress = onSuppress
-        self.suppressButton = NSButton(title: "Stop detecting \(appDisplayName) for 30 minutes", target: nil, action: nil)
-        super.init()
-
-        let disclosure = NSButton(title: "More options ▾", target: self, action: #selector(toggleMoreOptions(_:)))
-        disclosure.bezelStyle = .inline
-        disclosure.setButtonType(.momentaryPushIn)
-        disclosure.alignment = .left
-
-        suppressButton.target = self
-        suppressButton.action = #selector(suppressApp(_:))
-        suppressButton.bezelStyle = .inline
-        suppressButton.alignment = .left
-        suppressButton.isHidden = true
-
-        view.orientation = .vertical
-        view.alignment = .leading
-        view.spacing = 6
-        view.addArrangedSubview(disclosure)
-        view.addArrangedSubview(suppressButton)
-    }
-
-    @objc private func toggleMoreOptions(_ sender: NSButton) {
-        suppressButton.isHidden.toggle()
-        sender.title = suppressButton.isHidden ? "More options ▾" : "More options ▴"
-        view.layoutSubtreeIfNeeded()
-    }
-
-    @objc private func suppressApp(_ sender: NSButton) {
-        onSuppress()
     }
 }
 

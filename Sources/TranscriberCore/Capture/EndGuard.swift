@@ -1,20 +1,8 @@
 import Foundation
 
-/// Guards against runaway recordings (spec section 162-180). Watches the
-/// bidirectional audio level on the SCK stream we're already capturing and
-/// fires a stop-prompt callback when both mic and system have been quiet
-/// for `silenceWindow` seconds. The UI (Phase η) drives a 10s countdown
-/// after the prompt; if no audio resumes and the user doesn't dismiss the
-/// prompt, the guard auto-stops.
-///
-/// "Process mic-release" detection (spec's primary signal) is research-
-/// gated — codex pass 2 P0 #7 and the plan's Phase δ honest-ceiling note.
-/// `kAudioDevicePropertyHogMode` is exclusive ownership, not normal use;
-/// `kAudioDevicePropertyDeviceIsRunning` is device-level not per-process;
-/// `ProcessObjectList` enumerates HAL clients but doesn't say which is
-/// producing audio right now. The macOS public API for "is this PID using
-/// the mic" is not exposed. So V1 ships with bidirectional silence as the
-/// primary signal; process-mic-release is V1.1.
+/// Guards against runaway recordings. It prompts when both captured audio
+/// streams are quiet, when active-call detection says the call ended, or when
+/// the session exceeds the safety limit.
 ///
 /// `tick()` is the test-friendly entry point: callers drive synthetic
 /// audio levels + clock advance and assert state transitions, which means
@@ -25,6 +13,7 @@ public actor EndGuard {
     /// render the appropriate sheet.
     public enum Reason: Sendable, Equatable {
         case bidirectionalSilence
+        case callEnded
         case maxSessionDurationReached
     }
 
@@ -36,6 +25,7 @@ public actor EndGuard {
         case quiet(since: Date)            // Bidirectional silence accumulating
         case prompted(at: Date)            // Stop prompt shown, awaiting user
         case counting(startedAt: Date)     // 10s countdown active
+        case cancelSuppressed(until: Date) // Audio resumed; prevent immediate re-prompt
         case snoozed(until: Date)          // User chose Keep Recording
         case stopped(reason: Reason)       // Terminal
     }
@@ -43,12 +33,14 @@ public actor EndGuard {
     public typealias OnPrompt = @Sendable (Reason) async -> Void
     public typealias OnCountdownTick = @Sendable (TimeInterval) async -> Void
     public typealias OnAutoStop = @Sendable (Reason) async -> Void
+    public typealias OnCancel = @Sendable () async -> Void
 
     public struct Config: Sendable {
         public let silenceThreshold: Float
         public let silenceWindow: TimeInterval
         public let countdownDuration: TimeInterval
         public let snoozeDuration: TimeInterval
+        public let cancelSuppressionDuration: TimeInterval
         public let maxSessionDuration: TimeInterval
 
         public static let `default` = Config(
@@ -56,6 +48,7 @@ public actor EndGuard {
             silenceWindow: 30,             // spec: 30s bidirectional silence
             countdownDuration: 10,         // spec: 10s countdown
             snoozeDuration: 15 * 60,       // spec: Keep Recording = 15min
+            cancelSuppressionDuration: 60, // spec: audio-resume cancel suppresses re-prompt
             maxSessionDuration: 4 * 60 * 60  // 4h safety net (plan addition)
         )
 
@@ -64,12 +57,14 @@ public actor EndGuard {
             silenceWindow: TimeInterval,
             countdownDuration: TimeInterval,
             snoozeDuration: TimeInterval,
+            cancelSuppressionDuration: TimeInterval = 60,
             maxSessionDuration: TimeInterval
         ) {
             self.silenceThreshold = silenceThreshold
             self.silenceWindow = silenceWindow
             self.countdownDuration = countdownDuration
             self.snoozeDuration = snoozeDuration
+            self.cancelSuppressionDuration = cancelSuppressionDuration
             self.maxSessionDuration = maxSessionDuration
         }
     }
@@ -79,22 +74,26 @@ public actor EndGuard {
     private let onPrompt: OnPrompt
     private let onCountdownTick: OnCountdownTick
     private let onAutoStop: OnAutoStop
+    private let onCancel: OnCancel
 
     private var sessionStart: Date?
     private var lastMicLevel: Float = 1.0      // Start "loud" so we don't fire prompt before any audio
     private var lastSystemLevel: Float = 1.0
     private var lastSampleAt: Date?
+    private var activePromptReason: Reason = .bidirectionalSilence
 
     public init(
         config: Config = .default,
         onPrompt: @escaping OnPrompt = { _ in },
         onCountdownTick: @escaping OnCountdownTick = { _ in },
-        onAutoStop: @escaping OnAutoStop = { _ in }
+        onAutoStop: @escaping OnAutoStop = { _ in },
+        onCancel: @escaping OnCancel = {}
     ) {
         self.config = config
         self.onPrompt = onPrompt
         self.onCountdownTick = onCountdownTick
         self.onAutoStop = onAutoStop
+        self.onCancel = onCancel
     }
 
     /// Called when capture starts. Resets the state machine to `watching`.
@@ -104,6 +103,7 @@ public actor EndGuard {
         lastMicLevel = 1.0
         lastSystemLevel = 1.0
         lastSampleAt = at
+        activePromptReason = .bidirectionalSilence
     }
 
     /// Called when capture stops (regardless of who called it). Resets to
@@ -114,6 +114,7 @@ public actor EndGuard {
         lastMicLevel = 1.0
         lastSystemLevel = 1.0
         lastSampleAt = nil
+        activePromptReason = .bidirectionalSilence
     }
 
     /// CaptureSession.ingest computes the per-buffer RMS and feeds it here
@@ -135,23 +136,46 @@ public actor EndGuard {
         case system
     }
 
+    /// Active-call recognition can prove that the meeting app stopped
+    /// using the input device before the audio-silence fallback has had
+    /// time to accumulate. Use that signal to enter the same stop-prompt
+    /// flow immediately; Keep Recording still snoozes it like any other
+    /// suspected end.
+    public func suspectCallEnded(at now: Date) async {
+        switch state {
+        case .idle, .stopped, .prompted, .counting:
+            return
+        case .cancelSuppressed(let until), .snoozed(let until):
+            guard now >= until else { return }
+        case .watching, .quiet:
+            break
+        }
+        await startPrompt(reason: .callEnded, at: now)
+    }
+
     /// Heartbeat for time-based transitions (countdown progress, snooze
     /// expiry, max-session safety). Callers drive this on a timer; tests
     /// drive it with synthetic dates.
     public func tick(now: Date) async {
-        // 4h safety net first — it overrides everything except terminal.
-        if let sessionStart, case .stopped = state {} else {
-            if let sessionStart, now.timeIntervalSince(sessionStart) >= config.maxSessionDuration {
-                state = .stopped(reason: .maxSessionDurationReached)
-                await onAutoStop(.maxSessionDurationReached)
-                return
-            }
+        // 4h safety net first. It overrides everything except terminal state.
+        if case .stopped = state {
+            return
+        }
+        if let sessionStart, now.timeIntervalSince(sessionStart) >= config.maxSessionDuration {
+            state = .stopped(reason: .maxSessionDurationReached)
+            await onAutoStop(.maxSessionDurationReached)
+            return
         }
 
         let bothQuiet = lastMicLevel < config.silenceThreshold && lastSystemLevel < config.silenceThreshold
 
         switch state {
         case .idle, .stopped:
+            return
+
+        case .cancelSuppressed(let until):
+            guard now >= until else { return }
+            state = bothQuiet ? .quiet(since: now) : .watching
             return
 
         case .snoozed(let until):
@@ -167,25 +191,18 @@ public actor EndGuard {
 
         case .quiet(let since):
             if !bothQuiet {
-                // Audio resumed — back to watching.
+                // Audio resumed. Go back to watching.
                 state = .watching
                 return
             }
             if now.timeIntervalSince(since) >= config.silenceWindow {
-                // Codex rc2-audit STATE-4: bump generation BEFORE
-                // firing the async onPrompt callback. The UI handler
-                // captures the current generation and feeds it back
-                // to keepRecording / stopNow so a late click against
-                // a stale prompt is ignored.
-                promptGeneration += 1
-                state = .prompted(at: now)
-                await onPrompt(.bidirectionalSilence)
+                await startPrompt(reason: .bidirectionalSilence, at: now)
             }
 
         case .prompted(let at):
-            if !bothQuiet {
+            if activePromptReason == .bidirectionalSilence, !bothQuiet {
                 // Spec line 179: audio resume during grace cancels.
-                state = .watching
+                await cancelPromptAfterAudioResume(at: now)
                 return
             }
             // After the prompt grace period (the 10s countdown UI runs in
@@ -196,44 +213,51 @@ public actor EndGuard {
             }
 
         case .counting(let startedAt):
-            if !bothQuiet {
+            if activePromptReason == .bidirectionalSilence, !bothQuiet {
                 // Spec line 179: audio resume during countdown cancels.
-                state = .watching
+                await cancelPromptAfterAudioResume(at: now)
                 return
             }
             let elapsed = now.timeIntervalSince(startedAt)
             let remaining = config.countdownDuration - elapsed
             if remaining <= 0 {
-                state = .stopped(reason: .bidirectionalSilence)
-                await onAutoStop(.bidirectionalSilence)
+                let reason = activePromptReason
+                state = .stopped(reason: reason)
+                await onAutoStop(reason)
             } else {
                 await onCountdownTick(remaining)
             }
         }
     }
 
-    /// Codex rc2-audit STATE-4: prompts run async; the user's click
-    /// arrives some time after the prompt fired. Between the fire and
-    /// the click, the state machine may have transitioned (audio
-    /// resumed → .watching, countdown elapsed → .stopped, snooze
-    /// expired → .quiet). A late "Keep Recording" click against a
-    /// terminal state would silently mutate it.
+    private func startPrompt(reason: Reason, at now: Date) async {
+        activePromptReason = reason
+        promptGeneration += 1
+        state = .prompted(at: now)
+        await onPrompt(reason)
+    }
+
+    private func cancelPromptAfterAudioResume(at now: Date) async {
+        state = .cancelSuppressed(until: now.addingTimeInterval(config.cancelSuppressionDuration))
+        await onCancel()
+    }
+
+    /// Prompts run async, so the user's click can arrive after the state
+    /// machine has already moved on. A late click must be ignored.
     ///
     /// The generation counter increments every time the state machine
     /// enters `.prompted`. UI handlers receive the generation along
     /// with the prompt; their click callback passes it back to
     /// keepRecording / stopNow. A mismatch is a no-op.
-    private(set) var promptGeneration: Int = 0
+    public private(set) var promptGeneration: Int = 0
 
-    /// User clicked "Keep Recording". Spec line 180: snooze 15
-    /// minutes. Codex rc2-audit STATE-4: the `generation` parameter
-    /// must match the prompt that produced this click; otherwise the
-    /// click is stale (audio resumed, countdown elapsed, snooze
-    /// expired since the prompt).
-    public func keepRecording(now: Date, generation: Int? = nil) {
+    /// User clicked "Keep Recording". The `generation` parameter must match
+    /// the prompt that produced this click.
+    @discardableResult
+    public func keepRecording(now: Date, generation: Int? = nil) -> Bool {
         if let generation, generation != promptGeneration {
-            // Stale click — log and ignore.
-            return
+            // Stale click. Ignore it.
+            return false
         }
         // Only honor keepRecording when we're actually showing a
         // prompt or counting down. Otherwise the click is for a
@@ -245,23 +269,26 @@ public actor EndGuard {
             // Reset levels so we're not stuck in quiet at the moment of snooze.
             lastMicLevel = 1.0
             lastSystemLevel = 1.0
+            activePromptReason = .bidirectionalSilence
+            return true
         default:
-            return
+            return false
         }
     }
 
     /// User clicked "Stop Now". The actual stop is driven by the parent
     /// (CaptureSession.stop); the guard just records the terminal state.
-    /// Codex rc2-audit STATE-4: same generation gate as keepRecording.
-    public func stopNow(generation: Int? = nil) {
+    @discardableResult
+    public func stopNow(generation: Int? = nil) -> Bool {
         if let generation, generation != promptGeneration {
-            return
+            return false
         }
         switch state {
         case .prompted, .counting:
-            state = .stopped(reason: .bidirectionalSilence)
+            state = .stopped(reason: activePromptReason)
+            return true
         default:
-            return
+            return false
         }
     }
 }

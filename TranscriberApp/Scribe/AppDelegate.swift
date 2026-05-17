@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentCalendarEvent: CalendarEvent?
     private var currentSessionEngineMode: EngineMode?
     private var currentDiagnosticsLiveLevels: DiagnosticsSnapshot.LiveLevels?
+    private var currentRecordingTriggerIdentity: String?
 
     /// Drives the popover's elapsed-time field while a session is
     /// active. Fires once per second; the popover formats the value
@@ -71,9 +72,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let startPromptCoordinator = StartPromptCoordinator()
     private var queuedDetectionCandidate: QueuedDetectionCandidate?
     private var pendingPromptCalendarEventForStart: CalendarEvent?
+    private var pendingPromptCandidateForStart: DetectionCandidate?
     private var pendingPromptAppBundleID: String?
     private var pendingPromptTriggerIdentity: String?
     private var dismissedPromptTriggerIdentities: Set<String> = []
+
+    // End detection mirrors the start prompt path: the recognition layer
+    // proves the call ended, then EndGuard owns the 10s stop prompt / Keep
+    // Recording flow. The audio-silence fallback uses the same guard.
+    private var endGuard: EndGuard?
+    private var endGuardTickTimer: Timer?
+    private var activeEndPromptGeneration: Int?
+    private var activeEndPromptID: String?
 
     // F-2: trust-language flags. The menu bar icon is the design's
     // primary trust surface, so its shape encodes more than just
@@ -117,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionsOnboarding: PermissionsOnboardingWindowController?
     private var diagnosticsWindowController: DiagnosticsWindowController?
     private let savedNotification = SavedNotificationWindowController()
+    private let endCountdownController = EndCountdownWindowController()
 
     // Rename note (Transcriber to Scribe): kept as `transcriber` so the
     // diagnostics instance ID stays stable across the rename; see the
@@ -560,15 +571,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionRepairPayload = payload
             menu?.outcomeFolderURL = payload.sessionDirectory
         }
-        let alert = NSAlert()
-        alert.messageText = notice.title
-        alert.informativeText = notice.message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Open Scribe folder")
-        alert.window.sharingType = WindowChromeSharing.confidential  // UX-4
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
+        let title = notice.transcribingStarted ? "Transcription is resuming" : notice.title
+        let message = notice.transcribingStarted ? notice.title : notice.message
+        let decision = PromptModalWindow.run(
+            model: PromptModalWindow.Model(
+                badge: notice.transcribingStarted ? "Resuming" : "Recovered",
+                title: title,
+                message: message,
+                secondaryTitle: "Open Scribe folder",
+                primaryTitle: "OK"
+            ),
+            place: { window in window.center() }
+        )
+        if decision == .secondary {
             NSWorkspace.shared.open(settings.outputRoot)
         }
     }
@@ -734,6 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             status: status,
             setupNeedsAttention: setupNeedsAttention,
             detectionPromptActive: detectionPromptActive,
+            endPromptActive: activeEndPromptGeneration != nil,
             lastSavedAt: lastSavedAt,
             lastFailureAt: lastFailureAt,
             now: Date(),
@@ -803,12 +819,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 startPromptCoordinator.chooseStartFromRecovery()
             } else if detectionPromptActive {
                 let event = pendingPromptCalendarEventForStart
+                if pendingPromptCandidateForStart == nil,
+                   let bundleID = pendingPromptAppBundleID,
+                   let triggerIdentity = pendingPromptTriggerIdentity,
+                   let app = MeetingApps.appFor(bundleID: bundleID) {
+                    pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: triggerIdentity)
+                }
                 await startRecording()
                 if setupNeedsAttention {
                     pendingPromptCalendarEventForStart = event
                     applyTrustIcon()
                 } else {
                     pendingPromptCalendarEventForStart = nil
+                    pendingPromptCandidateForStart = nil
                     detectionPromptActive = false
                     pendingPromptAppBundleID = nil
                     pendingPromptTriggerIdentity = nil
@@ -824,6 +847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingPromptAppBundleID = nil
                 pendingPromptTriggerIdentity = nil
                 pendingPromptCalendarEventForStart = nil
+                pendingPromptCandidateForStart = nil
                 menu?.pendingPrompt = nil
                 applyTrustIcon()
             }
@@ -835,9 +859,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingPromptAppBundleID = nil
                 pendingPromptTriggerIdentity = nil
                 pendingPromptCalendarEventForStart = nil
+                pendingPromptCandidateForStart = nil
                 menu?.pendingPrompt = nil
                 applyTrustIcon()
             }
+        case .endPromptKeepRecording(let generation):
+            await keepRecordingFromEndPrompt(generation: generation)
+        case .endPromptStopNow(let generation):
+            await stopRecordingFromEndPrompt(generation: generation)
         }
     }
 
@@ -1180,6 +1209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch choice {
         case .start:
             pendingPromptCalendarEventForStart = event
+            pendingPromptCandidateForStart = candidate
             await startRecording()
             if setupNeedsAttention {
                 pendingPromptCalendarEventForStart = event
@@ -1193,6 +1223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             } else {
                 pendingPromptCalendarEventForStart = nil
+                pendingPromptCandidateForStart = nil
                 detectionPromptActive = false
                 pendingPromptAppBundleID = nil
                 pendingPromptTriggerIdentity = nil
@@ -1200,6 +1231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             applyTrustIcon()
         case .notAMeeting:
+            pendingPromptCandidateForStart = nil
             await detectionEngine?.suppress(app)
             Log.lifecycle.info("User suppressed \(app.bundleID, privacy: .public) for 30 minutes")
             // Codex P1 fix: ProcessWatcher only emits launch/terminate events,
@@ -1208,6 +1240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // launch event 30 minutes later if the app is still running.
             scheduleRearm(for: app, after: 30 * 60)
         case .skipForNow:
+            pendingPromptCandidateForStart = nil
             dismissedPromptTriggerIdentities.insert(candidate.triggerIdentity)
             Log.lifecycle.info("User skipped \(app.bundleID, privacy: .public) for now (trigger=\(candidate.triggerIdentity, privacy: .public))")
         }
@@ -1216,15 +1249,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleEndedDetectionCandidate(_ candidate: DetectionCandidate) async {
-        guard pendingPromptTriggerIdentity == candidate.triggerIdentity || pendingPromptAppBundleID == candidate.app.bundleID else { return }
+        if isEndedCandidateForCurrentRecording(candidate) {
+            Log.lifecycle.info("Detection candidate ended during recording: \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)")
+            await endGuard?.suspectCallEnded(at: Date())
+            return
+        }
+
+        guard let pendingTriggerIdentity = pendingPromptTriggerIdentity,
+              let pendingBundleID = pendingPromptAppBundleID,
+              DetectionTriggerIdentity.matchesEndedCandidate(
+                  pendingTriggerIdentity: pendingTriggerIdentity,
+                  pendingBundleID: pendingBundleID,
+                  endedCandidate: candidate
+              ) else { return }
         Log.lifecycle.info("Detection candidate ended before prompt resolution: \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)")
         startPromptCoordinator.expireActivePrompt(for: candidate)
         detectionPromptActive = false
         pendingPromptAppBundleID = nil
         pendingPromptTriggerIdentity = nil
         pendingPromptCalendarEventForStart = nil
+        pendingPromptCandidateForStart = nil
         menu?.pendingPrompt = nil
         applyTrustIcon()
+    }
+
+    @MainActor
+    private func isEndedCandidateForCurrentRecording(_ candidate: DetectionCandidate) -> Bool {
+        guard session != nil else { return false }
+        return currentRecordingTriggerIdentity == candidate.triggerIdentity
     }
 
     @MainActor
@@ -1449,6 +1501,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.currentSessionDirectory = dir
             self.currentSessionStartedAt = Date()
             self.currentSessionEngineMode = sessionEngineMode
+            if let startCandidate = pendingPromptCandidateForStart {
+                self.currentRecordingTriggerIdentity = startCandidate.triggerIdentity
+            } else {
+                self.currentRecordingTriggerIdentity = nil
+            }
             menu?.sessionEngineMode = sessionEngineMode
             self.currentDiagnosticsLiveLevels = nil
 
@@ -1463,6 +1520,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             try await session.start()
             self.status = .recording
+            pendingPromptCandidateForStart = nil
+            await startEndGuard(startedAt: currentSessionStartedAt ?? Date())
             // Wire the popover's live trust-surface readouts so the
             // user sees a ticking timer + the matched meeting title
             // the moment they open the menu bar. Without this, the
@@ -1489,6 +1548,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.currentCalendarEvent = nil
             self.currentSessionEngineMode = nil
             self.currentDiagnosticsLiveLevels = nil
+            self.currentRecordingTriggerIdentity = nil
+            self.pendingPromptCandidateForStart = nil
             stopElapsedTickTimer()
             menu?.outcomeFolderName = nil
             menu?.outcomeFolderURL = nil
@@ -1505,13 +1566,213 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func recordLiveAudioLevel(stream: PTSCollector.StreamID, rms: Float) {
         let safeRMS = Double(min(max(rms, 0), 1))
         let existing = currentDiagnosticsLiveLevels
+        let guardStream: EndGuard.AudioStream
         switch stream {
         case .mic:
             currentDiagnosticsLiveLevels = .init(micRMS: safeRMS, systemRMS: existing?.systemRMS)
             menu?.micLevel = Float(safeRMS)
+            guardStream = .mic
         case .system:
             currentDiagnosticsLiveLevels = .init(micRMS: existing?.micRMS, systemRMS: safeRMS)
             menu?.systemLevel = Float(safeRMS)
+            guardStream = .system
+        }
+        if let endGuard {
+            Task { await endGuard.observeAudioLevel(stream: guardStream, rms: Float(safeRMS), at: Date()) }
+        }
+    }
+
+    @MainActor
+    private func startEndGuard(startedAt: Date) async {
+        endGuardTickTimer?.invalidate()
+        endCountdownController.dismiss()
+        activeEndPromptGeneration = nil
+        activeEndPromptID = nil
+        menu?.endPrompt = nil
+
+        let guardInstance = EndGuard(
+            onPrompt: { [weak self] reason in
+                Task { @MainActor [weak self] in
+                    await self?.handleEndGuardPrompt(reason: reason)
+                }
+            },
+            onCountdownTick: { [weak self] remaining in
+                Task { @MainActor [weak self] in
+                    self?.handleEndGuardCountdownTick(remaining: remaining)
+                }
+            },
+            onAutoStop: { [weak self] reason in
+                Task { @MainActor [weak self] in
+                    await self?.handleEndGuardAutoStop(reason: reason)
+                }
+            },
+            onCancel: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.cancelEndGuardPrompt()
+                }
+            }
+        )
+        endGuard = guardInstance
+        await guardInstance.start(at: startedAt)
+        startEndGuardTickTimer()
+    }
+
+    @MainActor
+    private func startEndGuardTickTimer() {
+        endGuardTickTimer?.invalidate()
+        endGuardTickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let endGuard = self.endGuard else { return }
+                await endGuard.tick(now: Date())
+            }
+        }
+    }
+
+    @MainActor
+    private func tearDownEndGuard(reset: Bool = true) async {
+        endGuardTickTimer?.invalidate()
+        endGuardTickTimer = nil
+        clearEndGuardPromptSurface()
+        let guardToReset = endGuard
+        endGuard = nil
+        if reset {
+            await guardToReset?.reset()
+        }
+    }
+
+    @MainActor
+    private func handleEndGuardPrompt(reason: EndGuard.Reason) async {
+        guard session != nil, status == .recording else { return }
+        guard let endGuard else { return }
+        let generation = await endGuard.promptGeneration
+        let promptID = UUID().uuidString
+        activeEndPromptGeneration = generation
+        activeEndPromptID = promptID
+        let initialSeconds = Int(EndGuard.Config.default.countdownDuration)
+        menu?.endPrompt = RecordingMenuEndPrompt(
+            generation: generation,
+            reason: Self.endGuardReasonCopy(reason),
+            secondsRemaining: initialSeconds
+        )
+        menu?.rebuild(for: status)
+        applyTrustIcon()
+        endCountdownController.present(
+            reason: reason,
+            secondsRemaining: initialSeconds,
+            onKeep: { [weak self, generation] in
+                Task { @MainActor [weak self] in
+                    await self?.keepRecordingFromEndPrompt(generation: generation)
+                }
+            },
+            onStopNow: { [weak self, generation] in
+                Task { @MainActor [weak self] in
+                    await self?.stopRecordingFromEndPrompt(generation: generation)
+                }
+            }
+        )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard self.activeEndPromptID == promptID, self.activeEndPromptGeneration == generation else { return }
+            await self.startPromptCoordinator.postEndPromptNotificationIfPossible(
+                promptID: promptID,
+                generation: generation,
+                reason: reason,
+                secondsRemaining: initialSeconds,
+                onKeep: { [weak self] generation in
+                    await self?.keepRecordingFromEndPrompt(generation: generation)
+                },
+                onStopNow: { [weak self] generation in
+                    await self?.stopRecordingFromEndPrompt(generation: generation)
+                }
+            )
+        }
+        Log.lifecycle.info("End guard prompt shown: \(Self.endGuardReasonLabel(reason), privacy: .public)")
+    }
+
+    @MainActor
+    private func handleEndGuardCountdownTick(remaining: TimeInterval) {
+        guard activeEndPromptGeneration != nil else { return }
+        let seconds = max(0, Int(ceil(remaining)))
+        endCountdownController.update(secondsRemaining: seconds)
+        if let endPrompt = menu?.endPrompt {
+            menu?.endPrompt = RecordingMenuEndPrompt(
+                generation: endPrompt.generation,
+                reason: endPrompt.reason,
+                secondsRemaining: seconds
+            )
+        }
+    }
+
+    @MainActor
+    private func handleEndGuardAutoStop(reason: EndGuard.Reason) async {
+        guard session != nil else { return }
+        Log.lifecycle.info("End guard auto-stop firing: \(Self.endGuardReasonLabel(reason), privacy: .public)")
+        clearEndGuardPromptSurface()
+        await stopRecording()
+    }
+
+    @MainActor
+    private func keepRecordingFromEndPrompt(generation: Int) async {
+        guard let endGuard else {
+            clearEndGuardPromptSurface()
+            return
+        }
+        let accepted = await endGuard.keepRecording(now: Date(), generation: generation)
+        guard accepted else {
+            Log.lifecycle.info("Ignoring stale end guard Keep Recording action")
+            return
+        }
+        Log.lifecycle.info("End guard prompt dismissed: keep recording")
+        cancelEndGuardPrompt()
+    }
+
+    @MainActor
+    private func stopRecordingFromEndPrompt(generation: Int) async {
+        guard let endGuard else {
+            clearEndGuardPromptSurface()
+            return
+        }
+        let accepted = await endGuard.stopNow(generation: generation)
+        guard accepted else {
+            Log.lifecycle.info("Ignoring stale end guard Stop now action")
+            return
+        }
+        Log.lifecycle.info("End guard prompt accepted: stop now")
+        await stopRecording()
+    }
+
+    @MainActor
+    private func cancelEndGuardPrompt() {
+        guard activeEndPromptGeneration != nil else { return }
+        clearEndGuardPromptSurface()
+        menu?.rebuild(for: status)
+        applyTrustIcon()
+    }
+
+    @MainActor
+    private func clearEndGuardPromptSurface() {
+        if let promptID = activeEndPromptID {
+            startPromptCoordinator.clearEndPromptNotification(promptID: promptID)
+        }
+        activeEndPromptGeneration = nil
+        activeEndPromptID = nil
+        endCountdownController.dismiss()
+        menu?.endPrompt = nil
+    }
+
+    private static func endGuardReasonLabel(_ reason: EndGuard.Reason) -> String {
+        switch reason {
+        case .bidirectionalSilence: return "bidirectional_silence"
+        case .callEnded: return "call_ended"
+        case .maxSessionDurationReached: return "max_session_duration"
+        }
+    }
+
+    private static func endGuardReasonCopy(_ reason: EndGuard.Reason) -> String {
+        switch reason {
+        case .bidirectionalSilence: return "audio has been quiet"
+        case .callEnded: return "call ended"
+        case .maxSessionDurationReached: return "session reached 4 hours"
         }
     }
 
@@ -1559,6 +1820,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func stopRecording() async {
         guard let session, let dir = currentSessionDirectory else { return }
+        await tearDownEndGuard()
+        self.status = .stopping
+        menu?.rebuild(for: status)
+        applyTrustIcon()
         let endedAt = Date()
         let started = currentSessionStartedAt ?? endedAt
         let event = currentCalendarEvent
@@ -1579,6 +1844,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.currentCalendarEvent = nil
         self.currentSessionEngineMode = nil
         self.currentDiagnosticsLiveLevels = nil
+        self.currentRecordingTriggerIdentity = nil
+        self.pendingPromptCandidateForStart = nil
         stopElapsedTickTimer()
         menu?.outcomeFolderName = dir.url.lastPathComponent
         menu?.outcomeFolderURL = dir.url

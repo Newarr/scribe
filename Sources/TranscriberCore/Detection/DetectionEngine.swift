@@ -96,6 +96,8 @@ public actor DetectionEngine {
         if activeCandidates[identity] != nil {
             let cleared = await clearStaleActiveCandidateIfNeeded(candidate)
             if !cleared { return }
+        } else {
+            await clearEndedCandidatesForSameBundle(as: candidate)
         }
 
         guard pendingTasks[identity] == nil else { return }
@@ -203,6 +205,22 @@ public actor DetectionEngine {
         return false
     }
 
+    /// A calendar-scoped candidate can become app-scoped after the calendar
+    /// event ends. If the app is now inactive, clear the old active candidates
+    /// so the shell can show the stop prompt for the recording.
+    private func clearEndedCandidatesForSameBundle(as candidate: DetectionCandidate) async {
+        let stale = activeCandidates.values.filter {
+            $0.app.bundleID == candidate.app.bundleID && $0.triggerIdentity != candidate.triggerIdentity
+        }
+        guard !stale.isEmpty else { return }
+        let isActive = await probe.isActive(bundleID: candidate.app.bundleID)
+        guard isActive == false else { return }
+        for ended in stale {
+            activeCandidates.removeValue(forKey: ended.triggerIdentity)
+            await onCandidateEnded?(ended)
+        }
+    }
+
     private func fireCandidate(_ candidate: DetectionCandidate) async {
         finishObservation(identity: candidate.triggerIdentity)
         guard activeCandidates[candidate.triggerIdentity] == nil else { return }
@@ -227,5 +245,24 @@ public actor DetectionEngine {
         } catch {
             return
         }
+    }
+}
+
+public enum DetectionTriggerIdentity {
+    public static let calendarPrefix = "calendar:"
+
+    public static func matchesEndedCandidate(
+        pendingTriggerIdentity: String,
+        pendingBundleID: String,
+        endedCandidate: DetectionCandidate
+    ) -> Bool {
+        guard pendingBundleID == endedCandidate.bundleID else { return false }
+
+        let exactPrompt = pendingTriggerIdentity == endedCandidate.triggerIdentity
+        let calendarPromptMovedToAppIdentity =
+            pendingTriggerIdentity.hasPrefix(calendarPrefix) &&
+            endedCandidate.triggerIdentity == DetectionEngine.defaultTriggerIdentity(for: endedCandidate.app)
+
+        return exactPrompt || calendarPromptMovedToAppIdentity
     }
 }

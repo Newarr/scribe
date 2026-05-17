@@ -8,6 +8,7 @@ final class TrustStateTests: XCTestCase {
         status: SessionStatus = .idle,
         setupNeedsAttention: Bool = false,
         detectionPromptActive: Bool = false,
+        endPromptActive: Bool = false,
         lastSavedAt: Date? = nil,
         lastFailureAt: Date? = nil
     ) -> TrustState.Inputs {
@@ -15,6 +16,7 @@ final class TrustStateTests: XCTestCase {
             status: status,
             setupNeedsAttention: setupNeedsAttention,
             detectionPromptActive: detectionPromptActive,
+            endPromptActive: endPromptActive,
             lastSavedAt: lastSavedAt,
             lastFailureAt: lastFailureAt,
             now: now
@@ -30,6 +32,11 @@ final class TrustStateTests: XCTestCase {
 
     func testStoppingBeatsDetectionPrompt() {
         let s = TrustState.resolve(inputs(status: .stopping, detectionPromptActive: true))
+        XCTAssertEqual(s, .stopping)
+    }
+
+    func testEndPromptActiveMapsRecordingToStopping() {
+        let s = TrustState.resolve(inputs(status: .recording, endPromptActive: true))
         XCTAssertEqual(s, .stopping)
     }
 

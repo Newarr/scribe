@@ -80,11 +80,40 @@ final class EndGuardTests: XCTestCase {
         await guard1.tick(now: t(35))
 
         let state = await guard1.state
-        if case .watching = state {} else {
-            XCTFail("audio resume must cancel prompt; state is \(state)")
+        if case .cancelSuppressed(let until) = state {
+            XCTAssertEqual(until.timeIntervalSinceReferenceDate, 31 + 60, accuracy: 0.001)
+        } else {
+            XCTFail("audio resume must cancel prompt and suppress re-prompt; state is \(state)")
         }
         let stops = await autoStops.value
         XCTAssertEqual(stops, 0, "spec line 179: audio resume cancels stop flow")
+    }
+
+    func testAudioResumeSuppressesSilenceRepromptForSixtySeconds() async {
+        let promptCount = AsyncCounter()
+        let guard1 = await EndGuard(config: testConfig, onPrompt: { _ in await promptCount.increment() })
+        await guard1.start(at: t(0))
+
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.001, at: t(0))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.001, at: t(0))
+        await guard1.tick(now: t(30))
+        let initialPromptCount = await promptCount.value
+        XCTAssertEqual(initialPromptCount, 1)
+
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.5, at: t(32))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.5, at: t(32))
+        await guard1.tick(now: t(32))
+
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.001, at: t(33))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.001, at: t(33))
+        await guard1.tick(now: t(91))
+        let suppressedPromptCount = await promptCount.value
+        XCTAssertEqual(suppressedPromptCount, 1, "audio-resume cancel must suppress immediate silence re-prompt")
+
+        await guard1.tick(now: t(92))
+        await guard1.tick(now: t(123))
+        let finalPromptCount = await promptCount.value
+        XCTAssertEqual(finalPromptCount, 2, "silence can prompt again only after suppression plus a fresh silence window")
     }
 
     func testTenSecondCountdownAutoStopsWhenSilencePersists() async {
@@ -112,6 +141,94 @@ final class EndGuardTests: XCTestCase {
         XCTAssertEqual(stops, 1)
     }
 
+    func testCallEndedSignalPromptsImmediatelyAndAutoStopsAfterCountdown() async {
+        let promptCount = AsyncCounter()
+        let autoStops = AsyncCounter()
+        let promptReason = AsyncBox<EndGuard.Reason>()
+        let stopReason = AsyncBox<EndGuard.Reason>()
+        let guard1 = await EndGuard(
+            config: testConfig,
+            onPrompt: { reason in
+                await promptReason.set(reason)
+                await promptCount.increment()
+            },
+            onAutoStop: { reason in
+                await stopReason.set(reason)
+                await autoStops.increment()
+            }
+        )
+        await guard1.start(at: t(0))
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.5, at: t(0))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.5, at: t(0))
+
+        await guard1.suspectCallEnded(at: t(5))
+
+        let prompts = await promptCount.value
+        let capturedPromptReason = await promptReason.value
+        XCTAssertEqual(prompts, 1, "ended-call recognition should enter the stop prompt immediately")
+        XCTAssertEqual(capturedPromptReason, .callEnded)
+        let prompted = await guard1.state
+        if case .prompted = prompted {} else {
+            XCTFail("expected call-ended prompt; got \(prompted)")
+        }
+
+        await guard1.tick(now: t(5))
+        await guard1.tick(now: t(16))
+
+        let state = await guard1.state
+        if case .stopped(let reason) = state {
+            XCTAssertEqual(reason, .callEnded)
+        } else {
+            XCTFail("expected .stopped after ignored call-ended countdown; got \(state)")
+        }
+        let stopCount = await autoStops.value
+        let capturedStopReason = await stopReason.value
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(capturedStopReason, .callEnded)
+    }
+
+    func testKeepRecordingSnoozesCallEndedPrompt() async {
+        let promptCount = AsyncCounter()
+        let guard1 = await EndGuard(config: testConfig, onPrompt: { _ in await promptCount.increment() })
+        await guard1.start(at: t(0))
+
+        await guard1.suspectCallEnded(at: t(5))
+        let generation = await guard1.promptGeneration
+        let accepted = await guard1.keepRecording(now: t(6), generation: generation)
+        XCTAssertTrue(accepted)
+
+        let snoozed = await guard1.state
+        if case .snoozed(let until) = snoozed {
+            XCTAssertEqual(until.timeIntervalSinceReferenceDate, 6 + 15 * 60, accuracy: 0.001)
+        } else {
+            XCTFail("expected call-ended Keep Recording to snooze; got \(snoozed)")
+        }
+
+        await guard1.suspectCallEnded(at: t(60))
+        let prompts = await promptCount.value
+        XCTAssertEqual(prompts, 1, "call-ended prompts must respect the snooze window")
+    }
+
+    func testCallEndedPromptDoesNotCancelJustBecauseAudioIsStillLoud() async {
+        let cancelCount = AsyncCounter()
+        let guard1 = await EndGuard(config: testConfig, onCancel: { await cancelCount.increment() })
+        await guard1.start(at: t(0))
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.5, at: t(0))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.5, at: t(0))
+
+        await guard1.suspectCallEnded(at: t(5))
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.5, at: t(6))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.5, at: t(6))
+        await guard1.tick(now: t(6))
+
+        let state = await guard1.state
+        if case .counting = state {} else {
+            XCTFail("call-ended prompt should keep counting even if unrelated audio continues; got \(state)")
+        }
+        let cancels = await cancelCount.value
+        XCTAssertEqual(cancels, 0)
+    }
+
     func testKeepRecordingSnoozesFifteenMinutes() async {
         let promptCount = AsyncCounter()
         let guard1 = await EndGuard(config: testConfig, onPrompt: { _ in await promptCount.increment() })
@@ -120,7 +237,8 @@ final class EndGuardTests: XCTestCase {
         await guard1.observeAudioLevel(stream: .system, rms: 0.001, at: t(0))
         await guard1.tick(now: t(30))  // prompt #1
 
-        await guard1.keepRecording(now: t(31))
+        let accepted = await guard1.keepRecording(now: t(31))
+        XCTAssertTrue(accepted)
         let snoozed = await guard1.state
         if case .snoozed(let until) = snoozed {
             XCTAssertEqual(until.timeIntervalSinceReferenceDate, 31 + 15 * 60, accuracy: 0.001)
@@ -187,6 +305,25 @@ final class EndGuardTests: XCTestCase {
         await guard1.tick(now: t(52))
         let post = await promptCount.value
         XCTAssertEqual(post, 1, "must prompt at t=52 (>30s post-blip silence)")
+    }
+
+    func testStaleGenerationActionsReturnFalseAndDoNotStop() async {
+        let guard1 = await EndGuard(config: testConfig)
+        await guard1.start(at: t(0))
+        await guard1.observeAudioLevel(stream: .mic, rms: 0.001, at: t(0))
+        await guard1.observeAudioLevel(stream: .system, rms: 0.001, at: t(0))
+        await guard1.tick(now: t(30))
+
+        let generation = await guard1.promptGeneration
+        let keepAccepted = await guard1.keepRecording(now: t(31), generation: generation + 1)
+        let stopAccepted = await guard1.stopNow(generation: generation + 1)
+
+        XCTAssertFalse(keepAccepted)
+        XCTAssertFalse(stopAccepted)
+        let state = await guard1.state
+        if case .prompted = state {} else {
+            XCTFail("stale generation actions must leave the prompt state unchanged; got \(state)")
+        }
     }
 }
 

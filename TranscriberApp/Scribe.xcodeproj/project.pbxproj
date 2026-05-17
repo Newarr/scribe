@@ -13,6 +13,7 @@
 		0C272D89A8C312C5F159B8C9 /* PermissionRecoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */; };
 		0D516C4F502BAE0251244C28 /* PrivacyAcknowledgementSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */; };
 		1C89DA0657DF0F920EB76FEE /* SavedNotificationWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */; };
+		1F0E519C3B4872D9211EF647 /* PromptModalWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C468EBA4427F91A9B8B710 /* PromptModalWindow.swift */; };
 		2309E1022B0975FCBE460DC9 /* Geist-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */; };
 		3BCF9C0AD183E210838D5AB7 /* JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = AC557FEA1022E74AC7FB2AAB /* JetBrainsMono-OFL.txt */; };
 		4BFDDA76C0E73479FA385BC5 /* JetBrainsMonoVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */; };
@@ -62,6 +63,7 @@
 		B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionRecoveryView.swift; sourceTree = "<group>"; };
 		B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedNotificationWindow.swift; sourceTree = "<group>"; };
 		D288AA87854E67BA12387175 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		D3C468EBA4427F91A9B8B710 /* PromptModalWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptModalWindow.swift; sourceTree = "<group>"; };
 		D529955956249F0700BFFD73 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		D8B6D8B78285F246A1264A86 /* GeistMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
 		E1389DD3A1C02E91BD83F963 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */,
 				B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */,
 				6F23A10E43C31C93C04800EE /* PrivacyAcknowledgementSheet.swift */,
+				D3C468EBA4427F91A9B8B710 /* PromptModalWindow.swift */,
 				030D0A67E77F17BEE72A9129 /* RecordingMenu.swift */,
 				B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */,
 				572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */,
@@ -247,6 +250,7 @@
 				7BCCA0F4C6CB7120F33561C9 /* OnboardingWindow.swift in Sources */,
 				0C272D89A8C312C5F159B8C9 /* PermissionRecoveryView.swift in Sources */,
 				0D516C4F502BAE0251244C28 /* PrivacyAcknowledgementSheet.swift in Sources */,
+				1F0E519C3B4872D9211EF647 /* PromptModalWindow.swift in Sources */,
 				AEAA426E81A7A6BBCAA85455 /* RecordingMenu.swift in Sources */,
 				1C89DA0657DF0F920EB76FEE /* SavedNotificationWindow.swift in Sources */,
 				C4457AFB46EBCC8F7A30D469 /* ScribeApp.swift in Sources */,

@@ -41,7 +41,7 @@ final class EndCountdownWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 270),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -51,6 +51,7 @@ final class EndCountdownWindowController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.sharingType = WindowChromeSharing.confidential
         panel.center()
 
@@ -76,9 +77,11 @@ final class EndCountdownWindowController {
     private static func eyebrow(for reason: EndGuard.Reason) -> String {
         switch reason {
         case .bidirectionalSilence:
-            return "Stopping · waveform silent for 30s"
+            return "Waveform silent for 30s"
+        case .callEnded:
+            return "Call ended"
         case .maxSessionDurationReached:
-            return "Stopping · session reached 4 hour limit"
+            return "Session reached 4 hour limit"
         }
     }
 }
@@ -102,14 +105,18 @@ private struct EndCountdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
-            // Mono eyebrow in warm rust. The design's reserved live /
-            // countdown signal. Custom rendering (not DSEyebrow) so the
-            // foreground color is the recording rust, not the default
-            // tertiary token DSEyebrow uses.
-            Text(model.eyebrow.uppercased())
-                .font(DS.Font.eyebrow)
-                .tracking(0.44)
-                .foregroundStyle(DS.Color.recording)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(model.eyebrow.uppercased())
+                    .font(DS.Font.eyebrow)
+                    .tracking(0.44)
+                    .foregroundStyle(DS.Color.recording)
+                Text("Call seems over")
+                    .font(SwiftUI.Font.custom(DS.sansFamily, size: 22).weight(.semibold))
+                    .foregroundStyle(DS.Color.foreground)
+                Text("Scribe will stop in 10 seconds unless you keep recording.")
+                    .font(DS.Font.bodySmall)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
+            }
 
             // Gigantic countdown numeral. Monospaced digits keep the
             // glyph width stable so the HUD doesn't twitch each tick.
@@ -126,19 +133,19 @@ private struct EndCountdownView: View {
                 Button(action: model.onKeep) {
                     Text("Keep recording").frame(maxWidth: .infinity)
                 }
+                .keyboardShortcut(.defaultAction)
                 .keyboardShortcut(.cancelAction)
-                .buttonStyle(SecondaryButtonStyle())
+                .buttonStyle(PrimaryButtonStyle())
+                .hoverSheen()
 
                 Button(action: model.onStopNow) {
                     Text("Stop now").frame(maxWidth: .infinity)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(PrimaryButtonStyle())
-                .hoverSheen()
+                .buttonStyle(SecondaryButtonStyle())
             }
         }
         .padding(20)
-        .frame(width: 360, height: 220)
+        .frame(width: 380, height: 270)
         .glassBackground()
         .opacity(didAppear ? 1 : 0)
         .offset(y: didAppear ? 0 : -8)
