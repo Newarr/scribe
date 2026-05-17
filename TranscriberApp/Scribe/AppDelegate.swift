@@ -1414,30 +1414,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu?.rebuild(for: status)
         applyTrustIcon()
 
-        // Eager mic and calendar prompts removed. The previous
-        // pattern (auto-fire CGRequest / EKEventStore before the audit)
-        // caused a surprise system dialog to appear BEFORE any Scribe
-        // UI surfaced — violating the "one clean window for all
-        // permissions" UX. The audit below catches .notDetermined as a
-        // blocker and routes to the Permissions onboarding window
-        // (`PermissionsOnboardingWindowController`); the user clicks
-        // Allow… in-window, which fires the system prompt from a
-        // context they understand.
-
-        // Phase α preflight gate. Any blocker → abort and route to the
-        // Permissions onboarding window so the user has a single,
-        // explained surface for granting each unmet permission.
+        // Audit before capture so permission prompts stay inside Scribe UI.
         let snapshot = settings
         let report = await preflightDoctor.audit(outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
         if let freeBytes = Self.availableDiskBytes(for: snapshot.outputRoot), freeBytes < Self.minimumFreeDiskBytes {
-            Log.lifecycle.error("startRecording denied: low disk space (\(freeBytes, privacy: .public) bytes free)")
-            self.status = .idle
-            menu?.rebuild(for: status)
-            applyTrustIcon()
-            presentLowDiskAlert(freeBytes: freeBytes, outputRoot: snapshot.outputRoot)
+            denyStartForLowDisk(freeBytes: freeBytes, outputRoot: snapshot.outputRoot)
             return
         }
 
+        guard handleStartPreflightResult(report) else { return }
+
+        let id = SessionID(from: Date())
+        do {
+            let dir = try SessionDirectory.create(under: outputRoot, id: id)
+            let sessionEngineMode = snapshot.engineMode
+            let session = try makeCaptureSession(directory: dir, engineMode: sessionEngineMode)
+            installStartingSession(session, directory: dir, engineMode: sessionEngineMode)
+
+            // Slice 6: prefer the watcher cache (already populated, no
+            // EventKit round-trip on the start path). Fall back to the
+            // direct lookup if the cache hasn't been refreshed yet.
+            let promptedEvent = pendingPromptCalendarEventForStart
+            let cachedEvent = promptedEvent == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
+            let event = promptedEvent ?? cachedEvent ?? calendar.eventOverlapping(Date())
+            self.currentCalendarEvent = event
+            Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
+
+            try await session.start()
+            await finishSuccessfulStart(directory: dir, event: event)
+        } catch {
+            handleStartFailure(error)
+        }
+    }
+
+    @MainActor
+    private func handleStartPreflightResult(_ report: PreflightReport) -> Bool {
         switch RecordRequestGate().verdict(from: report) {
         case .deny(let reasons):
             // Codex rc2-audit P0 (privacy): String(describing: reasons)
@@ -1445,7 +1456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `/Users/<name>/...` paths. Use the safe `publicLabels`
             // accessor for .public; full reasons at .private.
             Log.lifecycle.error("startRecording denied by preflight: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
-            self.status = .idle
+            status = .idle
             // Codex PM-review UX-7: flag the menu so "Setup Required…"
             // appears (instead of the neutral "Check setup…") until
             // the next successful start.
@@ -1462,104 +1473,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 showSetupRequiredPopover(report: report, sessionRepairPayload: nil)
             }
-            return
+            return false
         case .allowWithWarnings(let reasons):
             Log.lifecycle.info("startRecording proceeding with warnings: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]")
             // UX-7: warnings don't need to scream "Setup Required";
             // recording is happening.
             menu?.setupNeedsAttention = false
             self.setupNeedsAttention = false
+            return true
         case .allow:
             menu?.setupNeedsAttention = false
             self.setupNeedsAttention = false
+            return true
         }
+    }
 
-        let id = SessionID(from: Date())
-        do {
-            let dir = try SessionDirectory.create(under: outputRoot, id: id)
-            // Phase β: one SCStream with both .audio + .microphone outputs
-            // so mic and system share a sync clock. AEC (Phase ξ) and
-            // streaming finalize (Phase ε) both depend on this.
-            let stream = SCKDualOutputStream(sampleRate: 48000, channelCount: 1)
-            let mic = SCKAudioCaptureSource(kind: .microphone, stream: stream)
-            let sys = SCKAudioCaptureSource(kind: .system, stream: stream)
-            let sessionEngineMode = snapshot.engineMode
-            let session = try CaptureSession(
-                directory: dir,
-                mic: mic,
-                system: sys,
-                sampleRate: 48000,
-                channelCount: 1,
-                sessionEngineIdentifier: sessionEngineMode.sessionEngineIdentifier,
-                liveLevelHandler: { [weak self] stream, rms in
-                    Task { @MainActor [weak self] in
-                        self?.recordLiveAudioLevel(stream: stream, rms: rms)
-                    }
+    @MainActor
+    private func makeCaptureSession(directory: SessionDirectory, engineMode: EngineMode) throws -> CaptureSession {
+        // Phase beta: one SCStream with both .audio and .microphone outputs
+        // keeps mic and system audio on a shared sync clock.
+        let stream = SCKDualOutputStream(sampleRate: 48000, channelCount: 1)
+        let mic = SCKAudioCaptureSource(kind: .microphone, stream: stream)
+        let sys = SCKAudioCaptureSource(kind: .system, stream: stream)
+        return try CaptureSession(
+            directory: directory,
+            mic: mic,
+            system: sys,
+            sampleRate: 48000,
+            channelCount: 1,
+            sessionEngineIdentifier: engineMode.sessionEngineIdentifier,
+            liveLevelHandler: { [weak self] stream, rms in
+                Task { @MainActor [weak self] in
+                    self?.recordLiveAudioLevel(stream: stream, rms: rms)
                 }
-            )
-            self.session = session
-            self.currentSessionDirectory = dir
-            self.currentSessionStartedAt = Date()
-            self.currentSessionEngineMode = sessionEngineMode
-            if let startCandidate = pendingPromptCandidateForStart {
-                self.currentRecordingTriggerIdentity = startCandidate.triggerIdentity
-            } else {
-                self.currentRecordingTriggerIdentity = nil
             }
-            menu?.sessionEngineMode = sessionEngineMode
-            self.currentDiagnosticsLiveLevels = nil
+        )
+    }
 
-            // Slice 6: prefer the watcher cache (already populated, no
-            // EventKit round-trip on the start path). Fall back to the
-            // direct lookup if the cache hasn't been refreshed yet.
-            let promptedEvent = pendingPromptCalendarEventForStart
-            let cachedEvent = promptedEvent == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
-            let event = promptedEvent ?? cachedEvent ?? calendar.eventOverlapping(Date())
-            self.currentCalendarEvent = event
-            Log.calendar.info("Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)")
+    @MainActor
+    private func installStartingSession(_ session: CaptureSession, directory: SessionDirectory, engineMode: EngineMode) {
+        self.session = session
+        currentSessionDirectory = directory
+        currentSessionStartedAt = Date()
+        currentSessionEngineMode = engineMode
+        currentRecordingTriggerIdentity = pendingPromptCandidateForStart?.triggerIdentity
+        menu?.sessionEngineMode = engineMode
+        currentDiagnosticsLiveLevels = nil
+    }
 
-            try await session.start()
-            self.status = .recording
-            pendingPromptCandidateForStart = nil
-            await startEndGuard(startedAt: currentSessionStartedAt ?? Date())
-            // Wire the popover's live trust-surface readouts so the
-            // user sees a ticking timer + the matched meeting title
-            // the moment they open the menu bar. Without this, the
-            // popover read `0:00 · Recording` for the entire session.
-            menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
-            menu?.outcomeFolderName = dir.url.lastPathComponent
-            menu?.outcomeFolderURL = dir.url
-            menu?.elapsedSeconds = 0
-            startElapsedTickTimer()
-            menu?.rebuild(for: status)
-            applyTrustIcon()
-        } catch {
-            Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
-            // Codex rc2-audit STATE-3: a failed start would leave
-            // self.session / currentSessionDirectory / currentSessionStartedAt
-            // populated. A subsequent Stop or Quit would then write a
-            // pending transcript for a never-started session. Clear
-            // ALL session state on the catch path so the app is in a
-            // well-defined idle.
-            self.status = .failed
-            self.session = nil
-            self.currentSessionDirectory = nil
-            self.currentSessionStartedAt = nil
-            self.currentCalendarEvent = nil
-            self.currentSessionEngineMode = nil
-            self.currentDiagnosticsLiveLevels = nil
-            self.currentRecordingTriggerIdentity = nil
-            self.pendingPromptCandidateForStart = nil
-            stopElapsedTickTimer()
-            menu?.outcomeFolderName = nil
-            menu?.outcomeFolderURL = nil
-            menu?.sessionEngineMode = .cloud
-            menu?.recordingSourceLabel = "Recording"
-            menu?.queuedNextMeeting = nil
-            menu?.elapsedSeconds = 0
-            menu?.rebuild(for: status)
-            applyTrustIcon()
-        }
+    @MainActor
+    private func denyStartForLowDisk(freeBytes: Int64, outputRoot: URL) {
+        Log.lifecycle.error("startRecording denied: low disk space (\(freeBytes, privacy: .public) bytes free)")
+        status = .idle
+        menu?.rebuild(for: status)
+        applyTrustIcon()
+        presentLowDiskAlert(freeBytes: freeBytes, outputRoot: outputRoot)
+    }
+
+    @MainActor
+    private func finishSuccessfulStart(directory: SessionDirectory, event: CalendarEvent?) async {
+        status = .recording
+        pendingPromptCandidateForStart = nil
+        await startEndGuard(startedAt: currentSessionStartedAt ?? Date())
+        // Wire the popover's live trust-surface readouts so the user sees
+        // a ticking timer and the matched meeting title the moment they
+        // open the menu bar.
+        menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
+        menu?.outcomeFolderName = directory.url.lastPathComponent
+        menu?.outcomeFolderURL = directory.url
+        menu?.elapsedSeconds = 0
+        startElapsedTickTimer()
+        menu?.rebuild(for: status)
+        applyTrustIcon()
+    }
+
+    @MainActor
+    private func handleStartFailure(_ error: Error) {
+        Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
+        // Codex rc2-audit STATE-3: a failed start would leave
+        // self.session / currentSessionDirectory / currentSessionStartedAt
+        // populated. A subsequent Stop or Quit would then write a
+        // pending transcript for a never-started session. Clear all
+        // session state on the catch path so the app is well-defined.
+        status = .failed
+        session = nil
+        currentSessionDirectory = nil
+        currentSessionStartedAt = nil
+        currentCalendarEvent = nil
+        currentSessionEngineMode = nil
+        currentDiagnosticsLiveLevels = nil
+        currentRecordingTriggerIdentity = nil
+        pendingPromptCandidateForStart = nil
+        stopElapsedTickTimer()
+        menu?.outcomeFolderName = nil
+        menu?.outcomeFolderURL = nil
+        menu?.sessionEngineMode = .cloud
+        menu?.recordingSourceLabel = "Recording"
+        menu?.queuedNextMeeting = nil
+        menu?.elapsedSeconds = 0
+        menu?.rebuild(for: status)
+        applyTrustIcon()
     }
 
     @MainActor
