@@ -312,6 +312,8 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
 
 @MainActor
 final class RecordingMenuModel: ObservableObject {
+    static let recentsLimit = 5
+
     @Published var status: SessionStatus
     @Published var setupNeedsAttention: Bool = false
     @Published var pendingPrompt: PendingPromptRecovery? = nil
@@ -340,7 +342,7 @@ final class RecordingMenuModel: ObservableObject {
 
     func refreshRecents(under root: URL?) {
         guard let root else { recents = []; return }
-        recents = SessionFolderEnumerator.recents(under: root, limit: 3)
+        recents = SessionFolderEnumerator.recents(under: root, limit: Self.recentsLimit)
     }
 }
 
@@ -1144,9 +1146,9 @@ private struct IconButtonStyle: ButtonStyle {
 /// Single row in the recents list. Matches the canonical menu-rows
 /// preview: 24x24 mono initial badge, sentence-case title, mono
 /// sub-label with separator dots, right-aligned mono duration and
-/// relative time. Hover background; click opens the transcript file
-/// in Finder. Failed sessions expose inline retry/repair controls so
-/// recovery stays visible without relying on Finder or a context menu.
+/// relative time. Folder and transcript actions are visible inline.
+/// Failed sessions expose inline retry/repair controls so recovery
+/// stays visible without relying on Finder or a context menu.
 private struct MenuRow: View {
     let entry: SessionFolderEnumerator.Entry
     let onRetry: (URL) -> Void
@@ -1158,31 +1160,37 @@ private struct MenuRow: View {
     var body: some View {
         let palette = RecordingPopoverPalette(colorScheme: colorScheme)
         HStack(alignment: .center, spacing: 10) {
-            Button(action: openTranscript) {
-                HStack(alignment: .center, spacing: 10) {
-                    badge(palette: palette)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(entry.title)
-                            .font(DS.Font.bodySmall)
-                            .foregroundStyle(palette.text)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Text(subline)
-                            .font(DS.Font.monoSmall)
-                            .tracking(0.1)
-                            .foregroundStyle(palette.metaText)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 8)
-                    Text(relativeTime)
-                        .font(DS.Font.monoSmall)
-                        .tracking(0.25)
-                        .foregroundStyle(palette.metaText)
-                }
-                .contentShape(Rectangle())
+            badge(palette: palette)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(DS.Font.bodySmall)
+                    .foregroundStyle(palette.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(subline)
+                    .font(DS.Font.monoSmall)
+                    .tracking(0.1)
+                    .foregroundStyle(palette.metaText)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 8)
+            Text(relativeTime)
+                .font(DS.Font.monoSmall)
+                .tracking(0.25)
+                .foregroundStyle(palette.metaText)
+
+            recentIconButton(
+                glyph: .folder,
+                label: "Open Folder",
+                palette: palette,
+                action: openFolder
+            )
+            recentIconButton(
+                glyph: .fileText,
+                label: "Open Transcript",
+                palette: palette,
+                action: openTranscript
+            )
 
             recentActionButton(palette: palette)
         }
@@ -1194,21 +1202,23 @@ private struct MenuRow: View {
                 .fill(hovering ? palette.hoverFill : SwiftUI.Color.clear)
         )
         .onHover { hovering = $0 }
-        .contextMenu {
-            Button("Open transcript") { openTranscript() }
-            Button("Open folder") { NSWorkspace.shared.open(entry.directory) }
-            switch SessionRepairRouting.recentAction(for: entry, localModelReady: localModelReadyForRetry) {
-            case .retry(let sessionDirectory):
-                Button("Retry failed session") { onRetry(sessionDirectory) }
-            case .repair(let payload):
-                Button("Repair failed session") { onRepair(payload.sessionDirectory) }
-            case .loading:
-                Button("Checking local model…") {}
-                    .disabled(true)
-            case .none:
-                EmptyView()
-            }
+    }
+
+    private func recentIconButton(
+        glyph: LucideGlyph,
+        label: String,
+        palette: RecordingPopoverPalette,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            LucideIcon(glyph: glyph)
+                .frame(width: 14, height: 14)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(IconButtonStyle(palette: palette))
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -1231,6 +1241,10 @@ private struct MenuRow: View {
 
     private func openTranscript() {
         NSWorkspace.shared.open(entry.transcript)
+    }
+
+    private func openFolder() {
+        NSWorkspace.shared.open(entry.directory)
     }
 
     /// 24x24 rounded square with a single mono initial: Z for Zoom,
@@ -1282,7 +1296,7 @@ private struct MenuRow: View {
 enum RecordingMenuVisualSnapshotRenderer {
     static func renderAll(to directory: URL) throws {
         let recentsRoot = try makeRecentsRoot()
-        let recents = SessionFolderEnumerator.recents(under: recentsRoot, limit: 3)
+        let recents = SessionFolderEnumerator.recents(under: recentsRoot, limit: RecordingMenuModel.recentsLimit)
         let cases: [(name: String, theme: AppearanceTheme, model: RecordingMenuModel)] = [
             ("menu-setup-light", .light, idleModel(setupNeedsAttention: true, recents: [])),
             ("menu-ready-light", .light, idleModel(setupNeedsAttention: false, recents: recents)),
