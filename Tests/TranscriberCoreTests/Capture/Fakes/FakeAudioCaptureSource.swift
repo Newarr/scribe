@@ -9,6 +9,8 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
     private(set) var started = false
     private(set) var stopped = false
     var startError: Error?
+    var suspendStart = false
+    var startContinuation: CheckedContinuation<Void, Never>?
 
     func setHandler(_ handler: @escaping @Sendable (CMSampleBuffer) -> Void) {
         self.handler = handler
@@ -16,7 +18,18 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
 
     func start() async throws {
         if let startError { throw startError }
+        if suspendStart, startContinuation == nil {
+            await withCheckedContinuation { continuation in
+                startContinuation = continuation
+            }
+        }
         started = true
+    }
+
+    func resumeStart() {
+        let continuation = startContinuation
+        startContinuation = nil
+        continuation?.resume()
     }
 
     func stop() async { stopped = true }

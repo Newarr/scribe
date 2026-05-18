@@ -25,6 +25,7 @@ public actor CaptureSession {
     /// skips moving the `.partial` files out from under
     /// AVAssetWriter. Released on stop / failure.
     private var captureClaim: SessionClaim.Token?
+    private var stopRequestedDuringStart = false
 
     public init(
         directory: SessionDirectory,
@@ -91,8 +92,14 @@ public actor CaptureSession {
 
             try await mic.start()
             startedMic = true
+            if stopRequestedDuringStart || status == .failed {
+                throw CaptureError.startCancelled
+            }
             try await system.start()
             startedSystem = true
+            if stopRequestedDuringStart || status == .failed {
+                throw CaptureError.startCancelled
+            }
 
             status = .recording
             Log.lifecycle.info("Capture started")
@@ -118,6 +125,8 @@ public actor CaptureSession {
         /// Another process / app instance already holds the
         /// SessionClaim for this directory. Codex rc2-audit CAP-5.
         case alreadyClaimed
+        case startCancelled
+        case noDurableAudio
     }
 
     public func stop() async throws {
@@ -135,21 +144,21 @@ public actor CaptureSession {
         switch status {
         case .finalized, .failed:
             return
-        case .idle, .starting:
-            // CAP-3: stop during .starting is no longer a silent
-            // no-op. The caller wanted to stop; we honor that even
-            // if start hasn't finished its racing setup. The status
-            // transitions to .failed so a subsequent re-start is
-            // explicit (and the AppDelegate's catch-path session
-            // cleanup fires per STATE-3).
+        case .idle:
             status = .failed
-            return
+            throw CaptureError.noDurableAudio
+        case .starting:
+            // Stop during startup is a cancellation, not a successful finalization.
+            // Latch it so a suspended start cannot later win and transition to recording.
+            stopRequestedDuringStart = true
+            status = .failed
+            throw CaptureError.startCancelled
         case .recording:
             break
         case .stopping:
-            // status==.stopping but inFlightStop == nil shouldn't
-            // happen with the latch above; treat as a no-op.
-            return
+            // A previous stop attempt failed after clearing the latched task. Retry the
+            // same finalization path so transient filesystem obstructions are recoverable.
+            break
         }
 
         status = .stopping
@@ -203,7 +212,11 @@ public actor CaptureSession {
         collector.flushLog()
         do { try collector.writeSidecar(to: directory.ptsSidecar) } catch { firstError = firstError ?? error }
         do { try directory.finalize() } catch { firstError = firstError ?? error }
-        do { try writeTranscriptStub() } catch { firstError = firstError ?? error }
+        if finalRawAudioIsReadable() {
+            do { try writeTranscriptStub() } catch { firstError = firstError ?? error }
+        } else if firstError == nil {
+            firstError = CaptureError.noDurableAudio
+        }
         // Codex rc2-audit CAP-5: release the capture claim regardless
         // of whether the stop chain succeeded — leaving it held would
         // block future supervisor recovery on this directory.
@@ -212,9 +225,10 @@ public actor CaptureSession {
             captureClaim = nil
         }
         if let firstError {
-            // Status stays at .stopping so the next stop attempt can
-            // try again. Don't claim .finalized when something failed
-            // in the chain.
+            try? writeFailedCaptureTranscript(reason: "Capture could not finalize durable microphone and system audio. Scribe will retry cleanup before transcription starts.")
+            // Keep the stopped session retryable in-process: a later stop() with
+            // the obstruction removed will re-run finalize/verify/stub publication.
+            status = .stopping
             throw firstError
         }
         status = .finalized
@@ -225,6 +239,39 @@ public actor CaptureSession {
     /// runs. Status is `pending` (matches TranscriptWriter.writePending) so the slice 7
     /// recovery scan finds both the stub and engine-written pending transcripts under
     /// one query.
+    private nonisolated func finalRawAudioIsReadable() -> Bool {
+        let fm = FileManager.default
+        for url in [directory.micFinal, directory.systemFinal] {
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue, fm.isReadableFile(atPath: url.path) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private nonisolated func writeFailedCaptureTranscript(reason: String) throws {
+        let audioLines = [directory.micFinal, directory.systemFinal, directory.micPartial, directory.systemPartial]
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+            .map { "  - \($0.lastPathComponent)" }
+            .joined(separator: "\n")
+        let audioBlock = audioLines.isEmpty ? "[]" : "\n\(audioLines)"
+        let stub = """
+        ---
+        status: failed
+        engine: \(sessionEngineIdentifier)
+        audio: \(audioBlock)
+        error_code: "capture_finalization_failed"
+        error_message: "\(reason)"
+        ---
+
+        # Transcription Failed
+
+        \(reason)
+        """
+        try stub.write(to: directory.transcript, atomically: true, encoding: .utf8)
+    }
+
     private nonisolated func writeTranscriptStub() throws {
         let stub = """
         ---
@@ -328,6 +375,11 @@ public actor CaptureSession {
         collector.flushLog()
         try? collector.writeSidecar(to: directory.ptsSidecar)
         try? directory.finalize()
+        try? writeFailedCaptureTranscript(reason: "Capture stopped because audio writing failed before Scribe could safely complete the recording.")
+        if let claim = captureClaim {
+            SessionClaim.release(claim)
+            captureClaim = nil
+        }
     }
 
     private func markFailed() {

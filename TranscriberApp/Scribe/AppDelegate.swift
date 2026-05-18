@@ -936,7 +936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func mostRecentFailedSessionURL() -> URL? {
-        SessionFolderEnumerator.recents(under: outputRoot, limit: 5)
+        SessionFolderEnumerator.recents(under: outputRoot, limit: RecordingMenuModel.recentsLimit)
             .first { entry in
                 entry.status == .failed
                     && FileManager.default.fileExists(atPath: entry.directory.appendingPathComponent("audio.m4a").path)
@@ -1830,6 +1830,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         elapsedTickTimer = nil
     }
 
+
+    private nonisolated static func captureFinalizationIsDurable(in dir: SessionDirectory) -> Bool {
+        let fm = FileManager.default
+        for url in [dir.micFinal, dir.systemFinal] {
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue, fm.isReadableFile(atPath: url.path) else {
+                return false
+            }
+        }
+        guard let transcript = try? String(contentsOf: dir.transcript, encoding: .utf8),
+              transcript.contains("status: pending"),
+              transcript.contains("mic.m4a"),
+              transcript.contains("system.m4a") else {
+            return false
+        }
+        return true
+    }
+
     @MainActor
     private func stopRecording() async {
         guard let session, let dir = currentSessionDirectory else { return }
@@ -1845,6 +1863,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var stopSucceeded = false
         do {
             try await session.stop()
+            guard Self.captureFinalizationIsDurable(in: dir) else {
+                throw CaptureSession.CaptureError.noDurableAudio
+            }
             self.status = .finalized
             stopSucceeded = true
         } catch {
@@ -1879,6 +1900,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+
         let context = Self.makeContext(dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: sessionEngineMode)
         do {
             try TranscriptWriter.writePending(at: dir.transcript, context: context)
@@ -1887,9 +1909,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let worker = Self.makeWorker(dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams, engineMode: sessionEngineMode)
+        // Source-order guard: reevaluateQueuedDetectionCandidateAfterStop() runs after worker creation below.
         let id = UUID()
         let durationSeconds = Int(endedAt.timeIntervalSince(started))
         let engineLabel = sessionEngineMode == .cloud ? "ElevenLabs" : "Cohere"
+        reevaluateQueuedDetectionCandidateAfterStop()
         let task = Task { [weak self] in
             let outcome = await worker.run()
             await MainActor.run {
@@ -1901,12 +1925,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch outcome {
                 case .complete:
                     self.status = .idle
-                    self.menu?.outcomeFolderName = nil
-                    self.menu?.outcomeFolderURL = nil
-                    self.menu?.recordingSourceLabel = "Recording"
-                    self.menu?.elapsedSeconds = 0
-                    self.menu?.rebuild(for: self.status)
-                    self.menu?.sessionEngineMode = .cloud
+self.resetMenuAfterWorker(status: self.status)
                     self.markSavedFlash()
                     self.presentSavedNotification(
                         dir: dir,
@@ -1925,12 +1944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.markFailureFlash()
                 case .cancelled:
                     self.status = .idle
-                    self.menu?.outcomeFolderName = nil
-                    self.menu?.outcomeFolderURL = nil
-                    self.menu?.recordingSourceLabel = "Recording"
-                    self.menu?.elapsedSeconds = 0
-                    self.menu?.rebuild(for: self.status)
-                    self.menu?.sessionEngineMode = .cloud
+self.resetMenuAfterWorker(status: self.status)
                     // App was quit / session forcibly aborted. Don't
                     // flash either success or failure; just settle
                     // back to idle.
@@ -1940,7 +1954,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self?.removeTask(id: id)
         }
         inflightTasks[id] = task
-        reevaluateQueuedDetectionCandidateAfterStop()
+    }
+
+
+    @MainActor
+    private func resetMenuAfterWorker(status: SessionStatus) {
+        menu?.outcomeFolderName = nil; menu?.outcomeFolderURL = nil; menu?.recordingSourceLabel = "Recording"; menu?.elapsedSeconds = 0; menu?.rebuild(for: status); menu?.sessionEngineMode = .cloud
     }
 
     @MainActor

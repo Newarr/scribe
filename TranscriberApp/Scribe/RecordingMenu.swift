@@ -312,7 +312,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
 
 @MainActor
 final class RecordingMenuModel: ObservableObject {
-    static let recentsLimit = 5
+    static let recentsLimit = 3
 
     @Published var status: SessionStatus
     @Published var setupNeedsAttention: Bool = false

@@ -256,6 +256,60 @@ final class CaptureSessionTests: XCTestCase {
         }
     }
 
+
+    func testStopFailureDoesNotPublishFalsePendingTranscriptAndRetries() async throws {
+        let mic = FakeAudioCaptureSource()
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 8_000_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+        mic.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        sys.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+
+        try FileManager.default.createDirectory(at: dir.micFinal, withIntermediateDirectories: true)
+        await XCTAssertThrowsErrorAsync(try await session.stop())
+        let failedTranscript = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(failedTranscript.contains("status: failed"), failedTranscript)
+        XCTAssertFalse(failedTranscript.contains("status: pending"), "failed stop must not leave a pending transcript for invalid audio")
+        let recoveryClaim = try XCTUnwrap(SessionClaim.acquire(at: dir.claim), "released capture claim should allow a supervisor/retry claimant after stop failure")
+        SessionClaim.release(recoveryClaim)
+        try FileManager.default.removeItem(at: dir.micFinal)
+
+        try await session.stop()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+        let pendingTranscript = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(pendingTranscript.contains("status: pending"), pendingTranscript)
+        XCTAssertTrue(pendingTranscript.contains("- mic.m4a"), pendingTranscript)
+        XCTAssertTrue(pendingTranscript.contains("- system.m4a"), pendingTranscript)
+        let finalStatus = await session.status
+        XCTAssertEqual(finalStatus, .finalized)
+    }
+
+    func testStopDuringStartingCancelsStartupAndDoesNotPublishPendingTranscript() async throws {
+        let mic = FakeAudioCaptureSource()
+        mic.suspendStart = true
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 8_500_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+
+        let startTask = Task { try await session.start() }
+        while mic.startContinuation == nil { try await Task.sleep(nanoseconds: 1_000_000) }
+        await XCTAssertThrowsErrorAsync(try await session.stop())
+        mic.resumeStart()
+        await XCTAssertThrowsErrorAsync(try await startTask.value)
+
+        XCTAssertTrue(mic.stopped, "startup cancellation must stop any source that started before cancellation")
+        XCTAssertFalse(sys.started, "startup cancellation before system start must not later start system capture")
+        let cancelledStatus = await session.status
+        XCTAssertEqual(cancelledStatus, .failed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.transcript.path), "stop during startup must not publish pending transcript without durable audio")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+    }
+
     func testStartRollsBackWhenSystemSourceFails() async throws {
         let mic = FakeAudioCaptureSource()
         let sys = FakeAudioCaptureSource()
