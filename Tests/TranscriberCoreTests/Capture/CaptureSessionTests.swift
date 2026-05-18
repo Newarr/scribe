@@ -287,7 +287,38 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(finalStatus, .finalized)
     }
 
+    func testDroppedBackpressureImmediatelyFollowedByStopCannotPublishPendingTranscript() async throws {
+        let mic = FakeAudioCaptureSource()
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 8_250_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+
+        mic.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        sys.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        await session.simulateDroppedBackpressureForTest()
+
+        await XCTAssertThrowsErrorAsync(try await session.stop())
+        let transcript = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("status: failed"), transcript)
+        XCTAssertFalse(transcript.contains("status: pending"), "backpressure drop must not be finalized as normal pending transcription")
+        XCTAssertTrue(transcript.contains("backpressure") || transcript.contains("audio"), transcript)
+        let claim = try XCTUnwrap(SessionClaim.acquire(at: dir.claim), "terminal cleanup must release capture claim")
+        SessionClaim.release(claim)
+        let terminalStatus = await session.status
+        XCTAssertNotEqual(terminalStatus, .finalized)
+    }
+
     func testStopDuringStartingCancelsStartupAndDoesNotPublishPendingTranscript() async throws {
+        try await assertStopDuringSuspendedStartWaitsForRollbackBeforeReturning()
+    }
+
+    func testStopDuringSuspendedStartWaitsForRollbackBeforeReturning() async throws {
+        try await assertStopDuringSuspendedStartWaitsForRollbackBeforeReturning()
+    }
+
+    private func assertStopDuringSuspendedStartWaitsForRollbackBeforeReturning() async throws {
         let mic = FakeAudioCaptureSource()
         mic.suspendStart = true
         let sys = FakeAudioCaptureSource()
@@ -298,10 +329,15 @@ final class CaptureSessionTests: XCTestCase {
         let startTask = Task { try await session.start() }
         while mic.startContinuation == nil { try await Task.sleep(nanoseconds: 1_000_000) }
         await XCTAssertThrowsErrorAsync(try await session.stop())
+
+        XCTAssertTrue(mic.stopped, "stop() during startup must stop sources before returning")
+        XCTAssertTrue(sys.stopped, "stop() during startup must roll back both configured sources before returning")
+        let recoveryClaim = try XCTUnwrap(SessionClaim.acquire(at: dir.claim), "stop() during startup must release the capture claim before returning")
+        SessionClaim.release(recoveryClaim)
+
         mic.resumeStart()
         await XCTAssertThrowsErrorAsync(try await startTask.value)
 
-        XCTAssertTrue(mic.stopped, "startup cancellation must stop any source that started before cancellation")
         XCTAssertFalse(sys.started, "startup cancellation before system start must not later start system capture")
         let cancelledStatus = await session.status
         XCTAssertEqual(cancelledStatus, .failed)

@@ -2,6 +2,23 @@ import AVFoundation
 import Foundation
 
 public actor CaptureSession {
+    private final class TerminalFailureLatch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var failure: String?
+
+        func set(_ reason: String) {
+            lock.lock()
+            if failure == nil { failure = reason }
+            lock.unlock()
+        }
+
+        func get() -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            return failure
+        }
+    }
+
     public private(set) var status: SessionStatus = .idle
 
     private nonisolated let directory: SessionDirectory
@@ -26,6 +43,7 @@ public actor CaptureSession {
     /// AVAssetWriter. Released on stop / failure.
     private var captureClaim: SessionClaim.Token?
     private var stopRequestedDuringStart = false
+    private nonisolated let terminalFailureLatch = TerminalFailureLatch()
 
     public init(
         directory: SessionDirectory,
@@ -121,6 +139,11 @@ public actor CaptureSession {
         }
     }
 
+    func simulateDroppedBackpressureForTest() {
+        terminalFailureLatch.set("Capture stopped because audio writer backpressure dropped audio before Scribe could safely complete the recording.")
+        Task { await self.failAndCleanup() }
+    }
+
     public enum CaptureError: Error, Equatable {
         /// Another process / app instance already holds the
         /// SessionClaim for this directory. Codex rc2-audit CAP-5.
@@ -142,19 +165,29 @@ public actor CaptureSession {
             return
         }
         switch status {
-        case .finalized, .failed:
+        case .finalized:
+            return
+        case .failed:
+            if terminalFailureLatch.get() != nil {
+                await failAndCleanup()
+                throw CaptureError.noDurableAudio
+            }
             return
         case .idle:
             status = .failed
             throw CaptureError.noDurableAudio
         case .starting:
             // Stop during startup is a cancellation, not a successful finalization.
-            // Latch it so a suspended start cannot later win and transition to recording.
+            // Roll back synchronously from the caller's perspective so AppDelegate/quit
+            // cannot drop the session while sources or the capture claim remain live.
             stopRequestedDuringStart = true
-            status = .failed
+            await rollbackStartingFromStop()
             throw CaptureError.startCancelled
         case .recording:
-            break
+            if terminalFailureLatch.get() != nil {
+                await failAndCleanup()
+                throw CaptureError.noDurableAudio
+            }
         case .stopping:
             // A previous stop attempt failed after clearing the latched task. Retry the
             // same finalization path so transient filesystem obstructions are recoverable.
@@ -168,6 +201,20 @@ public actor CaptureSession {
         inFlightStop = task
         defer { inFlightStop = nil }
         try await task.value
+    }
+
+    private func rollbackStartingFromStop() async {
+        status = .failed
+        await mic.stop()
+        await system.stop()
+        try? await micWriter.finalize()
+        try? await systemWriter.finalize()
+        collector.flushLog()
+        try? collector.writeSidecar(to: directory.ptsSidecar)
+        if let claim = captureClaim {
+            SessionClaim.release(claim)
+            captureClaim = nil
+        }
     }
 
     /// Body of the stop sequence, called once per stop generation.
@@ -301,6 +348,7 @@ public actor CaptureSession {
             }
         } catch {
             Log.capture.error("Append failed: \(String(describing: error), privacy: .public)")
+            terminalFailureLatch.set("Capture stopped because audio writing failed before Scribe could safely complete the recording.")
             // P1.3: a writer-level append failure means the m4a is wedged.
             // Drive the full stop chain (release SCK + finalize + rename)
             // instead of just flipping status — leaving SCK running while
@@ -315,6 +363,7 @@ public actor CaptureSession {
         // path as a writer-level append failure.
         if outcome == .droppedBackpressure {
             Log.capture.error("Audio writer dropped a buffer under backpressure — terminating session to surface data loss")
+            terminalFailureLatch.set("Capture stopped because audio writer backpressure dropped audio before Scribe could safely complete the recording.")
             Task { await self.failAndCleanup() }
             return
         }
@@ -365,8 +414,9 @@ public actor CaptureSession {
         // that throws is logged but doesn't escape — we're already in a
         // failure path and SessionSupervisor will rescue any unrenamed
         // .partial files on next launch.
-        guard status == .recording else { return }
+        guard status == .recording || terminalFailureLatch.get() != nil else { return }
         status = .failed
+        let failureReason = terminalFailureLatch.get() ?? "Capture stopped because audio writing failed before Scribe could safely complete the recording."
         Log.lifecycle.error("Capture failure: tearing down sources + writers")
         await mic.stop()
         await system.stop()
@@ -375,7 +425,7 @@ public actor CaptureSession {
         collector.flushLog()
         try? collector.writeSidecar(to: directory.ptsSidecar)
         try? directory.finalize()
-        try? writeFailedCaptureTranscript(reason: "Capture stopped because audio writing failed before Scribe could safely complete the recording.")
+        try? writeFailedCaptureTranscript(reason: failureReason)
         if let claim = captureClaim {
             SessionClaim.release(claim)
             captureClaim = nil
