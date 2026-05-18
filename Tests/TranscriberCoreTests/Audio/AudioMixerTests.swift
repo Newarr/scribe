@@ -52,8 +52,8 @@ final class AudioMixerTests: XCTestCase {
         let outURL = tmp.appendingPathComponent("mixed.wav")
 
         try AudioMixer.mix(
-            micReader: ContractAudioReader(name: "mic.m4a"),
-            systemReader: ContractAudioReader(name: "system.m4a"),
+            micReader: ContractAudioReader(name: "mic.m4a", throwAtEOF: true),
+            systemReader: ContractAudioReader(name: "system.m4a", throwAtEOF: true),
             output: outURL,
             sampleRate: 16_000
         )
@@ -116,17 +116,30 @@ final class ContractAudioReader: AudioPCMReadable {
     let processingFormat: AVAudioFormat
     private let failBeforeEOF: Bool
     private let empty: Bool
+    private let throwAtEOF: Bool
+    private var didThrowAtEOF = false
 
-    init(name: String, length: AVAudioFramePosition = 4_800, failBeforeEOF: Bool = false, empty: Bool = false) {
+    init(
+        name: String,
+        length: AVAudioFramePosition = 4_800,
+        failBeforeEOF: Bool = false,
+        empty: Bool = false,
+        throwAtEOF: Bool = false
+    ) {
         self.sourceURL = URL(fileURLWithPath: "/tmp/\(name)")
         self.length = empty ? 0 : length
         self.fileFormat = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
         self.processingFormat = fileFormat
         self.failBeforeEOF = failBeforeEOF
         self.empty = empty
+        self.throwAtEOF = throwAtEOF
     }
 
     func read(into buffer: AVAudioPCMBuffer) throws {
+        if throwAtEOF, framePosition == length, !didThrowAtEOF {
+            didThrowAtEOF = true
+            throw ReaderError.injected
+        }
         if failBeforeEOF, framePosition < length {
             throw ReaderError.injected
         }

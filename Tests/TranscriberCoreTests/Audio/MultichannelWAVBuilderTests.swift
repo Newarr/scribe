@@ -51,8 +51,8 @@ final class MultichannelWAVBuilderTests: XCTestCase {
         let outURL = tmp.appendingPathComponent("multichannel.wav")
 
         try MultichannelWAVBuilder.build(
-            micReader: ContractAudioReader(name: "mic.m4a"),
-            systemReader: ContractAudioReader(name: "system.m4a"),
+            micReader: ContractAudioReader(name: "mic.m4a", throwAtEOF: true),
+            systemReader: ContractAudioReader(name: "system.m4a", throwAtEOF: true),
             output: outURL,
             sampleRate: 16_000
         )
