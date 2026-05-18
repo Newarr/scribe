@@ -17,6 +17,36 @@ import Foundation
 ///   sources call it; subsequent calls return without re-starting.
 /// - `stopIfRunning()` tears the stream down once; the second caller is a
 ///   no-op.
+
+protocol SCKStreaming: AnyObject, Sendable {
+    func addStreamOutput(_ output: SCStreamOutput, type: SCStreamOutputType, sampleHandlerQueue: DispatchQueue?) throws
+    func startCapture() async throws
+    func stopCapture() async throws
+}
+
+protocol SCKStreamFactory: Sendable {
+    func makeStream(sampleRate: Int, channelCount: Int, capturesAudio: Bool, capturesMicrophone: Bool) async throws -> SCKStreaming
+}
+
+private struct LiveSCKStreamFactory: SCKStreamFactory {
+    func makeStream(sampleRate: Int, channelCount: Int, capturesAudio: Bool, capturesMicrophone: Bool) async throws -> SCKStreaming {
+        let content = try await SCShareableContent.current
+        guard let display = content.displays.first else { throw SCKDualOutputStream.SCKError.noDisplay }
+
+        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        let config = SCStreamConfiguration()
+        config.capturesAudio = capturesAudio
+        config.captureMicrophone = capturesMicrophone
+        config.excludesCurrentProcessAudio = true
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.sampleRate = sampleRate
+        config.channelCount = channelCount
+        return SCStream(filter: filter, configuration: config, delegate: nil)
+    }
+}
+
+extension SCStream: SCKStreaming {}
+
 public final class SCKDualOutputStream: @unchecked Sendable {
     public enum Kind: Hashable, Sendable { case microphone, system }
 
@@ -38,7 +68,7 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     /// guarantee with cleaner ergonomics.
     private let queue = DispatchQueue(label: "sck.dual-output-stream")
     private var registrations: [Registration] = []
-    private var stream: SCStream?
+    private var stream: (any SCKStreaming)?
     /// Single in-flight start task. Codex Phase β review P0.1 + P1.2:
     /// without this, parallel mic.start() + system.start() each see
     /// `stream == nil`, both build a new SCStream, and the loser leaks (or
@@ -53,10 +83,16 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     private var stopRequested: Bool = false
     private var sampleRate: Int
     private var channelCount: Int
+    private let streamFactory: any SCKStreamFactory
 
-    public init(sampleRate: Int = 48000, channelCount: Int = 1) {
+    public convenience init(sampleRate: Int = 48000, channelCount: Int = 1) {
+        self.init(sampleRate: sampleRate, channelCount: channelCount, streamFactory: LiveSCKStreamFactory())
+    }
+
+    init(sampleRate: Int = 48000, channelCount: Int = 1, streamFactory: any SCKStreamFactory) {
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.streamFactory = streamFactory
     }
 
     /// Synchronous registration so each `SCKAudioCaptureSource` can register
@@ -121,7 +157,7 @@ public final class SCKDualOutputStream: @unchecked Sendable {
         // only nil it after a successful stopCapture. On failure, log
         // and leave `stream` intact so a later stop attempt has
         // something to operate on.
-        let toStop: SCStream? = queue.sync { self.stream }
+        let toStop: (any SCKStreaming)? = queue.sync { self.stream }
         if let toStop {
             do {
                 try await toStop.stopCapture()
@@ -139,22 +175,19 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     }
 
     private func performStart(snapshot: [Registration], sampleRate: Int, channelCount: Int) async throws {
-        let content = try await SCShareableContent.current
-        guard let display = content.displays.first else {
+        let newStream: any SCKStreaming
+        do {
+            newStream = try await streamFactory.makeStream(
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                capturesAudio: snapshot.contains(where: { $0.kind == .system }),
+                capturesMicrophone: snapshot.contains(where: { $0.kind == .microphone })
+            )
+        } catch {
             queue.sync { inFlightStart = nil }
-            throw SCKError.noDisplay
+            throw error
         }
 
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let config = SCStreamConfiguration()
-        config.capturesAudio = snapshot.contains(where: { $0.kind == .system })
-        config.captureMicrophone = snapshot.contains(where: { $0.kind == .microphone })
-        config.excludesCurrentProcessAudio = true
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.sampleRate = sampleRate
-        config.channelCount = channelCount
-
-        let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
         do {
             for reg in snapshot {
                 let outputType: SCStreamOutputType = (reg.kind == .microphone) ? .microphone : .audio
@@ -163,6 +196,7 @@ public final class SCKDualOutputStream: @unchecked Sendable {
             try await newStream.startCapture()
         } catch {
             queue.sync { inFlightStart = nil }
+            try? await newStream.stopCapture()
             throw SCKError.streamFailedToStart(error)
         }
 
