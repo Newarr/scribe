@@ -266,7 +266,118 @@ final class AudioFinalizerTests: XCTestCase {
         XCTAssertEqual(surviving, goodBytes, "previous good output must not be overwritten by a failed retry")
     }
 
+
+    func testPTSTimelinePreservesInterBufferGap() async throws {
+        let micURL = tmp.appendingPathComponent("mic-gap.m4a")
+        let sysURL = tmp.appendingPathComponent("system-gap.m4a")
+        let ptsURL = tmp.appendingPathComponent("pts-gap.jsonl")
+        let outURL = tmp.appendingPathComponent("audio-gap.m4a")
+        try writeAACPCM(to: micURL, sampleRate: 48000, duration: 0.2) { ptr, frames, _ in
+            for i in 0..<frames { ptr[i] = Float(0.45 * sin(2 * .pi * 440 * Double(i) / 48000.0)) }
+        }
+        try writeAACSilence(to: sysURL, durationSec: 0.2)
+        try writePTSLog(to: ptsURL, entries: [
+            PTSLogEntry(stream: "mic", ptsSeconds: 0.0, sampleCount: 4800, sampleRate: 48000),
+            PTSLogEntry(stream: "mic", ptsSeconds: 0.3, sampleCount: 4800, sampleRate: 48000),
+            PTSLogEntry(stream: "system", ptsSeconds: 0.0, sampleCount: 4800, sampleRate: 48000),
+            PTSLogEntry(stream: "system", ptsSeconds: 0.3, sampleCount: 4800, sampleRate: 48000)
+        ])
+
+        try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, ptsLogURL: ptsURL)
+
+        let samples = try readSamples(from: outURL)
+        XCTAssertGreaterThan(samples.count, 18_000)
+        XCTAssertGreaterThan(rms(samples, start: 1_000, count: 2_000), 0.05)
+        XCTAssertLessThan(rms(samples, start: 6_000, count: 6_000), 0.02, "200ms logged PTS gap should remain silent instead of compressed")
+        XCTAssertGreaterThan(rms(samples, start: 15_000, count: 2_000), 0.05, "second chunk should begin after the logged gap")
+    }
+
+    func testPTSTimelineHonorsSubChunkOffset() async throws {
+        let micURL = tmp.appendingPathComponent("mic-offset.m4a")
+        let sysURL = tmp.appendingPathComponent("system-offset.m4a")
+        let ptsURL = tmp.appendingPathComponent("pts-offset.jsonl")
+        let outURL = tmp.appendingPathComponent("audio-offset.m4a")
+        try writeAACSilence(to: micURL, durationSec: 0.1)
+        try writeAACPCM(to: sysURL, sampleRate: 48000, duration: 0.1) { ptr, frames, _ in
+            for i in 0..<frames { ptr[i] = Float(0.5 * sin(2 * .pi * 880 * Double(i) / 48000.0)) }
+        }
+        try writePTSLog(to: ptsURL, entries: [
+            PTSLogEntry(stream: "mic", ptsSeconds: 0.0, sampleCount: 4800, sampleRate: 48000),
+            PTSLogEntry(stream: "system", ptsSeconds: 0.05, sampleCount: 4800, sampleRate: 48000)
+        ])
+
+        try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, ptsLogURL: ptsURL, options: .init(chunkFrames: 4800))
+
+        let samples = try readSamples(from: outURL)
+        let firstEnergy = firstFrameAboveEnergy(samples, threshold: 0.03) ?? -1
+        XCTAssertGreaterThanOrEqual(firstEnergy, 2_000)
+        XCTAssertLessThan(firstEnergy, 3_200, "50ms offset should land near frame 2400, not rounded to one 4800-frame chunk; got \(firstEnergy)")
+    }
+
+    func testMalformedMiddlePTSLogThrowsAndPreservesExistingOutput() async throws {
+        let micURL = tmp.appendingPathComponent("mic-corrupt.m4a")
+        let sysURL = tmp.appendingPathComponent("system-corrupt.m4a")
+        let ptsURL = tmp.appendingPathComponent("pts-corrupt.jsonl")
+        let outURL = tmp.appendingPathComponent("audio-corrupt.m4a")
+        let previous = Data("previous audio".utf8)
+        try previous.write(to: outURL)
+        try writeAACSilence(to: micURL, durationSec: 0.1)
+        try writeAACSilence(to: sysURL, durationSec: 0.1)
+        let valid = try JSONEncoder().encode(PTSLogEntry(stream: "mic", ptsSeconds: 0, sampleCount: 4800, sampleRate: 48000))
+        var text = String(data: valid, encoding: .utf8)! + "\n"
+        text += "{ malformed middle line\n"
+        text += String(data: valid, encoding: .utf8)! + "\n"
+        try text.write(to: ptsURL, atomically: true, encoding: .utf8)
+
+        do {
+            try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, ptsLogURL: ptsURL)
+            XCTFail("expected malformed middle PTS log to fail")
+        } catch AudioFinalizer.FinalizeError.invalidPTSLog {
+            // expected
+        } catch {
+            XCTFail("expected invalidPTSLog, got \(error)")
+        }
+        XCTAssertEqual(try Data(contentsOf: outURL), previous)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: tmp.path).filter { $0.contains(".inflight-") }
+        XCTAssertTrue(leftovers.isEmpty, "failed PTS parse should not leave inflight temp files: \(leftovers)")
+    }
+
     // MARK: - fixtures
+
+
+    private func writePTSLog(to url: URL, entries: [PTSLogEntry]) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let lines = try entries.map { entry -> String in
+            let data = try encoder.encode(entry)
+            return String(data: data, encoding: .utf8)!
+        }.joined(separator: "\n") + "\n"
+        try lines.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func readSamples(from url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length))!
+        try file.read(into: buffer)
+        let ptr = buffer.floatChannelData![0]
+        return Array(UnsafeBufferPointer(start: ptr, count: Int(buffer.frameLength)))
+    }
+
+    private func rms(_ samples: [Float], start: Int, count: Int) -> Double {
+        guard start < samples.count else { return 0 }
+        let end = min(samples.count, start + count)
+        guard end > start else { return 0 }
+        let sum = samples[start..<end].reduce(0.0) { $0 + Double($1 * $1) }
+        return sqrt(sum / Double(end - start))
+    }
+
+    private func firstFrameAboveEnergy(_ samples: [Float], threshold: Float) -> Int? {
+        for (index, sample) in samples.enumerated() where abs(sample) > threshold {
+            return index
+        }
+        return nil
+    }
 
     private func writeAACSilence(to url: URL, durationSec: Double, sampleRate: Double = 48000) throws {
         try writeAACPCM(to: url, sampleRate: sampleRate, duration: durationSec) { ptr, frames, _ in

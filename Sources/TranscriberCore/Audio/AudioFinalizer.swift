@@ -29,6 +29,7 @@ public enum AudioFinalizer {
         case converterCreationFailed
         case backpressureTimeout
         case writerStatusFailed
+        case invalidPTSLog
     }
 
     /// Knobs are surfaced so tests can drive partial-chunk EOF boundaries
@@ -69,21 +70,27 @@ public enum AudioFinalizer {
     ) async throws {
         let monoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
 
-        // Codex rc2-audit CAP-2: when a per-buffer PTS log is
-        // available, compute the per-stream first-PTS offset so the
-        // mix aligns mic and system on the same timeline. Without
-        // this, a stream that started 200ms late would be merged
-        // from frame zero — voices would be misaligned by that gap.
-        // The log is optional (older sessions have no log); when
-        // missing or empty, we fall back to zip-from-frame-zero.
-        var micPrependFrames: Int = 0
-        var systemPrependFrames: Int = 0
+        let writerSettings = aacMonoSettings(sampleRate: sampleRate)
+
         if let ptsLogURL, FileManager.default.fileExists(atPath: ptsLogURL.path) {
-            if let alignment = try? readFirstPTSAlignment(at: ptsLogURL, sampleRate: sampleRate) {
-                micPrependFrames = alignment.micPrependFrames
-                systemPrependFrames = alignment.systemPrependFrames
+            let timeline = try readPTSTimeline(at: ptsLogURL, outputSampleRate: sampleRate)
+            if !timeline.mic.isEmpty || !timeline.system.isEmpty {
+                try await finalizeWithTimeline(
+                    mic: mic,
+                    system: system,
+                    output: output,
+                    sampleRate: sampleRate,
+                    monoFormat: monoFormat,
+                    timeline: timeline,
+                    options: options,
+                    writerSettings: writerSettings
+                )
+                return
             }
         }
+
+        let micPrependFrames: Int = 0
+        let systemPrependFrames: Int = 0
 
         // Write to a sibling temp path so a mid-stream failure (or an
         // attempted retry after a previous run) cannot wipe an existing
@@ -99,13 +106,7 @@ public enum AudioFinalizer {
         let sysReader = try StreamReader(file: sysFile, target: monoFormat, chunkFrames: options.chunkFrames)
 
         let writer = try AVAssetWriter(outputURL: tempOutput, fileType: .m4a)
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVNumberOfChannelsKey: 1,
-            AVSampleRateKey: sampleRate,
-            AVEncoderBitRateKey: 64_000
-        ]
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: writerSettings)
         input.expectsMediaDataInRealTime = false
         guard writer.canAdd(input) else { throw FinalizeError.writerSetupFailed }
         writer.add(input)
@@ -428,6 +429,133 @@ public enum AudioFinalizer {
             }
             return out.frameLength
         }
+    }
+
+
+    private struct TimelineSegment {
+        let startFrame: Int
+        let frameCount: Int
+    }
+
+    private struct PTSTimeline {
+        let mic: [TimelineSegment]
+        let system: [TimelineSegment]
+    }
+
+
+    private static func aacMonoSettings(sampleRate: Double) -> [String: Any] {
+        var settings: [String: Any] = [:]
+        settings[AVFormatIDKey] = kAudioFormatMPEG4AAC
+        settings[AVNumberOfChannelsKey] = 1
+        settings[AVSampleRateKey] = sampleRate
+        settings[AVEncoderBitRateKey] = 64_000
+        return settings
+    }
+
+    private static func readPTSTimeline(at url: URL, outputSampleRate: Double) throws -> PTSTimeline {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let decoder = JSONDecoder()
+        let rawLines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        var entries: [PTSLogEntry] = []
+        entries.reserveCapacity(rawLines.count)
+        for (index, line) in rawLines.enumerated() {
+            do {
+                entries.append(try decoder.decode(PTSLogEntry.self, from: Data(line.utf8)))
+            } catch {
+                if index == rawLines.count - 1 { break }
+                throw FinalizeError.invalidPTSLog
+            }
+        }
+        func segments(for stream: String) -> [TimelineSegment] {
+            entries.filter { $0.stream == stream }.map { entry in
+                let start = Int((entry.ptsSeconds * outputSampleRate).rounded())
+                let frames = Int((Double(entry.sampleCount) * outputSampleRate / Double(entry.sampleRate)).rounded())
+                return TimelineSegment(startFrame: max(0, start), frameCount: max(0, frames))
+            }
+        }
+        return PTSTimeline(mic: segments(for: "mic"), system: segments(for: "system"))
+    }
+
+    private static func finalizeWithTimeline(
+        mic: URL,
+        system: URL,
+        output: URL,
+        sampleRate: Double,
+        monoFormat: AVAudioFormat,
+        timeline: PTSTimeline,
+        options: Options,
+        writerSettings: [String: Any]
+    ) async throws {
+        let tempName = ".\(output.lastPathComponent).inflight-\(UUID().uuidString.prefix(8))"
+        let tempOutput = output.deletingLastPathComponent().appendingPathComponent(tempName)
+        try? FileManager.default.removeItem(at: tempOutput)
+        do {
+            let micSamples = try readAllSamples(from: mic, target: monoFormat, chunkFrames: options.chunkFrames)
+            let sysSamples = try readAllSamples(from: system, target: monoFormat, chunkFrames: options.chunkFrames)
+            let outputFrames = max(
+                timeline.mic.map { $0.startFrame + $0.frameCount }.max() ?? 0,
+                timeline.system.map { $0.startFrame + $0.frameCount }.max() ?? 0,
+                micSamples.count,
+                sysSamples.count
+            )
+            let mixed = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(outputFrames))!
+            mixed.frameLength = AVAudioFrameCount(outputFrames)
+            let out = mixed.floatChannelData![0]
+            memset(out, 0, outputFrames * MemoryLayout<Float>.size)
+            var activeCounts = Array(repeating: UInt8(0), count: outputFrames)
+            mix(samples: micSamples, segments: timeline.mic, into: out, activeCounts: &activeCounts, peakLimit: 0.891)
+            mix(samples: sysSamples, segments: timeline.system, into: out, activeCounts: &activeCounts, peakLimit: 0.891)
+            try writeBuffer(mixed, to: tempOutput, settings: writerSettings)
+            if FileManager.default.fileExists(atPath: output.path) {
+                _ = try FileManager.default.replaceItemAt(output, withItemAt: tempOutput)
+            } else {
+                try FileManager.default.moveItem(at: tempOutput, to: output)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: tempOutput)
+            throw error
+        }
+    }
+
+    private static func readAllSamples(from url: URL, target: AVAudioFormat, chunkFrames: AVAudioFrameCount) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        let reader = try StreamReader(file: file, target: target, chunkFrames: chunkFrames)
+        let chunk = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: chunkFrames)!
+        var samples: [Float] = []
+        while !reader.isExhausted {
+            let frames = try reader.produce(into: chunk, target: chunkFrames)
+            if frames == 0 { break }
+            let ptr = chunk.floatChannelData![0]
+            samples.append(contentsOf: UnsafeBufferPointer(start: ptr, count: Int(frames)))
+        }
+        return samples
+    }
+
+    private static func mix(samples: [Float], segments: [TimelineSegment], into out: UnsafeMutablePointer<Float>, activeCounts: inout [UInt8], peakLimit: Float) {
+        var cursor = 0
+        let invSqrt2 = Float(1.0 / 2.0.squareRoot())
+        for segment in segments {
+            let take = min(segment.frameCount, max(0, samples.count - cursor))
+            guard take > 0 else { break }
+            for i in 0..<take {
+                let target = segment.startFrame + i
+                guard target >= 0 && target < activeCounts.count else { continue }
+                let value = samples[cursor + i]
+                if activeCounts[target] == 0 {
+                    out[target] = value
+                } else {
+                    out[target] = (out[target] + value) * invSqrt2
+                }
+                activeCounts[target] = min(activeCounts[target] + 1, 2)
+                out[target] = max(-peakLimit, min(peakLimit, out[target]))
+            }
+            cursor += take
+        }
+    }
+
+    private static func writeBuffer(_ buffer: AVAudioPCMBuffer, to url: URL, settings: [String: Any]) throws {
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        try file.write(from: buffer)
     }
 
     /// Codex rc2-audit CAP-2: parses the per-buffer PTS log to find
