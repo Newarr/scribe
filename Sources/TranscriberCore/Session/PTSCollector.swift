@@ -40,6 +40,7 @@ public final class PTSCollector: @unchecked Sendable {
     private let logQueue = DispatchQueue(label: "pts.collector.log", qos: .utility)
     private var logHandle: FileHandle?
     private var logOpenAttempted = false
+    private var logTerminallyClosed = false
 
     public init(streamingLogURL: URL? = nil) {
         self.streamingLogURL = streamingLogURL
@@ -105,19 +106,13 @@ public final class PTSCollector: @unchecked Sendable {
     }
 
     /// Blocks until every queued log entry has hit disk and closes the
-    /// underlying file handle. Closing on flush (rather than waiting for
-    /// deinit) means a kill mid-recording still leaves the on-disk JSONL
-    /// in a readable state — codex Phase β review P1.6.
+    /// underlying file handle. This is the terminal stop/finalize flush; it
+    /// is safe to call repeatedly after capture has stopped. Mid-session
+    /// readers use `synchronizeLogForRead()` instead so observing the log
+    /// cannot disable future writes.
     public func flushLog() {
         logQueue.sync {
-            do {
-                try self.logHandle?.synchronize()
-                try self.logHandle?.close()
-            } catch {
-                Log.capture.error("PTS log close failed: \(String(describing: error), privacy: .public)")
-            }
-            self.logHandle = nil
-            self.logOpenAttempted = true  // Closed; don't reopen.
+            self.synchronizeAndCloseLog(markTerminal: true)
         }
     }
 
@@ -128,7 +123,7 @@ public final class PTSCollector: @unchecked Sendable {
     /// must not throw on the survivable case.
     public func loggedEntries() throws -> [PTSLogEntry] {
         guard let url = streamingLogURL else { return [] }
-        flushLog()
+        synchronizeLogForRead()
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
         guard let text = String(data: data, encoding: .utf8) else { return [] }
@@ -163,10 +158,12 @@ public final class PTSCollector: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(entry) else { return }
-        var line = data
-        line.append(0x0A) // '\n'
+        var encodedLine = data
+        encodedLine.append(0x0A) // '\n'
+        let line = encodedLine
 
         logQueue.async { [self] in
+            guard self.logTerminallyClosed == false else { return }
             self.openLogIfNeeded(at: url)
             guard let handle = self.logHandle else { return }
             do {
@@ -177,9 +174,32 @@ public final class PTSCollector: @unchecked Sendable {
         }
     }
 
+    private func synchronizeLogForRead() {
+        logQueue.sync {
+            do {
+                try self.logHandle?.synchronize()
+            } catch {
+                Log.capture.error("PTS log sync failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    private func synchronizeAndCloseLog(markTerminal: Bool) {
+        do {
+            try self.logHandle?.synchronize()
+            try self.logHandle?.close()
+        } catch {
+            Log.capture.error("PTS log close failed: \(String(describing: error), privacy: .public)")
+        }
+        self.logHandle = nil
+        if markTerminal {
+            self.logTerminallyClosed = true
+        }
+    }
+
     private func openLogIfNeeded(at url: URL) {
-        if logOpenAttempted { return }
-        logOpenAttempted = true
+        if logTerminallyClosed || logHandle != nil { return }
+        if logOpenAttempted == false { logOpenAttempted = true }
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) == false {
             fm.createFile(atPath: url.path, contents: nil)

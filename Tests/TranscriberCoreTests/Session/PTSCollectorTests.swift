@@ -106,6 +106,56 @@ final class PTSCollectorTests: XCTestCase {
                        "200ms gap must be reconstructible from per-buffer entries; AEC + streaming mix both depend on this")
     }
 
+
+    func testLoggedEntriesDuringCaptureDoesNotStopFutureLogging() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        let collector = PTSCollector(streamingLogURL: log)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.0, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+
+        let firstRead = try collector.loggedEntries()
+        XCTAssertEqual(firstRead.map(\.ptsSeconds), [0.0])
+
+        collector.observe(.system, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.015, sampleRate: 48000, channelCount: 1, frameCount: 960
+        ))
+
+        let secondRead = try collector.loggedEntries()
+        XCTAssertEqual(secondRead.count, 2)
+        XCTAssertEqual(secondRead[0].stream, "mic")
+        XCTAssertEqual(secondRead[0].ptsSeconds, 0.0, accuracy: 1e-6)
+        XCTAssertEqual(secondRead[1].stream, "system")
+        XCTAssertEqual(secondRead[1].ptsSeconds, 0.015, accuracy: 1e-6)
+        XCTAssertEqual(secondRead[1].sampleCount, 960)
+        XCTAssertEqual(secondRead[1].sampleRate, 48000)
+    }
+
+    func testFlushLogIsIdempotentAndPersistsQueuedEntries() throws {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).pts.jsonl")
+        defer { try? FileManager.default.removeItem(at: log) }
+
+        let collector = PTSCollector(streamingLogURL: log)
+        for index in 0..<50 {
+            let stream: PTSCollector.StreamID = index.isMultiple(of: 2) ? .mic : .system
+            collector.observe(stream, buffer: SyntheticSampleBuffer.make(
+                ptsSeconds: Double(index) * 0.01, sampleRate: 48000, channelCount: 1, frameCount: 480
+            ))
+        }
+
+        collector.flushLog()
+        collector.flushLog()
+
+        let entries = try collector.loggedEntries()
+        XCTAssertEqual(entries.count, 50)
+        XCTAssertEqual(entries.first?.stream, "mic")
+        XCTAssertEqual(entries.last?.stream, "system")
+        XCTAssertEqual(entries.last?.ptsSeconds ?? -1, 0.49, accuracy: 1e-6)
+        XCTAssertEqual(entries.allSatisfy { $0.sampleCount == 480 && $0.sampleRate == 48000 }, true)
+    }
+
     func testNilLogURLDisablesStreamingLog() throws {
         let collector = PTSCollector(streamingLogURL: nil)
         collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
