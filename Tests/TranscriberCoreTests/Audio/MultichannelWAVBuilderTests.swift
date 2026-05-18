@@ -13,6 +13,56 @@ final class MultichannelWAVBuilderTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmp)
     }
 
+    func testMidReadFailureThrowsAndPreservesExistingOutput() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+        try Data("prior".utf8).write(to: outURL)
+        let prior = try Data(contentsOf: outURL)
+
+        XCTAssertThrowsError(
+            try MultichannelWAVBuilder.build(
+                micReader: ContractAudioReader(name: "mic.m4a"),
+                systemReader: ContractAudioReader(name: "system.m4a", failBeforeEOF: true),
+                output: outURL,
+                sampleRate: 16_000
+            )
+        ) { error in
+            guard case MultichannelWAVBuilder.BuildError.readFailed = error else {
+                return XCTFail("Expected readFailed, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: outURL), prior)
+    }
+
+    func testMissingOrOneSidedInputIsRejected() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+
+        XCTAssertThrowsError(
+            try MultichannelWAVBuilder.build(
+                micReader: ContractAudioReader(name: "mic.m4a"),
+                systemReader: ContractAudioReader(name: "empty-system.m4a", empty: true),
+                output: outURL,
+                sampleRate: 16_000
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outURL.path))
+    }
+
+    func testReadErrorAtDeclaredEOFRemainsBenign() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+
+        try MultichannelWAVBuilder.build(
+            micReader: ContractAudioReader(name: "mic.m4a"),
+            systemReader: ContractAudioReader(name: "system.m4a"),
+            output: outURL,
+            sampleRate: 16_000
+        )
+
+        let file = try AVAudioFile(forReading: outURL)
+        XCTAssertEqual(file.fileFormat.sampleRate, 16_000)
+        XCTAssertEqual(file.fileFormat.channelCount, 2)
+        XCTAssertGreaterThan(file.length, 0)
+    }
+
     func testProducesTwoChannelWAV() async throws {
         let micURL = tmp.appendingPathComponent("mic.m4a")
         let sysURL = tmp.appendingPathComponent("system.m4a")

@@ -21,27 +21,36 @@ public enum AudioMixer {
     ) async throws {
         let micFile = try AVAudioFile(forReading: mic)
         let sysFile = try AVAudioFile(forReading: system)
+        try mix(micReader: micFile, systemReader: sysFile, output: output, sampleRate: sampleRate)
+    }
 
-        // Output WAV settings (16-bit signed PCM, mono). AVAudioFile internally converts
-        // the float processingFormat we write to the int16 disk format.
-        let outFile = try AVAudioFile(forWriting: output, settings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsFloatKey: false
-        ])
-
+    static func mix(
+        micReader: AudioPCMReadable,
+        systemReader: AudioPCMReadable,
+        output: URL,
+        sampleRate: Double = 16000
+    ) throws {
         let resampleFormat = AVAudioFormat(
             standardFormatWithSampleRate: sampleRate,
             channels: 1
         )!
-        let micBuf = try resampleFully(file: micFile, to: resampleFormat)
-        let sysBuf = try resampleFully(file: sysFile, to: resampleFormat)
+        let micBuf: AVAudioPCMBuffer
+        do {
+            micBuf = try AudioReadSupport.resampleFully(reader: micReader, to: resampleFormat)
+        } catch {
+            throw MixerError.readFailed(micReader.sourceURL)
+        }
+        let sysBuf: AVAudioPCMBuffer
+        do {
+            sysBuf = try AudioReadSupport.resampleFully(reader: systemReader, to: resampleFormat)
+        } catch {
+            throw MixerError.readFailed(systemReader.sourceURL)
+        }
 
         let frames = max(micBuf.frameLength, sysBuf.frameLength)
-        guard frames > 0 else { return }
+        guard micBuf.frameLength > 0, sysBuf.frameLength > 0, frames > 0 else {
+            throw MixerError.readFailed(micBuf.frameLength == 0 ? micReader.sourceURL : systemReader.sourceURL)
+        }
 
         let mixed = AVAudioPCMBuffer(pcmFormat: resampleFormat, frameCapacity: frames)!
         mixed.frameLength = frames
@@ -56,40 +65,19 @@ public enum AudioMixer {
             mixPtr[i] = max(-1.0, min(1.0, sum))
         }
 
-        try outFile.write(from: mixed)
-    }
-
-    private static func resampleFully(file: AVAudioFile, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let totalFrames = AVAudioFrameCount(
-            Double(file.length) * format.sampleRate / file.fileFormat.sampleRate
-        )
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames + 1024)!
-        let converter = AVAudioConverter(from: file.processingFormat, to: format)!
-
-        let readBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 8192)!
-
-        var endOfFile = false
-        var status: AVAudioConverterOutputStatus = .haveData
-        while status == .haveData && !endOfFile {
-            var error: NSError?
-            status = converter.convert(to: buffer, error: &error) { _, outStatus in
-                do {
-                    try file.read(into: readBuffer)
-                } catch {
-                    outStatus.pointee = .endOfStream
-                    endOfFile = true
-                    return nil
-                }
-                if readBuffer.frameLength == 0 {
-                    outStatus.pointee = .endOfStream
-                    endOfFile = true
-                    return nil
-                }
-                outStatus.pointee = .haveData
-                return readBuffer
+        do {
+            try AudioReadSupport.writeAtomically(output: output, settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsFloatKey: false
+            ]) { outFile in
+                try outFile.write(from: mixed)
             }
-            if let err = error { throw err }
+        } catch {
+            throw MixerError.writeFailed(output)
         }
-        return buffer
     }
 }
