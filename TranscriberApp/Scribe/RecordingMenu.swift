@@ -376,8 +376,9 @@ private struct RecordingPopoverContent: View {
                 .frame(height: 1)
             content(palette: palette)
         }
-        .frame(width: menuWidth, height: targetSurfaceHeight, alignment: .top)
-        .fixedSize(horizontal: false, vertical: targetSurfaceHeight == nil)
+        .frame(width: menuWidth, alignment: .top)
+        .frame(minHeight: minimumSurfaceHeight, alignment: .top)
+        .fixedSize(horizontal: false, vertical: true)
         .background(PopoverSurfaceBackground(palette: palette))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -397,7 +398,7 @@ private struct RecordingPopoverContent: View {
         .preferredColorScheme(model.appearanceTheme.preferredColorScheme)
     }
 
-    private var targetSurfaceHeight: CGFloat? {
+    private var minimumSurfaceHeight: CGFloat? {
         switch model.status {
         case .idle:
             if model.pendingPrompt != nil { return 244 }
