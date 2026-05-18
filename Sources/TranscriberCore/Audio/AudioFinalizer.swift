@@ -47,14 +47,21 @@ public enum AudioFinalizer {
     /// full or the encoder has wedged.
     public var backpressureTimeout: TimeInterval
 
+    /// Test seam for deterministic writer backpressure coverage. Production
+    /// uses the real AVAssetWriterInput readiness; tests can force a
+    /// permanently not-ready input without relying on encoder timing.
+    var forceWriterInputNotReady: Bool
+
     public init(
       chunkFrames: AVAudioFrameCount = 4800,
       backpressureSleep: TimeInterval = 0.01,
-      backpressureTimeout: TimeInterval = 30
+      backpressureTimeout: TimeInterval = 30,
+      forceWriterInputNotReady: Bool = false
     ) {
       self.chunkFrames = chunkFrames
       self.backpressureSleep = backpressureSleep
       self.backpressureTimeout = backpressureTimeout
+      self.forceWriterInputNotReady = forceWriterInputNotReady
     }
 
     public static let `default` = Options()
@@ -199,7 +206,7 @@ public enum AudioFinalizer {
         // check, a wedged writer (disk full, sandbox revoked,
         // encoder stalled) would loop forever.
         let waitStart = Date()
-        while !input.isReadyForMoreMediaData {
+        while !(options.forceWriterInputNotReady ? false : input.isReadyForMoreMediaData) {
           if Task.isCancelled { throw CancellationError() }
           if writer.status == .failed || writer.status == .cancelled {
             throw FinalizeError.writerStatusFailed
@@ -561,7 +568,7 @@ public enum AudioFinalizer {
         let pts = CMTime(value: Int64(outputCursor), timescale: Int32(sampleRate))
         let sample = try Self.makeSampleBuffer(from: mixed, presentationTimeStamp: pts)
         let waitStart = Date()
-        while !input.isReadyForMoreMediaData {
+        while !(options.forceWriterInputNotReady ? false : input.isReadyForMoreMediaData) {
           if Task.isCancelled { throw CancellationError() }
           if writer.status == .failed || writer.status == .cancelled {
             throw FinalizeError.writerStatusFailed

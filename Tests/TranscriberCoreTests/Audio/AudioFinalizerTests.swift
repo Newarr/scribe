@@ -94,8 +94,12 @@ final class AudioFinalizerTests: XCTestCase {
     let micURL = tmp.appendingPathComponent("mic.m4a")
     let sysURL = tmp.appendingPathComponent("system.m4a")
     let outURL = tmp.appendingPathComponent("audio.m4a")
-    try writeAACSilence(to: micURL, durationSec: 3.0, sampleRate: 16000)
-    try writeAACSilence(to: sysURL, durationSec: 3.0, sampleRate: 48000)
+    try writeAACPCM(to: micURL, sampleRate: 16000, duration: 3.0) { ptr, frames, sr in
+      for i in 0..<frames {
+        ptr[i] = Float(0.45 * sin(2 * .pi * 660 * Double(i) / sr))
+      }
+    }
+    try writeAACSilence(to: sysURL, durationSec: 1.0, sampleRate: 48000)
 
     try await AudioFinalizer.finalize(
       mic: micURL, system: sysURL, output: outURL, sampleRate: 48000)
@@ -108,6 +112,11 @@ final class AudioFinalizerTests: XCTestCase {
       "16 kHz mic input must resample to full ~3s @ 48 kHz; got \(seconds)s — converter likely truncating"
     )
     XCTAssertLessThan(seconds, 3.6)
+
+    let samples = try readSamples(from: outURL)
+    XCTAssertGreaterThan(
+      rms(samples, start: 2 * 48_000, count: 24_000), 0.05,
+      "tail after 2s must contain audible energy from the mismatched-rate mic stream")
   }
 
   func testStreamingHandlesUnequalLengthInputs() async throws {
@@ -216,23 +225,32 @@ final class AudioFinalizerTests: XCTestCase {
   }
 
   func testStreamingRejectsShortBackpressureTimeout() async throws {
-    // Codex P1: the polling loop must give up if the writer wedges.
-    // We can't easily wedge a real AVAssetWriter from a test, but we
-    // CAN configure an absurdly short backpressure timeout on a real
-    // run and prove the finalizer either succeeds quickly or surfaces
-    // the timeout — never hangs forever. The 1s budget is far smaller
-    // than the 30s default, but real synthetic finalize is sub-second
-    // so this should still pass cleanly.
     let micURL = tmp.appendingPathComponent("mic.m4a")
     let sysURL = tmp.appendingPathComponent("system.m4a")
     let outURL = tmp.appendingPathComponent("audio.m4a")
+    let previous = Data("prior durable audio".utf8)
+    try previous.write(to: outURL)
     try writeAACSilence(to: micURL, durationSec: 0.5)
     try writeAACSilence(to: sysURL, durationSec: 0.5)
 
-    let opts = AudioFinalizer.Options(backpressureTimeout: 1.0)
-    try await AudioFinalizer.finalize(
-      mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, options: opts)
-    XCTAssertTrue(FileManager.default.fileExists(atPath: outURL.path))
+    let opts = AudioFinalizer.Options(
+      backpressureSleep: 0.01, backpressureTimeout: 0.05, forceWriterInputNotReady: true)
+    let start = Date()
+    do {
+      try await AudioFinalizer.finalize(
+        mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, options: opts)
+      XCTFail("expected deterministic backpressure timeout")
+    } catch AudioFinalizer.FinalizeError.backpressureTimeout {
+      // expected
+    } catch {
+      XCTFail("expected backpressureTimeout, got \(error)")
+    }
+    XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+    XCTAssertEqual(try Data(contentsOf: outURL), previous)
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: tmp.path).filter {
+      $0.contains(".inflight-")
+    }
+    XCTAssertTrue(leftovers.isEmpty, "timeout should remove inflight temp files: \(leftovers)")
   }
 
   func testStreamingHonorsCustomChunkFrames() async throws {
