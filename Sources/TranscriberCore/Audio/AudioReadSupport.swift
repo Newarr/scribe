@@ -62,8 +62,7 @@ enum AudioReadSupport {
     }
 
     static func writeAtomically(output: URL, settings: [String: Any], body: (AVAudioFile) throws -> Void) throws {
-        let directory = output.deletingLastPathComponent()
-        let temporary = directory.appendingPathComponent(".\(output.lastPathComponent).inflight-\(UUID().uuidString)")
+        let temporary = temporaryURLPreservingExtension(for: output)
         do {
             let outFile = try AVAudioFile(forWriting: temporary, settings: settings)
             try body(outFile)
@@ -76,5 +75,18 @@ enum AudioReadSupport {
             try? FileManager.default.removeItem(at: temporary)
             throw error
         }
+    }
+
+    private static func temporaryURLPreservingExtension(for output: URL) -> URL {
+        let directory = output.deletingLastPathComponent()
+        let fileExtension = output.pathExtension
+        let baseName = output.deletingPathExtension().lastPathComponent
+        let inflightName = ".\(baseName).inflight-\(UUID().uuidString)"
+
+        guard !fileExtension.isEmpty else {
+            return directory.appendingPathComponent(inflightName)
+        }
+
+        return directory.appendingPathComponent(inflightName).appendingPathExtension(fileExtension)
     }
 }

@@ -58,6 +58,7 @@ final class AudioMixerTests: XCTestCase {
             sampleRate: 16_000
         )
 
+        try assertRIFFWAVEHeader(at: outURL)
         let file = try AVAudioFile(forReading: outURL)
         XCTAssertEqual(file.fileFormat.sampleRate, 16_000)
         XCTAssertEqual(file.fileFormat.channelCount, 1)
@@ -74,10 +75,18 @@ final class AudioMixerTests: XCTestCase {
 
         try await AudioMixer.mix(mic: micURL, system: sysURL, output: outURL, sampleRate: 16000)
 
+        try assertRIFFWAVEHeader(at: outURL)
         let file = try AVAudioFile(forReading: outURL)
         XCTAssertEqual(file.fileFormat.sampleRate, 16000)
         XCTAssertEqual(file.fileFormat.channelCount, 1)
         XCTAssertGreaterThan(file.length, 0)
+    }
+
+    private func assertRIFFWAVEHeader(at url: URL) throws {
+        let data = try Data(contentsOf: url)
+        XCTAssertGreaterThanOrEqual(data.count, 12, "WAV output must be non-empty and include a RIFF/WAVE header")
+        XCTAssertEqual(String(decoding: data.prefix(4), as: UTF8.self), "RIFF")
+        XCTAssertEqual(String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self), "WAVE")
     }
 
     private func writeSilent(to url: URL, durationSec: Double) throws {
