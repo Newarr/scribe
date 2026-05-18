@@ -117,6 +117,45 @@ final class EngineSettingsViewStateTests: XCTestCase {
         XCTAssertNil(SessionRepairRouting.engineSettingsFocus(for: nil))
     }
 
+
+    func testSettingsCloudKeyEditorHasSecureExplicitCommitClearAndSafeClose() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("FidelityCloudAPIKeyEditor"), "Settings Engine must expose a Cloud key editor")
+        XCTAssertTrue(source.contains("SecureField(\"Paste API key\""), "Cloud key entry must use secure text entry")
+        XCTAssertTrue(source.contains("Save key"), "Cloud key editor needs a visible commit action")
+        XCTAssertTrue(source.contains("Clear key"), "Cloud key editor needs a visible delete action")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"ElevenLabs API key\")"), "Secure key field needs a purpose label")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Save ElevenLabs API key\")"), "Save action must be accessible")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Clear ElevenLabs API key\")"), "Clear action must be accessible")
+        XCTAssertFalse(source.contains("accessibilityValue(model.apiKey)"), "Accessibility must not expose raw key values")
+        XCTAssertTrue(source.contains("canCloseOrSurfaceUnsavedCloudKeyWarning"), "Close path must guard unsaved key edits")
+        XCTAssertTrue(source.contains("windowShouldClose"), "Title-bar close must use the safe-close guard")
+    }
+
+    func testSettingsSavePersistsKeychainBeforeSettingsCommitAndReadinessRefresh() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+
+        guard let saveRange = source.range(of: "onSave: { [weak self, weak host] settings in") else {
+            return XCTFail("Settings save handler not found")
+        }
+        let saveBody = String(source[saveRange.lowerBound..<source.index(saveRange.lowerBound, offsetBy: min(850, source.distance(from: saveRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(saveBody.contains("guard await model.persistAPIKeyIfChanged() else { return }"), "Save must stop if Keychain persistence fails")
+        XCTAssertLessThan(saveBody.range(of: "persistAPIKeyIfChanged")!.lowerBound, saveBody.range(of: "self.store.commit")!.lowerBound, "Keychain persistence must happen before settings commit")
+        XCTAssertLessThan(saveBody.range(of: "self.store.commit")!.lowerBound, saveBody.range(of: "model.refreshEngineViewState")!.lowerBound, "Readiness refresh must happen after persistence and settings commit")
+        XCTAssertFalse(saveBody.contains("apiKey"), "Save handler must not write the raw key into settings")
+
+        guard let persistRange = source.range(of: "func persistAPIKeyIfChanged() async -> Bool") else {
+            return XCTFail("Keychain persistence helper not found")
+        }
+        let persistBody = String(source[persistRange.lowerBound..<source.index(persistRange.lowerBound, offsetBy: min(1200, source.distance(from: persistRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(persistBody.contains("KeychainStore(service: keychainService, account: keychainAccount)"), "Key writes must go through the configured Keychain locator")
+        XCTAssertTrue(persistBody.contains("try keychain.write(candidate)"), "Saving must write the key to Keychain")
+        XCTAssertTrue(persistBody.contains("try keychain.delete()"), "Clearing must delete the Keychain item")
+        XCTAssertTrue(persistBody.contains("Could not update the ElevenLabs API key in Keychain"), "Failure copy must be non-secret and actionable")
+        XCTAssertFalse(persistBody.contains("localizedDescription"), "Keychain failure UI should not echo low-level strings that may include sensitive context")
+    }
+
     func testProductionSettingsRetryAndRemoveButtonsCallAppOwnedLocalModelManagerActions() throws {
         let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
         let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)

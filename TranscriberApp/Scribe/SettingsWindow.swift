@@ -118,11 +118,14 @@ final class SettingsWindowController {
             },
             onSave: { [weak self, weak host] settings in
                 guard let self else { return }
-                // Codex Phase η P1.1 + P1.2: actually await the commit
-                // so encode failures surface to the user. Settings UI
-                // stays open on error; closes only after success.
+                // Keychain persistence must complete before settings commit,
+                // readiness refresh, or closing. If Keychain fails, the
+                // window stays open with a non-secret error and Cloud
+                // readiness is not marked ready from the typed value.
+                guard await model.persistAPIKeyIfChanged() else { return }
                 do {
                     try await self.store.commit(settings)
+                    await model.refreshEngineViewState()
                     host?.close()
                     self.window = nil
                 } catch {
@@ -130,6 +133,7 @@ final class SettingsWindowController {
                 }
             },
             onCancel: { [weak self, weak host] in
+                guard model.canCloseOrSurfaceUnsavedCloudKeyWarning() else { return }
                 host?.close()
                 self?.window = nil
             },
@@ -139,9 +143,14 @@ final class SettingsWindowController {
         // Codex Phase η P1.3: a title-bar close should behave like
         // Cancel (drop the in-flight model + clear the window pointer
         // so the next open re-reads the on-disk snapshot fresh).
-        let delegate = SettingsWindowDelegate { [weak self] in
-            self?.window = nil
-        }
+        let delegate = SettingsWindowDelegate(
+            shouldClose: {
+                model.canCloseOrSurfaceUnsavedCloudKeyWarning()
+            },
+            onClose: { [weak self] in
+                self?.window = nil
+            }
+        )
         host.delegate = delegate
         objc_setAssociatedObject(host, &settingsWindowDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
@@ -164,8 +173,21 @@ final class SettingsWindowController {
 /// pointer so a fresh `show()` re-loads the on-disk snapshot rather
 /// than re-presenting the stale form.
 private final class SettingsWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
+    private let shouldClose: @MainActor () -> Bool
     private let onClose: @MainActor () -> Void
-    init(onClose: @escaping @MainActor () -> Void) { self.onClose = onClose }
+
+    init(
+        shouldClose: @escaping @MainActor () -> Bool = { true },
+        onClose: @escaping @MainActor () -> Void
+    ) {
+        self.shouldClose = shouldClose
+        self.onClose = onClose
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        shouldClose()
+    }
+
     func windowWillClose(_ notification: Notification) {
         Task { @MainActor in onClose() }
     }
@@ -212,6 +234,7 @@ final class SettingsFormModel: ObservableObject {
     @Published var startStopShortcut: KeyboardShortcutSetting
     @Published var apiKey: String
     @Published var apiKeyEditedFromInitial: Bool = false
+    @Published var isSavingCloudAPIKey: Bool = false
     @Published var saveError: String?
     @Published var engineViewState: EngineSettingsViewState
     @Published var pendingLocalModelRemoval: EngineSettingsEffect?
@@ -219,7 +242,7 @@ final class SettingsFormModel: ObservableObject {
     let initialSnapshot: SessionSettings
     private let keychainService: String
     private let keychainAccount: String
-    private let initialAPIKey: String
+    private var initialAPIKey: String
     private let engineReadiness: EngineReadinessProbing
     private let onRetryLocalModel: @MainActor () async -> LocalModelCacheStatus
     private let onClearLocalModelCache: @MainActor () async throws -> Void
@@ -342,22 +365,57 @@ final class SettingsFormModel: ObservableObject {
         }
     }
 
+    var cloudAPIKeyHasChanges: Bool {
+        apiKey != initialAPIKey
+    }
+
+    var cloudAPIKeyStatusText: String {
+        if apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "No key saved"
+        }
+        return cloudAPIKeyHasChanges ? "Unsaved key edit" : "Key saved in Keychain"
+    }
+
     /// Commits the API key through Keychain. Returns true on success.
-    func persistAPIKeyIfChanged() -> Bool {
+    @discardableResult
+    func persistAPIKeyIfChanged() async -> Bool {
         guard apiKey != initialAPIKey else { return true }
+        isSavingCloudAPIKey = true
+        defer { isSavingCloudAPIKey = false }
+        let candidate = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let keychain = KeychainStore(service: keychainService, account: keychainAccount)
         do {
-            if apiKey.isEmpty {
+            if candidate.isEmpty {
                 try keychain.delete()
+                apiKey = ""
+                initialAPIKey = ""
+                saveError = "ElevenLabs API key cleared. Cloud will show Setup Required until a key is saved."
             } else {
-                try keychain.write(apiKey)
+                try keychain.write(candidate)
+                apiKey = candidate
+                initialAPIKey = candidate
+                saveError = "ElevenLabs API key saved to Keychain."
             }
-            saveError = nil
+            apiKeyEditedFromInitial = false
+            await refreshEngineViewState()
             return true
         } catch {
-            self.saveError = "Failed to save API key: \(error.localizedDescription)"
+            saveError = "Could not update the ElevenLabs API key in Keychain. The key was not saved; try again from Settings."
             return false
         }
+    }
+
+    @discardableResult
+    func clearCloudAPIKey() async -> Bool {
+        apiKey = ""
+        apiKeyEditedFromInitial = true
+        return await persistAPIKeyIfChanged()
+    }
+
+    func canCloseOrSurfaceUnsavedCloudKeyWarning() -> Bool {
+        guard cloudAPIKeyHasChanges else { return true }
+        saveError = "Save or clear the ElevenLabs API key before closing Settings. Unsaved key edits stay only in this secure field."
+        return false
     }
 
     var outputRootIsInICloudDrive: Bool {
@@ -1032,15 +1090,18 @@ private struct FidelityAudioPanel: View {
             FidelitySection(title: "Engine") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 12) {
-                        FidelityEngineCard(
-                            title: "ElevenLabs (cloud)",
-                            status: model.engineViewState.cloud.statusText,
-                            detail: model.engineViewState.cloud.detailText,
-                            selected: model.engineMode == .cloud,
-                            enabled: model.engineViewState.cloud.isSelectionEnabled,
-                            actions: [],
-                            focused: focusedEngineCard == .cloud
-                        ) { selectEngine(.cloud) }
+                        VStack(alignment: .leading, spacing: 10) {
+                            FidelityEngineCard(
+                                title: "ElevenLabs (cloud)",
+                                status: model.engineViewState.cloud.statusText,
+                                detail: model.engineViewState.cloud.detailText,
+                                selected: model.engineMode == .cloud,
+                                enabled: model.engineViewState.cloud.isSelectionEnabled,
+                                actions: [],
+                                focused: focusedEngineCard == .cloud
+                            ) { selectEngine(.cloud) }
+                            FidelityCloudAPIKeyEditor(model: model, focused: focusedEngineCard == .cloud)
+                        }
 
                         FidelityEngineCard(
                             title: "Cohere (local)",
@@ -1115,6 +1176,78 @@ private struct FidelityAudioPanel: View {
 
     private func persistSettings() {
         Task { await onSettingsChange(model.currentSettings) }
+    }
+}
+
+private struct FidelityCloudAPIKeyEditor: View {
+    @ObservedObject var model: SettingsFormModel
+    let focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("ElevenLabs API key")
+                .font(FidelitySettings.controlFont)
+                .foregroundStyle(FidelitySettings.ink)
+            SecureField("Paste API key", text: Binding(
+                get: { model.apiKey },
+                set: { value in
+                    model.apiKey = value
+                    model.apiKeyEditedFromInitial = true
+                }
+            ))
+            .textFieldStyle(.plain)
+            .font(FidelitySettings.rowValueFont)
+            .foregroundStyle(FidelitySettings.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(FidelitySettings.fieldFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke, lineWidth: focused ? 2 : 1)
+            )
+            .accessibilityLabel("ElevenLabs API key")
+            .accessibilityHint("Secure field. The key is saved only in macOS Keychain and is never shown in labels.")
+            .accessibilityValue(model.cloudAPIKeyHasChanges ? "Unsaved changes" : model.cloudAPIKeyStatusText)
+
+            Text("Save or clear the key explicitly. Scribe stores it only in macOS Keychain.")
+                .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                .foregroundStyle(FidelitySettings.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("ElevenLabs key storage help")
+
+            HStack(spacing: 8) {
+                FidelitySecondaryButton(model.isSavingCloudAPIKey ? "Saving…" : "Save key") {
+                    Task { await model.persistAPIKeyIfChanged() }
+                }
+                .disabled(model.isSavingCloudAPIKey || !model.cloudAPIKeyHasChanges)
+                .accessibilityLabel("Save ElevenLabs API key")
+                .accessibilityHint("Saves the typed key to macOS Keychain before Cloud readiness refreshes.")
+
+                FidelityDangerButton("Clear key") {
+                    Task { await model.clearCloudAPIKey() }
+                }
+                .disabled(model.isSavingCloudAPIKey || model.apiKey.isEmpty)
+                .accessibilityLabel("Clear ElevenLabs API key")
+                .accessibilityHint("Deletes the saved ElevenLabs API key from macOS Keychain.")
+
+                Text(model.cloudAPIKeyStatusText)
+                    .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+                    .foregroundStyle(model.cloudAPIKeyHasChanges ? FidelitySettings.amber : FidelitySettings.ink3)
+                    .accessibilityLabel("ElevenLabs API key status")
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(FidelitySettings.fieldFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke, lineWidth: focused ? 2 : 1)
+        )
     }
 }
 
