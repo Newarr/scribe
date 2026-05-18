@@ -11,6 +11,7 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
     var startError: Error?
     var suspendStart = false
     var startContinuation: CheckedContinuation<Void, Never>?
+    var onStop: (@Sendable () -> Void)?
 
     func setHandler(_ handler: @escaping @Sendable (CMSampleBuffer) -> Void) {
         self.handler = handler
@@ -32,7 +33,10 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
         continuation?.resume()
     }
 
-    func stop() async { stopped = true }
+    func stop() async {
+        onStop?()
+        stopped = true
+    }
 
     func emit(_ buffer: CMSampleBuffer) { handler?(buffer) }
 }

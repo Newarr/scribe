@@ -287,6 +287,32 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(finalStatus, .finalized)
     }
 
+    func testTerminalFailureLatchedDuringStopDrainDoesNotPublishPendingTranscript() async throws {
+        let mic = FakeAudioCaptureSource()
+        let sys = FakeAudioCaptureSource()
+        let id = SessionID(from: Date(timeIntervalSince1970: 8_125_000), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: root, id: id)
+        let session = try CaptureSession(directory: dir, mic: mic, system: sys, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+
+        mic.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        sys.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        mic.onStop = {
+            Task { await session.simulateDroppedBackpressureForTest() }
+        }
+
+        await XCTAssertThrowsErrorAsync(try await session.stop())
+
+        let transcript = try String(contentsOf: dir.transcript, encoding: .utf8)
+        XCTAssertTrue(transcript.contains("status: failed"), transcript)
+        XCTAssertFalse(transcript.contains("status: pending"), "terminal failure latched while stop drains callbacks must veto pending publication")
+        XCTAssertTrue(transcript.contains("backpressure") || transcript.contains("audio"), transcript)
+        let recoveryClaim = try XCTUnwrap(SessionClaim.acquire(at: dir.claim), "terminal stop-drain cleanup must release capture claim")
+        SessionClaim.release(recoveryClaim)
+        let terminalStatus = await session.status
+        XCTAssertEqual(terminalStatus, .failed)
+    }
+
     func testDroppedBackpressureImmediatelyFollowedByStopCannotPublishPendingTranscript() async throws {
         let mic = FakeAudioCaptureSource()
         let sys = FakeAudioCaptureSource()

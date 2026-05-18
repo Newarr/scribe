@@ -247,6 +247,17 @@ public actor CaptureSession {
         // We do NOT write status: failed mid-stop here.
         await mic.stop()
         await system.stop()
+
+        // Capture callbacks can still drain while source.stop() awaits its
+        // handler queue. Re-check the terminal latch after both stop calls
+        // before any writer finalize, pending transcript, finalized status,
+        // or worker-visible success path. A readable pair of raw files is not
+        // sufficient if a drained callback latched append/backpressure loss.
+        if let failureReason = terminalFailureLatch.get() {
+            await finishTerminalFailureCleanup(reason: failureReason)
+            throw CaptureError.noDurableAudio
+        }
+
         // Codex rc2-audit P0 (audit 3): finalize BOTH writers before
         // failing. v0 awaited mic.finalize THEN system.finalize, so a
         // mic-throw left system as an unclosed .partial that
@@ -259,6 +270,15 @@ public actor CaptureSession {
         collector.flushLog()
         do { try collector.writeSidecar(to: directory.ptsSidecar) } catch { firstError = firstError ?? error }
         do { try directory.finalize() } catch { firstError = firstError ?? error }
+        if let failureReason = terminalFailureLatch.get() {
+            try? writeFailedCaptureTranscript(reason: failureReason)
+            if let claim = captureClaim {
+                SessionClaim.release(claim)
+                captureClaim = nil
+            }
+            status = .failed
+            throw CaptureError.noDurableAudio
+        }
         if finalRawAudioIsReadable() {
             do { try writeTranscriptStub() } catch { firstError = firstError ?? error }
         } else if firstError == nil {
@@ -415,8 +435,12 @@ public actor CaptureSession {
         // failure path and SessionSupervisor will rescue any unrenamed
         // .partial files on next launch.
         guard status == .recording || terminalFailureLatch.get() != nil else { return }
-        status = .failed
         let failureReason = terminalFailureLatch.get() ?? "Capture stopped because audio writing failed before Scribe could safely complete the recording."
+        await finishTerminalFailureCleanup(reason: failureReason)
+    }
+
+    private func finishTerminalFailureCleanup(reason failureReason: String) async {
+        status = .failed
         Log.lifecycle.error("Capture failure: tearing down sources + writers")
         await mic.stop()
         await system.stop()
