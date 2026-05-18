@@ -52,19 +52,33 @@ public enum AudioFinalizer {
     /// permanently not-ready input without relying on encoder timing.
     var forceWriterInputNotReady: Bool
 
+    /// Test seam for deterministic writer/output failure coverage after
+    /// inflight output creation. Production leaves this nil and uses the
+    /// real AVAssetWriter behavior; tests force the shared failure handling
+    /// paths without relying on disk-full, timing, or encoder flakiness.
+    var forcedWriterFailure: ForcedWriterFailure?
+
     public init(
       chunkFrames: AVAudioFrameCount = 4800,
       backpressureSleep: TimeInterval = 0.01,
       backpressureTimeout: TimeInterval = 30,
-      forceWriterInputNotReady: Bool = false
+      forceWriterInputNotReady: Bool = false,
+      forcedWriterFailure: ForcedWriterFailure? = nil
     ) {
       self.chunkFrames = chunkFrames
       self.backpressureSleep = backpressureSleep
       self.backpressureTimeout = backpressureTimeout
       self.forceWriterInputNotReady = forceWriterInputNotReady
+      self.forcedWriterFailure = forcedWriterFailure
     }
 
     public static let `default` = Options()
+  }
+
+  public enum ForcedWriterFailure: Sendable {
+    case append
+    case statusDuringReadinessPolling
+    case finishWriting
   }
 
   public static func finalize(
@@ -208,6 +222,9 @@ public enum AudioFinalizer {
         let waitStart = Date()
         while !(options.forceWriterInputNotReady ? false : input.isReadyForMoreMediaData) {
           if Task.isCancelled { throw CancellationError() }
+          if options.forcedWriterFailure == .statusDuringReadinessPolling {
+            throw FinalizeError.writerStatusFailed
+          }
           if writer.status == .failed || writer.status == .cancelled {
             throw FinalizeError.writerStatusFailed
           }
@@ -217,6 +234,9 @@ public enum AudioFinalizer {
           try await Task.sleep(nanoseconds: UInt64(options.backpressureSleep * 1_000_000_000))
         }
 
+        if options.forcedWriterFailure == .append {
+          throw FinalizeError.writerFailed("forced append failure")
+        }
         if !input.append(sample) {
           throw FinalizeError.writerFailed(writer.error.map { String(describing: $0) })
         }
@@ -224,6 +244,9 @@ public enum AudioFinalizer {
 
       input.markAsFinished()
       await writer.finishWriting()
+      if options.forcedWriterFailure == .finishWriting {
+        throw FinalizeError.writerFailed("forced finish failure")
+      }
       if writer.status == .failed {
         throw FinalizeError.writerFailed(writer.error.map { String(describing: $0) })
       }
@@ -570,6 +593,9 @@ public enum AudioFinalizer {
         let waitStart = Date()
         while !(options.forceWriterInputNotReady ? false : input.isReadyForMoreMediaData) {
           if Task.isCancelled { throw CancellationError() }
+          if options.forcedWriterFailure == .statusDuringReadinessPolling {
+            throw FinalizeError.writerStatusFailed
+          }
           if writer.status == .failed || writer.status == .cancelled {
             throw FinalizeError.writerStatusFailed
           }
@@ -577,6 +603,9 @@ public enum AudioFinalizer {
             throw FinalizeError.backpressureTimeout
           }
           try await Task.sleep(nanoseconds: UInt64(options.backpressureSleep * 1_000_000_000))
+        }
+        if options.forcedWriterFailure == .append {
+          throw FinalizeError.writerFailed("forced append failure")
         }
         if !input.append(sample) {
           throw FinalizeError.writerFailed(writer.error.map { String(describing: $0) })
@@ -586,6 +615,9 @@ public enum AudioFinalizer {
 
       input.markAsFinished()
       await writer.finishWriting()
+      if options.forcedWriterFailure == .finishWriting {
+        throw FinalizeError.writerFailed("forced finish failure")
+      }
       if writer.status == .failed {
         throw FinalizeError.writerFailed(writer.error.map { String(describing: $0) })
       }
