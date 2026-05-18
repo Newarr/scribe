@@ -1,161 +1,227 @@
 import Darwin
 import Foundation
 import XCTest
+
 @testable import TranscriberCore
 
 final class SessionClaimTests: XCTestCase {
 
-    private func makeClaimURL() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).claim.json")
-    }
+  private func makeClaimURL() -> URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).claim.json")
+  }
 
-    // MARK: acquire
+  // MARK: acquire
 
-    func testAcquireOnFreshDirectoryReturnsToken() {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+  func testAcquireOnFreshDirectoryReturnsToken() {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-        let token = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(token)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-    }
+    let token = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(token)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+  }
 
-    func testSecondAcquireWhileFirstAliveReturnsNil() {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+  func testSecondAcquireWhileFirstAliveReturnsNil() {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-        let first = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(first)
+    let first = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(first)
 
-        let second = SessionClaim.acquire(at: url)
-        XCTAssertNil(second, "live claim must block second worker")
-    }
+    let second = SessionClaim.acquire(at: url)
+    XCTAssertNil(second, "live claim must block second worker")
+  }
 
-    func testReleaseAllowsReclaim() {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+  func testReleaseAllowsReclaim() {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-        let token = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(token)
-        SessionClaim.release(token!)
+    let token = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(token)
+    SessionClaim.release(token!)
 
-        let second = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(second, "release must clear the claim")
-    }
+    let second = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(second, "release must clear the claim")
+    let third = SessionClaim.acquire(at: url)
+    XCTAssertNil(third, "one live successor must still exclude duplicate workers")
+    SessionClaim.release(second!)
+  }
 
-    // MARK: stale detection
+  func testOldSameProcessReleaseCannotRemoveReplacementClaim() throws {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-    func testStaleHeartbeatTriggersReclaim() throws {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+    let replacement = SessionClaim.acquire(at: url)!
+    let old = SessionClaim.Token(
+      url: url,
+      pid: replacement.pid,
+      bootTime: replacement.bootTime,
+      startedAt: replacement.startedAt.addingTimeInterval(-1),
+      claimID: UUID().uuidString,
+      fd: -1
+    )
 
-        // Manually write an "old" claim (heartbeat 60s ago) for the
-        // current process. The current-PID is alive, the boot is the
-        // current boot — but the heartbeat lapsed.
-        let stale = SessionClaim.Payload(
-            pid: getpid(),
-            bootTime: SessionClaim.currentBootTime(),
-            startedAt: Date().addingTimeInterval(-300),
-            heartbeatAt: Date().addingTimeInterval(-60)
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(stale).write(to: url)
+    SessionClaim.release(old)
 
-        XCTAssertTrue(SessionClaim.isStale(stale, currentBootTime: SessionClaim.currentBootTime(),
-                                            now: Date(), staleAfter: 30))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.path),
+      "old same-process token must not unlink replacement claim")
+    let payload = try readPayload(at: url)
+    XCTAssertEqual(
+      payload.claimID, replacement.claimID,
+      "claim file must remain associated with the live replacement generation")
+  }
 
-        let token = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(token, "stale heartbeat must be reclaimable")
-    }
+  func testThirdClaimantBlockedUntilLiveReplacementReleases() {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-    func testBootTimeMismatchTriggersReclaim() throws {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+    let replacement = SessionClaim.acquire(at: url)!
+    let old = SessionClaim.Token(
+      url: url,
+      pid: replacement.pid,
+      bootTime: replacement.bootTime,
+      startedAt: replacement.startedAt.addingTimeInterval(-1),
+      claimID: UUID().uuidString,
+      fd: -1
+    )
 
-        // Old claim from a hypothetical previous boot. PID may now be
-        // recycled to a different process — the boot mismatch protects
-        // against PID reuse (codex pass 2 P1 #6).
-        let oldBoot = Int64(0)  // Definitely not current boot.
-        let stale = SessionClaim.Payload(
-            pid: getpid(),
-            bootTime: oldBoot,
-            startedAt: Date().addingTimeInterval(-3600),
-            heartbeatAt: Date()  // Within heartbeat window, but boot is wrong.
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(stale).write(to: url)
+    SessionClaim.release(old)
+    XCTAssertNil(
+      SessionClaim.acquire(at: url),
+      "third worker must remain blocked while replacement token is live")
 
-        XCTAssertTrue(SessionClaim.isStale(stale, currentBootTime: SessionClaim.currentBootTime()))
+    SessionClaim.release(replacement)
+    let successor = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(successor, "live replacement release must free exactly one successor")
+    XCTAssertNil(
+      SessionClaim.acquire(at: url),
+      "successor must hold mutual exclusion after the release")
+    SessionClaim.release(successor!)
+  }
 
-        let token = SessionClaim.acquire(at: url)
-        XCTAssertNotNil(token, "previous-boot claim must be reclaimable even if PID is alive on this boot")
-    }
+  // MARK: stale detection
 
-    func testDeadProcessTriggersReclaim() {
-        // PID 1 (launchd) is always alive; using a guaranteed-not-to-exist
-        // PID via Int32.max emulates the dead-process case for isStale().
-        let stale = SessionClaim.Payload(
-            pid: Int32.max,
-            bootTime: SessionClaim.currentBootTime(),
-            startedAt: Date(),
-            heartbeatAt: Date()
-        )
-        XCTAssertTrue(SessionClaim.isStale(stale, currentBootTime: SessionClaim.currentBootTime()),
-                      "PID belongs to no live process; claim must be stale")
-    }
+  func testStaleHeartbeatTriggersReclaim() throws {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-    // MARK: heartbeat
+    // Manually write an "old" claim (heartbeat 60s ago) for the
+    // current process. The current-PID is alive, the boot is the
+    // current boot — but the heartbeat lapsed.
+    let stale = SessionClaim.Payload(
+      pid: getpid(),
+      bootTime: SessionClaim.currentBootTime(),
+      startedAt: Date().addingTimeInterval(-300),
+      heartbeatAt: Date().addingTimeInterval(-60)
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(stale).write(to: url)
 
-    func testHeartbeatUpdatesTimestamp() throws {
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+    XCTAssertTrue(
+      SessionClaim.isStale(
+        stale, currentBootTime: SessionClaim.currentBootTime(),
+        now: Date(), staleAfter: 30))
 
-        let token = SessionClaim.acquire(at: url)!
-        let before = try readHeartbeat(at: url)
+    let token = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(token, "stale heartbeat must be reclaimable")
+  }
 
-        // Hop forward in time.
-        let after = Date().addingTimeInterval(1)
-        SessionClaim.heartbeat(token, now: after)
+  func testBootTimeMismatchTriggersReclaim() throws {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-        let updated = try readHeartbeat(at: url)
-        XCTAssertGreaterThan(updated.timeIntervalSinceReferenceDate, before.timeIntervalSinceReferenceDate)
-    }
+    // Old claim from a hypothetical previous boot. PID may now be
+    // recycled to a different process — the boot mismatch protects
+    // against PID reuse (codex pass 2 P1 #6).
+    let oldBoot = Int64(0)  // Definitely not current boot.
+    let stale = SessionClaim.Payload(
+      pid: getpid(),
+      bootTime: oldBoot,
+      startedAt: Date().addingTimeInterval(-3600),
+      heartbeatAt: Date()  // Within heartbeat window, but boot is wrong.
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(stale).write(to: url)
 
-    func testReleaseFromForeignTokenIsNoOp() throws {
-        // Defensive: if some other process's reclaim has already replaced
-        // the file, our release must NOT delete the new owner's claim.
-        let url = makeClaimURL()
-        defer { try? FileManager.default.removeItem(at: url) }
+    XCTAssertTrue(SessionClaim.isStale(stale, currentBootTime: SessionClaim.currentBootTime()))
 
-        let token = SessionClaim.acquire(at: url)!
+    let token = SessionClaim.acquire(at: url)
+    XCTAssertNotNil(
+      token, "previous-boot claim must be reclaimable even if PID is alive on this boot")
+  }
 
-        // Simulate another process having reclaimed the file (different
-        // PID + boot). Our release should leave the foreign claim intact.
-        let foreign = SessionClaim.Payload(
-            pid: 999_999,
-            bootTime: SessionClaim.currentBootTime() + 1,  // mismatched
-            startedAt: Date(),
-            heartbeatAt: Date()
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(foreign).write(to: url)
+  func testDeadProcessTriggersReclaim() {
+    // PID 1 (launchd) is always alive; using a guaranteed-not-to-exist
+    // PID via Int32.max emulates the dead-process case for isStale().
+    let stale = SessionClaim.Payload(
+      pid: Int32.max,
+      bootTime: SessionClaim.currentBootTime(),
+      startedAt: Date(),
+      heartbeatAt: Date()
+    )
+    XCTAssertTrue(
+      SessionClaim.isStale(stale, currentBootTime: SessionClaim.currentBootTime()),
+      "PID belongs to no live process; claim must be stale")
+  }
 
-        SessionClaim.release(token)
+  // MARK: heartbeat
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path),
-                      "release must not delete a claim that has been reassigned")
-    }
+  func testHeartbeatUpdatesTimestamp() throws {
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
 
-    // MARK: helpers
+    let token = SessionClaim.acquire(at: url)!
+    let before = try readHeartbeat(at: url)
 
-    private func readHeartbeat(at url: URL) throws -> Date {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let payload = try decoder.decode(SessionClaim.Payload.self, from: data)
-        return payload.heartbeatAt
-    }
+    // Hop forward in time.
+    let after = Date().addingTimeInterval(1)
+    SessionClaim.heartbeat(token, now: after)
+
+    let updated = try readHeartbeat(at: url)
+    XCTAssertGreaterThan(
+      updated.timeIntervalSinceReferenceDate, before.timeIntervalSinceReferenceDate)
+  }
+
+  func testReleaseFromForeignTokenIsNoOp() throws {
+    // Defensive: if some other process's reclaim has already replaced
+    // the file, our release must NOT delete the new owner's claim.
+    let url = makeClaimURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let token = SessionClaim.acquire(at: url)!
+
+    // Simulate another process having reclaimed the file (different
+    // PID + boot). Our release should leave the foreign claim intact.
+    let foreign = SessionClaim.Payload(
+      pid: 999_999,
+      bootTime: SessionClaim.currentBootTime() + 1,  // mismatched
+      startedAt: Date(),
+      heartbeatAt: Date()
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(foreign).write(to: url)
+
+    SessionClaim.release(token)
+
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: url.path),
+      "release must not delete a claim that has been reassigned")
+  }
+
+  // MARK: helpers
+
+  private func readHeartbeat(at url: URL) throws -> Date {
+    try readPayload(at: url).heartbeatAt
+  }
+
+  private func readPayload(at url: URL) throws -> SessionClaim.Payload {
+    let data = try Data(contentsOf: url)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(SessionClaim.Payload.self, from: data)
+  }
 }
