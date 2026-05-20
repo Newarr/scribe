@@ -421,25 +421,16 @@ final class SettingsFormModel: ObservableObject {
         return false
     }
 
+    var outputRootSyncedStorageProviderHint: String? {
+        DefaultOutputFolderProbe().syncedStorageHint(outputRoot)
+    }
+
     var outputRootIsInICloudDrive: Bool {
-        let path = outputRoot.path
-        return path.contains("/Library/Mobile Documents/")
+        outputRootSyncedStorageProviderHint == "iCloud Drive"
     }
 
     var outputRootIsInSyncedStorage: Bool {
-        let path = outputRoot.path
-        // Third-party cloud providers; sync conflicts can corrupt
-        // audio mid-write. iCloud Drive is broken out separately
-        // because Apple's syncer handles it more gracefully and the
-        // user typically wants their sessions backed up.
-        let markers = [
-            "/Library/CloudStorage/",
-            "Dropbox",
-            "Google Drive",
-            "OneDrive",
-            "Box"
-        ]
-        return markers.contains { path.contains($0) }
+        outputRootSyncedStorageProviderHint != nil
     }
 }
 
@@ -1453,6 +1444,10 @@ private struct FidelityVaultPanel: View {
                         FidelityGhostButton("Reveal") { revealFolder(model.outputRoot) }
                     }
                 }
+                if let warning = syncedStorageWarning {
+                    FidelityRowDivider()
+                    FidelityVaultWarning(message: warning)
+                }
                 FidelityRowDivider()
                 FidelityRow(label: "On disk") {
                     FidelityStorageStat(url: model.outputRoot)
@@ -1464,6 +1459,12 @@ private struct FidelityVaultPanel: View {
     private var shortenedPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return model.outputRoot.path.replacingOccurrences(of: home, with: "~")
+    }
+
+    private var syncedStorageWarning: String? {
+        guard model.outputRootIsInSyncedStorage else { return nil }
+        let provider = model.outputRootSyncedStorageProviderHint ?? "synced storage"
+        return "Heads up: this Vault is in \(provider). Sync races can corrupt durable meeting audio while Scribe is recording. Local storage such as ~/Scribe is recommended; Permission Doctor will show the same non-blocking warning before recording."
     }
 
     private func pickFolder() {
@@ -1943,6 +1944,37 @@ private struct FidelityPanelIntro: View {
                 .frame(maxWidth: 560, alignment: .leading)
                 .padding(.bottom, 24)
         }
+    }
+}
+
+private struct FidelityVaultWarning: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FidelitySettings.amber)
+                .padding(.top, 2)
+            Text(message)
+                .font(FidelitySettings.rowValueFont)
+                .foregroundStyle(FidelitySettings.ink2)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(FidelitySettings.amber.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(FidelitySettings.amber.opacity(0.24), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Vault synced-storage warning")
+        .accessibilityValue(message)
     }
 }
 
@@ -2624,6 +2656,11 @@ private struct FidelityToggle: View {
         }
         .buttonStyle(.plain)
         .contentShape(Capsule())
+        .accessibilityElement()
+        .accessibilityLabel("Switch")
+        .accessibilityValue(isOn ? "on" : "off")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { isOn.toggle() }
     }
 }
 

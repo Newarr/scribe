@@ -196,6 +196,50 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         )
     }
 
+    // MARK: - VAL-SETTINGS-004 / VAL-CROSS-004
+
+    /// Settings Vault must render the same synced-storage warning class that
+    /// PermissionDoctor surfaces before recording. This guards against saving
+    /// Dropbox/iCloud/Drive-style roots silently in Settings while only warning
+    /// later at record time.
+    func testSettingsVaultRendersSyncedStorageWarningUsingPermissionDoctorHeuristic() throws {
+        let source = try appSource("SettingsWindow.swift")
+        XCTAssertTrue(source.contains("DefaultOutputFolderProbe().syncedStorageHint(outputRoot)"))
+        XCTAssertTrue(source.contains("outputRootIsInICloudDrive"))
+        XCTAssertTrue(source.contains("outputRootIsInSyncedStorage"))
+        XCTAssertTrue(source.contains("FidelityVaultWarning"))
+        XCTAssertTrue(source.contains("Permission Doctor will show the same non-blocking warning before recording"))
+        XCTAssertTrue(source.contains("Sync races can corrupt durable meeting audio"))
+    }
+
+    // MARK: - VAL-A11Y-001
+
+    /// Custom switches must use a native activation surface and expose an
+    /// accessibility action/value. Gesture-only drawings are not keyboard or
+    /// VoiceOver actionable.
+    func testCustomSwitchesAreButtonBackedAndAccessibilityActionable() throws {
+        let designSource = try appSource("DesignSystem.swift")
+        guard let styleRange = designSource.range(of: "struct ScribeSwitchStyle") else {
+            XCTFail("ScribeSwitchStyle must exist")
+            return
+        }
+        let styleBlock = String(designSource[styleRange.lowerBound...].prefix(1800))
+        XCTAssertTrue(styleBlock.contains("Button"))
+        XCTAssertTrue(styleBlock.contains(".accessibilityAction"))
+        XCTAssertTrue(styleBlock.contains(".accessibilityValue(configuration.isOn ? \"on\" : \"off\")"))
+        XCTAssertFalse(styleBlock.contains(".onTapGesture"))
+
+        let settingsSource = try appSource("SettingsWindow.swift")
+        guard let toggleRange = settingsSource.range(of: "private struct FidelityToggle") else {
+            XCTFail("FidelityToggle must exist")
+            return
+        }
+        let toggleBlock = String(settingsSource[toggleRange.lowerBound...].prefix(1600))
+        XCTAssertTrue(toggleBlock.contains("Button"))
+        XCTAssertTrue(toggleBlock.contains(".accessibilityAction"))
+        XCTAssertTrue(toggleBlock.contains(".accessibilityValue(isOn ? \"on\" : \"off\")"))
+    }
+
     // MARK: - VAL-PRIVACY-002: NSAlert call-site inventory
 
     /// Every NSAlert() in AppDelegate must set alert.window.sharingType to

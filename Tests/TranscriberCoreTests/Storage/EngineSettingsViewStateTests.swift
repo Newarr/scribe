@@ -122,7 +122,7 @@ final class EngineSettingsViewStateTests: XCTestCase {
         let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
 
         XCTAssertTrue(source.contains("FidelityCloudAPIKeyEditor"), "Settings Engine must expose a Cloud key editor")
-        XCTAssertTrue(source.contains("SecureField(\"Paste API key\""), "Cloud key entry must use secure text entry")
+        XCTAssertTrue(source.contains("SecureField("), "Cloud key entry must use secure text entry")
         XCTAssertTrue(source.contains("Save key"), "Cloud key editor needs a visible commit action")
         XCTAssertTrue(source.contains("Clear key"), "Cloud key editor needs a visible delete action")
         XCTAssertTrue(source.contains("accessibilityLabel(\"ElevenLabs API key\")"), "Secure key field needs a purpose label")

@@ -634,21 +634,28 @@ struct ScribeSwitchStyle: ToggleStyle {
     private let inset: CGFloat = 1
 
     func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .center, spacing: DS.Spacing.ml) {
-            configuration.label
-                .layoutPriority(1)
-            Spacer(minLength: DS.Spacing.s)
-            switchView(isOn: configuration.isOn)
-                .onTapGesture {
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        configuration.isOn.toggle()
-                    }
-                }
-                .accessibilityElement()
-                .accessibilityAddTraits(.isButton)
-                .accessibilityValue(configuration.isOn ? "on" : "off")
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) {
+                configuration.isOn.toggle()
+            }
+        } label: {
+            HStack(alignment: .center, spacing: DS.Spacing.ml) {
+                configuration.label
+                    .layoutPriority(1)
+                Spacer(minLength: DS.Spacing.s)
+                switchView(isOn: configuration.isOn)
+            }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(configuration.isOn ? "on" : "off")
+        .accessibilityAction {
+            withAnimation(.easeOut(duration: 0.12)) {
+                configuration.isOn.toggle()
+            }
+        }
     }
 
     @ViewBuilder
