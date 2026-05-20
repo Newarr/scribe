@@ -1,7 +1,15 @@
 import Foundation
 import Security
 
-public final class KeychainStore: Sendable {
+/// Injectable seam for Cloud API key Keychain persistence.
+/// Tests supply a fake; production code uses `KeychainStore`.
+public protocol KeychainPersisting: Sendable {
+    func write(_ value: String) throws
+    func read() throws -> String?
+    func delete() throws
+}
+
+public final class KeychainStore: Sendable, KeychainPersisting {
     public enum KeychainError: Error { case osStatus(OSStatus) }
 
     private let service: String

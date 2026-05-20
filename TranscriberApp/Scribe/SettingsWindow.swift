@@ -377,13 +377,16 @@ final class SettingsFormModel: ObservableObject {
     }
 
     /// Commits the API key through Keychain. Returns true on success.
+    /// Pass a `keychainOverride` for testing with a fake seam; production
+    /// always uses `KeychainStore(service:account:)`.
     @discardableResult
-    func persistAPIKeyIfChanged() async -> Bool {
+    func persistAPIKeyIfChanged(keychainOverride: (any KeychainPersisting)? = nil) async -> Bool {
         guard apiKey != initialAPIKey else { return true }
         isSavingCloudAPIKey = true
         defer { isSavingCloudAPIKey = false }
         let candidate = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let keychain = KeychainStore(service: keychainService, account: keychainAccount)
+        let keychain: any KeychainPersisting = keychainOverride
+            ?? KeychainStore(service: keychainService, account: keychainAccount)
         do {
             if candidate.isEmpty {
                 try keychain.delete()
@@ -406,10 +409,10 @@ final class SettingsFormModel: ObservableObject {
     }
 
     @discardableResult
-    func clearCloudAPIKey() async -> Bool {
+    func clearCloudAPIKey(keychainOverride: (any KeychainPersisting)? = nil) async -> Bool {
         apiKey = ""
         apiKeyEditedFromInitial = true
-        return await persistAPIKeyIfChanged()
+        return await persistAPIKeyIfChanged(keychainOverride: keychainOverride)
     }
 
     func canCloseOrSurfaceUnsavedCloudKeyWarning() -> Bool {
@@ -1100,7 +1103,11 @@ private struct FidelityAudioPanel: View {
                                 actions: [],
                                 focused: focusedEngineCard == .cloud
                             ) { selectEngine(.cloud) }
-                            FidelityCloudAPIKeyEditor(model: model, focused: focusedEngineCard == .cloud)
+                            FidelityCloudAPIKeyEditor(
+                                model: model,
+                                focused: focusedEngineCard == .cloud,
+                                onCommitSettings: onSettingsChange
+                            )
                         }
 
                         FidelityEngineCard(
@@ -1182,6 +1189,11 @@ private struct FidelityAudioPanel: View {
 private struct FidelityCloudAPIKeyEditor: View {
     @ObservedObject var model: SettingsFormModel
     let focused: Bool
+    /// Called after a successful Save key or Clear key to commit any
+    /// concurrent non-secret Settings edits via the shared save path.
+    /// Keychain persistence always completes first; this is only invoked
+    /// on success so Settings remains open on Keychain failure.
+    let onCommitSettings: @MainActor (SessionSettings) async -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1220,14 +1232,24 @@ private struct FidelityCloudAPIKeyEditor: View {
 
             HStack(spacing: 8) {
                 FidelitySecondaryButton(model.isSavingCloudAPIKey ? "Saving…" : "Save key") {
-                    Task { await model.persistAPIKeyIfChanged() }
+                    Task {
+                        // Keychain-first: persist key before committing
+                        // non-secret settings. On failure, stay open.
+                        let ok = await model.persistAPIKeyIfChanged()
+                        if ok { await onCommitSettings(model.currentSettings) }
+                    }
                 }
                 .disabled(model.isSavingCloudAPIKey || !model.cloudAPIKeyHasChanges)
                 .accessibilityLabel("Save ElevenLabs API key")
                 .accessibilityHint("Saves the typed key to macOS Keychain before Cloud readiness refreshes.")
 
                 FidelityDangerButton("Clear key") {
-                    Task { await model.clearCloudAPIKey() }
+                    Task {
+                        // Keychain-first: delete key before committing
+                        // non-secret settings. On failure, stay open.
+                        let ok = await model.clearCloudAPIKey()
+                        if ok { await onCommitSettings(model.currentSettings) }
+                    }
                 }
                 .disabled(model.isSavingCloudAPIKey || model.apiKey.isEmpty)
                 .accessibilityLabel("Clear ElevenLabs API key")
