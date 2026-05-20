@@ -516,6 +516,56 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(counts.retry, 0)
     }
 
+    func testAutomaticLocalModelStagingContinuesForDownloadAppropriateStates() async {
+        let states: [LocalModelCacheStatus] = [
+            .notDownloaded(modelID: CohereMLXBackend.modelID),
+            .downloading(modelID: CohereMLXBackend.modelID, progress: .init(completedBytes: 10, totalBytes: 100)),
+            .verifying(modelID: CohereMLXBackend.modelID)
+        ]
+
+        for state in states {
+            let starter = DownloadStarterSpy()
+            let controller = OnboardingFlowController(downloadStarter: starter)
+
+            await controller.startLocalModelStagingIfNeeded(localModelStatus: state)
+            await controller.startLocalModelStagingIfNeeded(localModelStatus: state)
+
+            let counts = await starter.counts()
+            XCTAssertEqual(counts.start, 1, "automatic onboarding staging should continue for download-appropriate state \(state)")
+            XCTAssertEqual(counts.retry, 0)
+        }
+    }
+
+    func testAutomaticLocalModelStagingDoesNotRestartFailedOrUnsupportedStates() async {
+        let states: [LocalModelCacheStatus] = [
+            .failed(
+                modelID: CohereMLXBackend.modelID,
+                reason: .init(code: .downloadFailed, message: "Network failed"),
+                retryAvailable: true
+            ),
+            .failed(
+                modelID: CohereMLXBackend.modelID,
+                reason: .init(code: .verificationFailed, message: "Checksum mismatch"),
+                retryAvailable: false
+            ),
+            .unsupported(
+                modelID: CohereMLXBackend.modelID,
+                reason: .init(code: .unsupportedRuntime, message: "No MLX runtime")
+            )
+        ]
+
+        for state in states {
+            let starter = DownloadStarterSpy()
+            let controller = OnboardingFlowController(downloadStarter: starter)
+
+            await controller.startLocalModelStagingIfNeeded(localModelStatus: state)
+
+            let counts = await starter.counts()
+            XCTAssertEqual(counts.start, 0, "automatic onboarding staging must leave failed/unsupported state visible for explicit repair: \(state)")
+            XCTAssertEqual(counts.retry, 0)
+        }
+    }
+
     func testOnboardingWindowSourceSurfacesAccessibleDeferredScreenRecordingGuidance() throws {
         let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
         XCTAssertTrue(source.contains("screenRecordingDeferredGrant"), "Onboarding must retain a deferred Screen Recording grant state")

@@ -353,7 +353,7 @@ public actor OnboardingFlowController {
     }
 
     public func startLocalModelStagingIfNeeded(localModelStatus: LocalModelCacheStatus) async {
-        guard localModelStatus.isReady == false else { return }
+        guard Self.shouldStartAutomaticLocalModelStaging(for: localModelStatus) else { return }
         guard hasStartedScreenRecordingDownload == false else { return }
         hasStartedScreenRecordingDownload = true
         let starter = downloadStarter
@@ -361,6 +361,15 @@ public actor OnboardingFlowController {
             await starter.startDownload()
         }
         await Task.yield()
+    }
+
+    private static func shouldStartAutomaticLocalModelStaging(for status: LocalModelCacheStatus) -> Bool {
+        switch status {
+        case .notDownloaded, .downloading, .verifying:
+            return true
+        case .verified, .failed, .unsupported:
+            return false
+        }
     }
 
     @discardableResult
