@@ -52,6 +52,30 @@ public enum PersistedErrorRedactor {
             options: .regularExpression
         )
 
+        // Standalone API-key-shaped tokens. Provider and transport error
+        // messages may embed the key directly without a header/query wrapper:
+        // e.g. "Unauthorized: sk_TEST-API-KEY-XYZ" or "invalid key
+        // sk_prod_abcdef1234567890". This pattern covers:
+        //   - Known `sk_`-prefixed keys (ElevenLabs and similar OAuth-style)
+        //   - Generic 32+-character high-entropy alphanumeric tokens that are
+        //     almost never part of human-readable error prose
+        // The `sk_` branch is anchored at a word boundary and requires at least
+        // 6 trailing characters to avoid matching short sentinel codes.
+        value = value.replacingOccurrences(
+            of: #"\bsk_[A-Za-z0-9._~+/=-]{6,}\b"#,
+            with: "[redacted]",
+            options: .regularExpression
+        )
+        // High-entropy standalone token heuristic: 32+ consecutive
+        // alphanumeric characters. This catches long opaque tokens that
+        // providers may inline in error strings. Short codes, model IDs,
+        // and readable words are unlikely to hit the 32-char threshold.
+        value = value.replacingOccurrences(
+            of: #"\b[A-Za-z0-9]{32,}\b"#,
+            with: "[redacted]",
+            options: .regularExpression
+        )
+
         value = value.replacingOccurrences(
             of: #"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}"#,
             with: "[email]",

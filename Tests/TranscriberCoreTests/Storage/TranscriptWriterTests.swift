@@ -167,6 +167,30 @@ final class TranscriptWriterTests: XCTestCase {
     }
 
 
+    /// VAL-STORAGE-004: standalone sk_-prefixed token embedded in a provider
+    /// error must not appear in the persisted failed transcript.
+    func testFailedTranscriptRedactsStandaloneSkPrefixedToken() throws {
+        let url = tmp.appendingPathComponent("transcript.md")
+        let context = TranscriptContext(
+            title: "SK Token Test", date: "2026-05-20", engine: "elevenlabs",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-05-20T10:00:00Z", endedAt: "2026-05-20T10:30:00Z",
+            attendees: [], language: nil
+        )
+        let raw = "ElevenLabs returned 401 Unauthorized. xi-api-key: sk_TEST-API-KEY-XYZ used in request. Check your Keychain."
+        try TranscriptWriter.writeFailed(
+            at: url,
+            context: context,
+            errorMessage: raw,
+            details: TranscriptFailureDetails(errorMessage: raw)
+        )
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(content.contains("sk_TEST"), "sk_ token must be redacted from transcript: \(content)")
+        XCTAssertFalse(content.contains("API-KEY-XYZ"), "sk_ token value must be redacted: \(content)")
+        XCTAssertTrue(content.contains("status: failed"), "failed status must be set: \(content)")
+        XCTAssertTrue(content.contains("[redacted]"), "redacted marker must appear: \(content)")
+    }
+
     func testFailedTranscriptRedactsAuthorizationBearerHeaderFormsBeforeGenericKeyValueRedaction() throws {
         let url = tmp.appendingPathComponent("transcript.md")
         let context = TranscriptContext(
