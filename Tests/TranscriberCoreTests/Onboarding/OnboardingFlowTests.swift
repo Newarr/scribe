@@ -63,7 +63,10 @@ final class OnboardingFlowTests: XCTestCase {
             .testRecording,
             .done
         ])
-        XCTAssertEqual(OnboardingFlowStep.ordered.filter(\.canSkip), [.calendar, .notifications])
+        XCTAssertEqual(
+            OnboardingFlowStep.ordered.filter(\.canSkip),
+            [.calendar, .notifications, .elevenLabsAPIKey]
+        )
         XCTAssertFalse(OnboardingFlowStep.microphone.canSkip)
         XCTAssertFalse(OnboardingFlowStep.screenRecording.canSkip)
     }
@@ -285,6 +288,161 @@ final class OnboardingFlowTests: XCTestCase {
 
         XCTAssertTrue(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: readyLocal, requiredCaptureReady: true).isEnabled)
         XCTAssertTrue(OnboardingFlowPresenter.testRecordingState(selectedEngine: .cloud, cloudKeyAvailable: true, localModelStatus: pendingLocal, requiredCaptureReady: true).isEnabled)
+    }
+
+    // VAL-ONBOARDING-001 / VAL-ONBOARDING-005: ElevenLabs key step is
+    // skippable (canSkip), routes to Local on skip, and has a secure key
+    // entry path that refreshes Cloud readiness.
+
+    func testElevenLabsAPIKeyStepIsSkippable() {
+        XCTAssertTrue(
+            OnboardingFlowStep.elevenLabsAPIKey.canSkip,
+            "ElevenLabs API key step must be skippable so Cloud users can skip to Local"
+        )
+    }
+
+    func testResumeRoutesBackToElevenLabsKeyStepWhenCloudSelectedAndKeyMissing() {
+        let readyLocal = LocalModelCacheStatus.verified(.init(
+            modelID: CohereMLXBackend.modelID,
+            cacheURL: URL(fileURLWithPath: "/tmp/model"),
+            diskUsageBytes: 1
+        ))
+
+        // Cloud selected, no key -> must resume at ElevenLabs key step
+        let resumeStep = OnboardingFlowPresenter.resumeStep(from: .init(
+            microphone: .granted,
+            calendar: .denied,
+            notifications: .denied,
+            screenRecording: .granted,
+            cloudKeyAvailable: false,
+            localModelStatus: readyLocal,
+            selectedEngine: .cloud,
+            outputFolderReady: true,
+            testRecordingComplete: false
+        ))
+        XCTAssertEqual(
+            resumeStep,
+            .elevenLabsAPIKey,
+            "resume must return to ElevenLabs key step when Cloud is selected but no key is present"
+        )
+    }
+
+    func testResumeSkipsElevenLabsKeyStepWhenLocalSelected() {
+        let readyLocal = LocalModelCacheStatus.verified(.init(
+            modelID: CohereMLXBackend.modelID,
+            cacheURL: URL(fileURLWithPath: "/tmp/model"),
+            diskUsageBytes: 1
+        ))
+
+        // Local selected, no key -> must skip ElevenLabs step and go to testRecording
+        let resumeStep = OnboardingFlowPresenter.resumeStep(from: .init(
+            microphone: .granted,
+            calendar: .denied,
+            notifications: .denied,
+            screenRecording: .granted,
+            cloudKeyAvailable: false,
+            localModelStatus: readyLocal,
+            selectedEngine: .local,
+            outputFolderReady: true,
+            testRecordingComplete: false
+        ))
+        XCTAssertNotEqual(
+            resumeStep,
+            .elevenLabsAPIKey,
+            "resume must not stop at ElevenLabs key step when Local is selected"
+        )
+    }
+
+    func testCloudEngineDisabledWithoutKeyInChooseEngine() {
+        let cloudState = OnboardingFlowPresenter.chooseEngineState(
+            cloudKeyAvailable: false,
+            localModelStatus: .verified(.init(
+                modelID: CohereMLXBackend.modelID,
+                cacheURL: URL(fileURLWithPath: "/tmp/model"),
+                diskUsageBytes: 1
+            ))
+        )
+        XCTAssertFalse(
+            cloudState.cloud.isReady,
+            "Cloud engine must not be selectable in chooseEngine when key is absent"
+        )
+        XCTAssertTrue(
+            cloudState.local.isReady,
+            "Local engine must remain selectable when Cohere is verified, regardless of Cloud key"
+        )
+    }
+
+    func testCloudEngineReadyAfterKeySaved() {
+        let cloudReadyState = OnboardingFlowPresenter.chooseEngineState(
+            cloudKeyAvailable: true,
+            localModelStatus: .notDownloaded(modelID: CohereMLXBackend.modelID)
+        )
+        XCTAssertTrue(
+            cloudReadyState.cloud.isReady,
+            "Cloud engine must be ready in chooseEngine after key is saved"
+        )
+    }
+
+    func testTestRecordingBlockedWithActionableCopyWhenCloudSelectedAndNoKeyAfterSkip() {
+        // After skipping key entry with Cloud still selected, test recording must
+        // be blocked with actionable copy, not silently enabled.
+        let noKeyCloudBlocked = OnboardingFlowPresenter.testRecordingState(
+            selectedEngine: .cloud,
+            cloudKeyAvailable: false,
+            localModelStatus: .notDownloaded(modelID: CohereMLXBackend.modelID),
+            requiredCaptureReady: true
+        )
+        XCTAssertFalse(noKeyCloudBlocked.isEnabled, "test recording must not be enabled when Cloud is selected but no key is saved")
+        XCTAssertNotNil(noKeyCloudBlocked.waitingCopy, "a blocking wait copy must be present so the user has actionable guidance")
+    }
+
+    func testOnboardingWindowSourceHasSecureFieldForElevenLabsKey() throws {
+        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("SecureField"),
+            "OnboardingWindow must use a SecureField for ElevenLabs key entry"
+        )
+        XCTAssertTrue(
+            source.contains("saveCloudAPIKey"),
+            "OnboardingWindow must expose a saveCloudAPIKey closure for Keychain-backed persistence"
+        )
+        XCTAssertTrue(
+            source.contains("pendingAPIKey"),
+            "OnboardingWindow must maintain pendingAPIKey state for the ElevenLabs key field"
+        )
+        XCTAssertTrue(
+            source.contains("apiKeySaveError"),
+            "OnboardingWindow must surface apiKeySaveError so Keychain failures are visible without revealing the key"
+        )
+    }
+
+    func testOnboardingWindowSkipRoutesToLocalEngine() throws {
+        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        // Skip must route to local engine selection, not just advance blindly.
+        XCTAssertTrue(
+            source.contains("selectEngine(.local)"),
+            "OnboardingWindow skip on the elevenLabsAPIKey step must select .local engine to route toward Local guidance"
+        )
+    }
+
+    func testOnboardingWindowSaveKeyPathDoesNotAdvanceOnFailure() throws {
+        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("apiKeySaveError ="),
+            "OnboardingWindow must set apiKeySaveError and not advance when Keychain save fails"
+        )
+    }
+
+    func testAppDelegateWiresSaveCloudAPIKeyClosureToKeychain() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("saveCloudAPIKey:"),
+            "AppDelegate must wire saveCloudAPIKey to OnboardingWindowController init"
+        )
+        XCTAssertTrue(
+            source.contains("keychain.write(candidate)"),
+            "AppDelegate saveCloudAPIKey closure must write the key to Keychain"
+        )
     }
 
     func testScreenRecordingPrivacyCopyIsExplicit() {

@@ -27,9 +27,9 @@ public enum OnboardingFlowStep: String, Sendable, Equatable, Hashable, CaseItera
 
     public var canSkip: Bool {
         switch self {
-        case .calendar, .notifications:
+        case .calendar, .notifications, .elevenLabsAPIKey:
             return true
-        case .welcome, .microphone, .screenRecording, .elevenLabsAPIKey, .chooseEngine, .outputFolder, .testRecording, .done:
+        case .welcome, .microphone, .screenRecording, .chooseEngine, .outputFolder, .testRecording, .done:
             return false
         }
     }

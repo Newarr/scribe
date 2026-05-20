@@ -424,6 +424,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
                 return Self.probeCloudKey(keychain: keychain) == .configured
             },
+            saveCloudAPIKey: { [weak self] candidate in
+                guard self != nil else { return false }
+                let keychain = KeychainStore(
+                    service: Self.keychainService,
+                    account: Self.keychainAccount
+                )
+                do {
+                    try keychain.write(candidate)
+                    return true
+                } catch {
+                    return false
+                }
+            },
             requestMicrophone: { [weak self] in
                 guard let self else { return .notDetermined }
                 _ = await self.permissions.requestMicrophone()
