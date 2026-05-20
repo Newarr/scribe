@@ -193,6 +193,65 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         )
     }
 
+    // MARK: - VAL-PRIVACY-002: NSAlert call-site inventory
+
+    /// Every NSAlert() in AppDelegate must set alert.window.sharingType to
+    /// WindowChromeSharing.confidential before runModal().
+    ///
+    /// This is a regression guard: if a new NSAlert is added without the
+    /// confidential treatment, this test fails.
+    func testAppDelegateNSAlertCallSitesAllSetConfidentialSharingType() throws {
+        let source = try appSource("AppDelegate.swift")
+        // Collect all ranges of "let alert = NSAlert()" in the source.
+        var searchRange = source.startIndex..<source.endIndex
+        var alertCreationIndices: [String.Index] = []
+        while let range = source.range(of: "NSAlert()", range: searchRange) {
+            alertCreationIndices.append(range.lowerBound)
+            searchRange = range.upperBound..<source.endIndex
+        }
+        XCTAssertFalse(
+            alertCreationIndices.isEmpty,
+            "Expected at least one NSAlert() in AppDelegate.swift"
+        )
+        // For each NSAlert() creation site, check that WindowChromeSharing.confidential
+        // appears before runModal() in the local window (within 800 chars).
+        for idx in alertCreationIndices {
+            let snippet = String(source[idx...].prefix(800))
+            let hasConfidential = snippet.contains("WindowChromeSharing.confidential")
+            let hasRunModal = snippet.contains("runModal()")
+            if hasRunModal {
+                XCTAssertTrue(
+                    hasConfidential,
+                    "AppDelegate NSAlert at offset \(source.distance(from: source.startIndex, to: idx)) must set alert.window.sharingType = WindowChromeSharing.confidential before runModal()"
+                )
+            }
+        }
+    }
+
+    /// presentScreenRecordingRestartRequiredAlert specifically must set
+    /// WindowChromeSharing.confidential on the alert window before runModal().
+    func testScreenRecordingRestartAlertSetsConfidentialSharingType() throws {
+        let source = try appSource("AppDelegate.swift")
+        guard let fnRange = source.range(of: "func presentScreenRecordingRestartRequiredAlert") else {
+            XCTFail("presentScreenRecordingRestartRequiredAlert must exist in AppDelegate.swift")
+            return
+        }
+        // Extract the function body (next 600 chars covers the full implementation)
+        let body = String(source[fnRange.lowerBound...].prefix(600))
+        XCTAssertTrue(
+            body.contains("WindowChromeSharing.confidential"),
+            "presentScreenRecordingRestartRequiredAlert must set alert.window.sharingType = WindowChromeSharing.confidential before runModal()"
+        )
+        // Confidential assignment must precede runModal() call
+        if let confRange = body.range(of: "WindowChromeSharing.confidential"),
+           let modalRange = body.range(of: "runModal()") {
+            XCTAssertTrue(
+                confRange.lowerBound < modalRange.lowerBound,
+                "WindowChromeSharing.confidential must be assigned before runModal() in presentScreenRecordingRestartRequiredAlert"
+            )
+        }
+    }
+
     // MARK: - Helpers
 
     private func appSource(_ file: String) throws -> String {

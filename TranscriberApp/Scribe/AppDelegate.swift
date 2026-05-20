@@ -1135,6 +1135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = "macOS has approved Screen & System Audio Recording in System Settings, but the running Scribe process can't see the new grant until it relaunches."
         alert.addButton(withTitle: "Quit & Reopen Scribe")
         alert.addButton(withTitle: "Later")
+        alert.window.sharingType = WindowChromeSharing.confidential  // UX-4
 
         if alert.runModal() == .alertFirstButtonReturn {
             Self.relaunchAndTerminate()
