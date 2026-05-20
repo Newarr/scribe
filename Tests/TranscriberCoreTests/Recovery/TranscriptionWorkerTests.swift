@@ -728,144 +728,177 @@ final class TranscriptionWorkerTests: XCTestCase {
   // MARK: - Retrying transcript redaction (VAL-STORAGE-004)
 
   /// Retrying transcripts must not persist standalone API-key-shaped tokens.
-  /// The `writeRetrying` path must route the last-error text through
-  /// `PersistedErrorRedactor` before writing to transcript.md.
+  /// This exercises the actual TranscriptionWorker.writeRetrying path with a
+  /// URLError.timedOut, which TranscriptionWorker.isTransient recognizes.
   func testRetryingTranscriptRedactsStandaloneApiKeyToken() async throws {
     let session = dir()
     try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
 
-    // Simulate one transient failure carrying an embedded sk_ sentinel token,
-    // then a second failure that exhausts the budget so the worker terminates.
-    // We use a struct that embeds the sentinel in its description to simulate
-    // a provider error that leaks a key-shaped token. Sentinel is a fake key
-    // pattern — never a real credential.
-    struct SentinelError: Error, CustomStringConvertible {
-      var description: String { "Unauthorized: sk_TEST-SENTINEL-ABCDEF1234 check your key" }
-    }
-    let engine = FakeEngine(responses: [
-      .failure(SentinelError()),
-    ])
+    let apiKeySentinel = "sk_TEST-SENTINEL-ABCDEF1234"
+    let transientError = URLError(
+      .timedOut,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "Timed out with xi-api-key: \(apiKeySentinel) while using model scribe_v2 status 504"
+      ])
+    XCTAssertTrue(
+      TranscriptionWorker.isTransient(transientError),
+      "test must drive writeRetrying with an isTransient-recognized error")
+
+    let recorder = RetryingArtifactRecorder()
     let worker = TranscriptionWorker(
       directory: session,
       context: makeContext(),
-      engine: engine,
+      engine: FakeEngine(responses: [
+        .failure(transientError),
+        .success(makeResponse()),
+      ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
         mode: .multichannel,
         languageCode: nil,
-        keyterms: []
+        keyterms: [],
+        modelID: "scribe_v2"
       ),
       speakerMapping: [:],
       policy: RetryPolicy(delays: [0.001]),
-      sleep: { _ in /* skip */ }
+      sleep: { _ in
+        let content = try String(contentsOf: session.transcript, encoding: .utf8)
+        await recorder.capture(content)
+      }
     )
-    _ = await worker.run()
+    let final = await worker.run()
+    XCTAssertEqual(final, .complete)
 
-    // The worker writes a retrying transcript on the first failure, then a
-    // failed transcript after budget exhaustion. Read the final transcript.
-    let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+    let retryingTranscript = try await recorder.requiredContent()
+    XCTAssertTrue(retryingTranscript.contains("status: retrying"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempt 1/2"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempts: 1"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("scribe_v2"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("504"), retryingTranscript)
     XCTAssertFalse(
-      transcript.contains("sk_TEST-SENTINEL"),
-      "retrying/failed transcript must not contain sk_ sentinel token: \(transcript.prefix(400))")
+      retryingTranscript.contains("sk_TEST"),
+      "retrying transcript must not contain sk_ sentinel token: \(retryingTranscript.prefix(500))")
     XCTAssertFalse(
-      transcript.contains("ABCDEF1234"),
-      "retrying/failed transcript must not contain raw key suffix: \(transcript.prefix(400))")
+      retryingTranscript.contains("ABCDEF1234"),
+      "retrying transcript must not contain raw key suffix: \(retryingTranscript.prefix(500))")
     XCTAssertTrue(
-      transcript.contains("[redacted]"),
-      "redaction marker must appear in transcript: \(transcript.prefix(400))")
-    // Useful bounded context (Unauthorized) must survive
-    XCTAssertTrue(
-      transcript.contains("Unauthorized") || transcript.contains("check your key") || transcript.contains("elevenlabs_unauthorized"),
-      "useful error context must survive redaction: \(transcript.prefix(400))")
+      retryingTranscript.contains("[redacted]"),
+      "redaction marker must appear in retrying transcript: \(retryingTranscript.prefix(500))")
   }
 
   /// Retrying transcripts must not persist high-entropy opaque tokens (32+ chars).
+  /// The assertion captures the retrying artifact from the sleep hook before a
+  /// later success can overwrite transcript.md with the complete transcript.
   func testRetryingTranscriptRedactsHighEntropyToken() async throws {
     let session = dir()
     try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
 
-    // 36-character opaque token embedded in an error string.
-    let highEntropyToken = "AbCdEfGhIjKlMnOpQrStUvWxYz1234567890"
+    let highEntropyToken = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
     XCTAssertGreaterThanOrEqual(highEntropyToken.count, 32)
-    struct HighEntropyError: Error, CustomStringConvertible {
-      let token: String
-      var description: String { "HTTP 401 token=\(token) is invalid" }
-    }
-    let engine = FakeEngine(responses: [
-      .failure(HighEntropyError(token: highEntropyToken)),
-    ])
+    let transientError = URLError(
+      .networkConnectionLost,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "HTTP 503 token=\(highEntropyToken) failed for model scribe_v2"
+      ])
+    XCTAssertTrue(
+      TranscriptionWorker.isTransient(transientError),
+      "test must drive writeRetrying with an isTransient-recognized error")
+
+    let recorder = RetryingArtifactRecorder()
     let worker = TranscriptionWorker(
       directory: session,
       context: makeContext(),
-      engine: engine,
+      engine: FakeEngine(responses: [
+        .failure(transientError),
+        .success(makeResponse()),
+      ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
         mode: .multichannel,
         languageCode: nil,
-        keyterms: []
+        keyterms: [],
+        modelID: "scribe_v2"
       ),
       speakerMapping: [:],
       policy: RetryPolicy(delays: [0.001]),
-      sleep: { _ in /* skip */ }
+      sleep: { _ in
+        let content = try String(contentsOf: session.transcript, encoding: .utf8)
+        await recorder.capture(content)
+      }
     )
-    _ = await worker.run()
+    let final = await worker.run()
+    XCTAssertEqual(final, .complete)
 
-    let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
+    let retryingTranscript = try await recorder.requiredContent()
+    XCTAssertTrue(retryingTranscript.contains("status: retrying"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempt 1/2"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempts: 1"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("scribe_v2"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("503"), retryingTranscript)
     XCTAssertFalse(
-      transcript.contains(highEntropyToken),
-      "retrying/failed transcript must not contain high-entropy opaque token: \(transcript.prefix(400))")
+      retryingTranscript.contains(highEntropyToken),
+      "retrying transcript must not contain high-entropy opaque token: "
+        + "\(retryingTranscript.prefix(500))")
     XCTAssertTrue(
-      transcript.contains("[redacted]") || transcript.contains("elevenlabs_unauthorized"),
-      "redaction marker or code must appear: \(transcript.prefix(400))")
-    // HTTP status code must survive
-    XCTAssertTrue(
-      transcript.contains("401") || transcript.contains("HTTP") || transcript.contains("elevenlabs_unauthorized"),
-      "useful HTTP status context must survive: \(transcript.prefix(400))")
+      retryingTranscript.contains("[redacted]"),
+      "redaction marker must appear in retrying transcript: \(retryingTranscript.prefix(500))")
   }
 
   /// Retrying transcripts must preserve bounded useful context:
-  /// HTTP status, retry count, and attempt count survive redaction.
+  /// retrying status, HTTP status, model id, retry count, and attempt count
+  /// survive in the intermediate retrying artifact before final failure.
   func testRetryingTranscriptPreservesBoundedRetryContext() async throws {
     let session = dir()
     try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
 
-    // Use a transient error that triggers actual retrying + eventual failure.
-    // rateLimited is transient, so the worker writes status=retrying first,
-    // then after budget exhaustion writes status=failed.
-    let err = ElevenLabsScribeBackend.BackendError.rateLimited
-    let engine = FakeEngine(responses: [
-      .failure(err),
-      .failure(err),
-      .failure(err),
-      .failure(err),
-    ])
+    let err = URLError(
+      .cannotConnectToHost,
+      userInfo: [NSLocalizedDescriptionKey: "HTTP status 503 for model scribe_v2"])
+    XCTAssertTrue(
+      TranscriptionWorker.isTransient(err),
+      "test must drive writeRetrying with an isTransient-recognized error")
+    let recorder = RetryingArtifactRecorder()
     let worker = TranscriptionWorker(
       directory: session,
       context: makeContext(),
-      engine: engine,
+      engine: FakeEngine(responses: [
+        .failure(err),
+        .failure(err),
+      ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
         mode: .multichannel,
         languageCode: nil,
-        keyterms: []
+        keyterms: [],
+        modelID: "scribe_v2"
       ),
       speakerMapping: [:],
-      policy: RetryPolicy(delays: [0.001, 0.001, 0.001]),
-      sleep: { _ in /* skip */ }
+      policy: RetryPolicy(delays: [0.001]),
+      sleep: { _ in
+        let content = try String(contentsOf: session.transcript, encoding: .utf8)
+        await recorder.capture(content)
+      }
     )
-    _ = await worker.run()
+    let final = await worker.run()
+    guard case .failed = final else {
+      return XCTFail("expected .failed after retry budget exhaustion, got \(final)")
+    }
 
-    let transcript = try String(contentsOf: session.transcript, encoding: .utf8)
-    // Retry count and attempt count must be present in failed transcript frontmatter
-    XCTAssertTrue(
-      transcript.contains("retry_count: 3"),
-      "retry_count must be preserved in failed transcript: \(transcript.prefix(500))")
-    XCTAssertTrue(
-      transcript.contains("attempt_count: 4"),
-      "attempt_count must be preserved in failed transcript: \(transcript.prefix(500))")
-    XCTAssertTrue(
-      transcript.contains("rate_limited") || transcript.contains("retry_budget_exhausted"),
-      "bounded error code must survive: \(transcript.prefix(500))")
+    let retryingTranscript = try await recorder.requiredContent()
+    XCTAssertTrue(retryingTranscript.contains("status: retrying"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempts: 1"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("attempt 1/2"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("Retrying"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("Last error"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("503"), retryingTranscript)
+    XCTAssertTrue(retryingTranscript.contains("scribe_v2"), retryingTranscript)
+
+    let finalTranscript = try String(contentsOf: session.transcript, encoding: .utf8)
+    XCTAssertTrue(finalTranscript.contains("status: failed"), finalTranscript)
+    XCTAssertTrue(finalTranscript.contains("retry_count: 1"), finalTranscript)
+    XCTAssertTrue(finalTranscript.contains("attempt_count: 2"), finalTranscript)
   }
 
   // MARK: - Phase ι: keep_raw_streams polarity (spec line 102)
@@ -956,6 +989,27 @@ final class TranscriptionWorkerTests: XCTestCase {
       FileManager.default.fileExists(atPath: session.micFinal.path),
       "spec line 102: NEVER delete raws on failed terminal state")
     XCTAssertTrue(FileManager.default.fileExists(atPath: session.systemFinal.path))
+  }
+}
+
+actor RetryingArtifactRecorder {
+  private var content: String?
+
+  func capture(_ content: String) {
+    if self.content == nil {
+      self.content = content
+    }
+  }
+
+  func requiredContent(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws -> String {
+    guard let content else {
+      XCTFail("expected sleep hook to capture retrying transcript", file: file, line: line)
+      throw XCTSkip("retrying transcript was not captured")
+    }
+    return content
   }
 }
 
