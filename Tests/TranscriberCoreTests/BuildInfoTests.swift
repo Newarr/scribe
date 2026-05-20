@@ -1,28 +1,30 @@
 import XCTest
+
 @testable import TranscriberCore
 
 final class BuildInfoTests: XCTestCase {
-    func testVersionIsSemver() {
-        let v = BuildInfo.version
-        // SemVer 2.0: MAJOR.MINOR.PATCH[-prerelease][+build]. Strip
-        // both suffixes before validating numeric core parts so
-        // versions like "1.0.0-rc1" and "1.0.0+build42" both pass.
-        // Codex rc1-final P2.3.
-        var core = v
-        if let dashIdx = core.firstIndex(of: "-") {
-            core = String(core[..<dashIdx])
-        }
-        if let plusIdx = core.firstIndex(of: "+") {
-            core = String(core[..<plusIdx])
-        }
-        let parts = core.split(separator: ".")
-        XCTAssertEqual(parts.count, 3, "version must be semver: MAJOR.MINOR.PATCH (got \(v))")
-        for part in parts {
-            XCTAssertNotNil(Int(part), "each component must be numeric: \(v)")
-        }
-    }
+  func testVersionIsSemver() {
+    let v = BuildInfo.version
+    // SemVer 2.0: MAJOR.MINOR.PATCH[-prerelease][+build].
+    // Reject leading-zero numeric core parts, empty identifiers, and
+    // leading-zero numeric prerelease identifiers instead of just
+    // checking the stripped numeric core.
+    let numericIdentifier = #"0|[1-9][0-9]*"#
+    let prereleaseIdentifier =
+      #"(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"#
+    let buildIdentifier = #"[0-9A-Za-z-]+"#
+    let semverPattern =
+      "^(" + numericIdentifier + ")\\.(" + numericIdentifier + ")\\.("
+      + numericIdentifier + ")(-(" + prereleaseIdentifier + ")(\\.("
+      + prereleaseIdentifier + "))*)?(\\+(" + buildIdentifier + ")(\\.("
+      + buildIdentifier + "))*)?$"
+    XCTAssertNotNil(
+      v.range(of: semverPattern, options: .regularExpression),
+      "version must be strict SemVer 2.0 (got \(v))"
+    )
+  }
 
-    func testNameIsScribe() {
-        XCTAssertEqual(BuildInfo.appName, "Scribe")
-    }
+  func testNameIsScribe() {
+    XCTAssertEqual(BuildInfo.appName, "Scribe")
+  }
 }

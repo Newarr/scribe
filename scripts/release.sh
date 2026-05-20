@@ -66,11 +66,13 @@ if [[ "${EXPECTED_VERSION}" != "${VERSION}" ]]; then
     echo "Run scripts/bump-version.sh ${VERSION} first." >&2
     exit 65
 fi
+BUNDLE_SHORT_VERSION="${VERSION%%[-+]*}"
 
-# Codex rc2-audit P0: project.yml MARKETING_VERSION must also match.
+# Codex rc2-audit P0: project.yml MARKETING_VERSION must match the
+# Apple numeric-only bundle short version, not prerelease/build metadata.
 PROJECT_VERSION="$(grep -E 'MARKETING_VERSION:' "${PROJECT_DIR}/TranscriberApp/project.yml" | sed -nE 's/.*"([^"]+)".*/\1/p')"
-if [[ "${PROJECT_VERSION}" != "${VERSION}" ]]; then
-    echo "project.yml MARKETING_VERSION is ${PROJECT_VERSION}, but BuildInfo says ${VERSION}." >&2
+if [[ "${PROJECT_VERSION}" != "${BUNDLE_SHORT_VERSION}" ]]; then
+    echo "project.yml MARKETING_VERSION is ${PROJECT_VERSION}, but ${VERSION} requires numeric bundle short version ${BUNDLE_SHORT_VERSION}." >&2
     exit 65
 fi
 
@@ -245,8 +247,8 @@ DMG_APP="${MOUNT_DIR}/Scribe.app"
 [[ -d "${DMG_APP}" ]] || { echo "DMG missing Scribe.app"; exit 1; }
 
 DMG_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${DMG_APP}/Contents/Info.plist" 2>/dev/null || true)"
-if [[ "${DMG_BUNDLE_VERSION}" != "${VERSION}" ]]; then
-    echo "DMG ships Scribe.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected ${VERSION}." >&2
+if [[ "${DMG_BUNDLE_VERSION}" != "${BUNDLE_SHORT_VERSION}" ]]; then
+    echo "DMG ships Scribe.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected numeric bundle short version ${BUNDLE_SHORT_VERSION} for ${VERSION}." >&2
     exit 1
 fi
 
