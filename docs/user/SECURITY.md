@@ -1,6 +1,6 @@
 # Security
 
-## Threat model (V1.0-rc1)
+## Threat model (V1.0-rc4)
 
 Scribe is a single-user macOS desktop app. The threat model focuses on:
 
@@ -42,7 +42,7 @@ The app NEVER logs:
 
 ## Hardened runtime + entitlements
 
-V1.0-rc1 ships with hardened runtime enabled in xcodegen (`ENABLE_HARDENED_RUNTIME: YES`). The entitlements file `TranscriberApp/Scribe/Scribe.entitlements` contains:
+V1.0-rc4 ships with hardened runtime enabled in xcodegen (`ENABLE_HARDENED_RUNTIME: YES`). The entitlements file `TranscriberApp/Scribe/Scribe.entitlements` contains:
 
 - `com.apple.security.device.audio-input` — required for `AVCaptureDevice` access under hardened runtime.
 - `com.apple.security.cs.disable-library-validation: false` — only the system + signed-by-same-team libraries can be loaded.

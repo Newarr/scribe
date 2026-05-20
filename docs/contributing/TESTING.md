@@ -2,7 +2,7 @@
 
 V1.0-rc4 is **code-complete**, not V1-shippable. The user (you) validates every box below before tagging `v1.0.0`. Until then, the build is `v1.0.0-rc4`.
 
-Each checkpoint below maps to a `q_*_validation` answer or a Done-state requirement from the V1 plan. Mark each one Pass/Fail/Blocked. If anything fails as a code bug, file an issue and re-tag rc2. If something fails on quality (e.g. Polish transcription is worse than expected), capture the result and gate-flip via `EngineSelector` rather than rebuilding.
+Each checkpoint below maps to a `q_*_validation` answer or a Done-state requirement from the V1 plan. Mark each one Pass/Fail/Blocked. If anything fails as a code bug, file an issue and re-tag the current RC. If something fails on quality (e.g. Polish transcription is worse than expected), capture the result and gate-flip via `EngineSelector` rather than rebuilding.
 
 ## How to use this doc
 
@@ -13,7 +13,7 @@ For each section:
 
 ## Build + smoke launch (CI-checkable)
 
-- [ ] `swift test` passes (221+ tests).
+- [ ] `swift test` passes (592 tests as of rc4).
 - [ ] `xcodebuild -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Release build` produces `Scribe.app`.
 - [ ] First launch shows the privacy acknowledgement modal. Modal text mentions audio upload, calendar keyterms upload, local storage, and that calendar is optional.
 - [ ] Title-bar close button is absent on the privacy modal (no closable). Cmd-W does not dismiss it.
@@ -33,7 +33,7 @@ Revoke each permission in System Settings → Privacy & Security, attempt to rec
 ## Engine readiness
 
 - [ ] **Cloud mode without API key** → preflight denies with `cloudKey: missing` in the diagnostics export.
-- [ ] **Local mode** (Settings → Engine → Local) → preflight denies with `missingLocalEngineBinary` (rc1 doesn't bundle the Cohere binary).
+- [ ] **Local mode** (Settings → Engine → Local) → preflight allows only after the pinned Cohere/MLX model cache verifies and MLX is available; otherwise Setup Required shows the Local repair/download state and does not silently switch to Cloud.
 - [ ] **Cloud mode with valid key** → preflight allows; recording starts.
 
 ## End-to-end recording (`q_audio_capture_validation`)
@@ -98,8 +98,8 @@ Two-speaker call WITHOUT headphones:
 
 - [ ] Record a 3-minute call where the remote speaker's voice is audible from your speakers (no headphones).
 - [ ] Inspect `metadata.json`. `aec_status` should be:
-  - [ ] `succeeded` if AEC backend is bundled (post-rc1 spike).
-  - [ ] `failed` in rc1 — single-channel diarized fallback per spec line 119.
+  - [ ] `succeeded` if a real AEC backend is bundled.
+  - [ ] `failed` in the current rc4 build — single-channel diarized fallback per spec § Audio Capture.
 - [ ] In the failed case, transcript should still be readable. Diarization may collapse the two speakers but content is captured.
 
 ## Diagnostics (mandatory redaction)
@@ -124,7 +124,7 @@ Two-speaker call WITHOUT headphones:
 
 ## Sign + notarize
 
-- [ ] `scripts/release.sh 1.0.0-rc1` succeeds end-to-end on a Mac with the Developer ID cert and `scribe-notary` keychain profile.
+- [ ] `scripts/release.sh 1.0.0-rc4` succeeds end-to-end on a Mac with the Developer ID cert and `scribe-notary` keychain profile.
 - [ ] Result `Scribe.app` passes `spctl --assess`:
   ```
   /Volumes/.../Scribe.app: accepted
@@ -151,4 +151,4 @@ git push origin main v1.0.0
 scripts/release.sh 1.0.0
 ```
 
-Until then: rc1 stays rc1.
+Until then: rc4 stays rc4.

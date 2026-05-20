@@ -23,7 +23,7 @@ Common causes:
 
 The privacy modal is gated on `transcriber.settings.v1` in UserDefaults. If you keep seeing it:
 
-- Check `defaults read com.szymonsypniewicz.transcriber transcriber.settings.v1` — it should contain `"privacyAcknowledged":true` after acknowledgement.
+- Check `defaults read com.szymonsypniewicz.scribe transcriber.settings.v1` — it should contain `"privacyAcknowledged":true` after acknowledgement.
 - If the value isn't sticking, your UserDefaults may be unwritable (rare, usually a permissions issue on `~/Library/Preferences/`).
 
 ### Menu bar shows "Starting…" forever

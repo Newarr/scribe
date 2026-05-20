@@ -368,7 +368,7 @@ Before upload, the transcription worker runs an acoustic-echo-cancellation pre-p
 
 - **AEC succeeds** → engine runs in **multichannel** mode. The worker uploads two channels: cleaned mic on channel 0, raw system on channel 1. ElevenLabs is told `use_multi_channel=true, diarize=false`; the speaker mapping builder labels `speaker_0` as local and `speaker_1` as remote in 1:1 calls. This is the high-quality path.
 - **AEC fails or is disabled** → fall back to **single-channel diarized**. The worker uploads the mixed `audio.m4a` (mono AAC) with `diarize=true`; speaker labels remain generic `Speaker 0 / Speaker 1 / ...`. This is the no-silent-fallback path: the engine pointer never silently swaps; the engine MODE swaps based on AEC.
-- v1.0-rc1 ships a disabled AEC backend (`DisabledAECPrePass`), so all rc1 sessions take the single-channel-diarized fallback. The protocol surface is in place; a real WebRTC-rs or `AUVoiceProcessing` backend lands in a post-rc1 spike.
+- v1.0-rc4 ships a disabled AEC backend (`DisabledAECPrePass`), so current rc4 sessions take the single-channel-diarized fallback. The protocol surface is in place; a real WebRTC-rs or `AUVoiceProcessing` backend lands in a post-rc4 spike.
 - The `metadata.json` `aec_status` field records which path ran (`succeeded` / `failed`) for triage.
 
 ### Audio normalization
@@ -378,7 +378,7 @@ The mixed `audio.m4a` should be loudness-normalized so playback levels are consi
 - Target: -16 LUFS integrated loudness, true-peak ≤ -1 dBTP.
 - Reference: ITU-R BS.1770-4 with EBU R128 gating.
 
-V1.0 status: deferred to V1.1. V1.0-rc1 ships an RMS-style approximation in `AudioFinalizer` (power-preserving mix at unity / 1/√2; per-sample peak limit at 0.891). V1.1 will replace the approximation with a real BS.1770 pass; the `audio.m4a` contract does not change (mono AAC, 48 kHz). Files written under either implementation remain valid input for the engine.
+V1.0 status: deferred to V1.1. V1.0-rc4 ships an RMS-style approximation in `AudioFinalizer` (power-preserving mix at unity / 1/√2; per-sample peak limit at 0.891). V1.1 will replace the approximation with a real BS.1770 pass; the `audio.m4a` contract does not change (mono AAC, 48 kHz). Files written under either implementation remain valid input for the engine.
 
 ## End Guard
 

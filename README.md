@@ -29,12 +29,12 @@ brew install --cask scribe
 
 ### From source (developer build)
 
-Requires macOS 15+, Xcode 16, Swift 6.
+Requires macOS 15+, Xcode 26.3 (or another Swift 6.2-capable Xcode 26 toolchain matching CI).
 
 ```bash
 git clone https://github.com/Newarr/scribe.git
 cd scribe
-swift test                                     # 240+ tests
+swift test                                     # 592 tests as of rc4
 open TranscriberApp/Scribe.xcodeproj           # Xcode → Run
 ```
 
