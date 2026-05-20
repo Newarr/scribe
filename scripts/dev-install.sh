@@ -27,6 +27,108 @@ DEV_KEYCHAIN="$HOME/Library/Keychains/scribe-dev.keychain-db"
 IDENTITY="Scribe Dev Signer 2"
 ENTITLEMENTS="${PROJECT_DIR}/TranscriberApp/Scribe/Scribe.entitlements"
 TARGET="/Applications/Scribe.app"
+DEV_ENTITLEMENTS=""
+
+cleanup_dev_entitlements() {
+    if [[ -n "${DEV_ENTITLEMENTS}" ]]; then
+        rm -f "${DEV_ENTITLEMENTS}" "${DEV_ENTITLEMENTS%.plist}"
+    fi
+}
+
+canonical_app_path() {
+    local path="$1"
+    if [[ ! -d "${path}" ]]; then
+        echo "App path not found: ${path}" >&2
+        return 1
+    fi
+    (cd "${path}" && pwd -P)
+}
+
+assert_distinct_source_and_target() {
+    local source="$1"
+    local target="$2"
+    local canonical_source canonical_target
+    canonical_source="$(canonical_app_path "${source}")"
+    if [[ -d "${target}" ]]; then
+        canonical_target="$(canonical_app_path "${target}")"
+    else
+        local parent base
+        parent="$(dirname "${target}")"
+        base="$(basename "${target}")"
+        if [[ ! -d "${parent}" ]]; then
+            echo "Install target parent does not exist: ${parent}" >&2
+            return 1
+        fi
+        canonical_target="$(cd "${parent}" && pwd -P)/${base}"
+    fi
+
+    if [[ "${canonical_source}" == "${canonical_target}" ]]; then
+        echo "Refusing to install ${source}: source and target both resolve to ${target}." >&2
+        echo "Build a fresh app elsewhere or run without a source path to sign the installed app in place." >&2
+        return 1
+    fi
+}
+
+build_dev_entitlements() {
+    local production_entitlements="$1"
+    local output_entitlements="$2"
+    if [[ ! -f "${production_entitlements}" ]]; then
+        echo "Production entitlements missing: ${production_entitlements}" >&2
+        return 1
+    fi
+
+    cp "${production_entitlements}" "${output_entitlements}"
+    /usr/libexec/PlistBuddy \
+        -c "Set :com.apple.security.cs.disable-library-validation true" \
+        "${output_entitlements}" >/dev/null
+    plutil -lint "${output_entitlements}" >/dev/null
+}
+
+make_temp_dev_entitlements() {
+    local template
+    template="$(mktemp -t scribe-dev-ents)"
+    DEV_ENTITLEMENTS="${template}.plist"
+    rm -f "${template}"
+    build_dev_entitlements "${ENTITLEMENTS}" "${DEV_ENTITLEMENTS}"
+}
+
+if [[ "${1:-}" == "--make-dev-entitlements" ]]; then
+    if [[ $# -ne 3 ]]; then
+        echo "Usage: $0 --make-dev-entitlements production.entitlements output.plist" >&2
+        exit 64
+    fi
+    build_dev_entitlements "$2" "$3"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--assert-distinct-apps" ]]; then
+    if [[ $# -ne 3 ]]; then
+        echo "Usage: $0 --assert-distinct-apps source.app target.app" >&2
+        exit 64
+    fi
+    assert_distinct_source_and_target "$2" "$3"
+    exit 0
+fi
+
+trap cleanup_dev_entitlements EXIT
+
+if [[ -n "${SCRIBE_DEV_INSTALL_TEST_EXIT_AFTER_ENTITLEMENTS:-}" ]]; then
+    echo "==> Building dev entitlements (library validation disabled)"
+    make_temp_dev_entitlements
+    case "${SCRIBE_DEV_INSTALL_TEST_EXIT_AFTER_ENTITLEMENTS}" in
+        success)
+            exit 0
+            ;;
+        failure)
+            echo "Forced failure after dev entitlement generation" >&2
+            exit 42
+            ;;
+        *)
+            echo "Unknown SCRIBE_DEV_INSTALL_TEST_EXIT_AFTER_ENTITLEMENTS value: ${SCRIBE_DEV_INSTALL_TEST_EXIT_AFTER_ENTITLEMENTS}" >&2
+            exit 64
+            ;;
+    esac
+fi
 
 if [[ ! -f "${DEV_KEYCHAIN}" ]]; then
     echo "Dev keychain missing: ${DEV_KEYCHAIN}" >&2
@@ -82,6 +184,7 @@ if pgrep -x Scribe >/dev/null; then
 fi
 
 if [[ -n "${SOURCE}" ]]; then
+    assert_distinct_source_and_target "${SOURCE}" "${TARGET}"
     echo "==> Installing ${SOURCE} → ${TARGET}"
     rm -rf "${TARGET}"
     cp -R "${SOURCE}" "${TARGET}"
@@ -93,25 +196,7 @@ echo "==> Building dev entitlements (library validation disabled)"
 # own dylibs because their NULL Team ID doesn't match the main
 # binary's NULL Team ID. Dev signing flips this one bit; release.sh
 # uses the unmodified TranscriberApp/Scribe/Scribe.entitlements.
-DEV_ENTITLEMENTS="$(mktemp -t scribe-dev-ents).plist"
-trap "rm -f '${DEV_ENTITLEMENTS}'" EXIT
-cat > "${DEV_ENTITLEMENTS}" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.device.audio-input</key>
-    <true/>
-    <key>com.apple.security.cs.allow-jit</key>
-    <false/>
-    <!-- DEV ONLY: disabled because self-signed certs have no Team ID
-         and library validation would reject the bundle's own dylibs.
-         release.sh keeps this false in TranscriberApp/Scribe/Scribe.entitlements. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-</dict>
-</plist>
-EOF
+make_temp_dev_entitlements
 
 echo "==> Signing ${TARGET} with '${IDENTITY}'"
 codesign --force --deep \
