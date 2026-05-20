@@ -3,6 +3,14 @@ import XCTest
 @testable import TranscriberCore
 
 final class CalendarWatcherTests: XCTestCase {
+  private func calendarEvent(title: String) -> CalendarEvent {
+    CalendarEvent(
+      title: title,
+      startDate: Date(),
+      endDate: Date().addingTimeInterval(1800),
+      attendees: []
+    )
+  }
   func testStartPopulatesCacheFromLookup() async {
     let now = Date()
     let event = CalendarEvent(
@@ -140,6 +148,7 @@ final class CalendarWatcherTests: XCTestCase {
 
     await watcher.start()
     let initialLookupCount = await fakeLookup.callCount
+    await fakeNotifications.waitForObserverCount(1)
     let initialObserverCount = await fakeNotifications.activeObserverCount
     XCTAssertEqual(initialLookupCount, 1)
     XCTAssertEqual(initialObserverCount, 1)
@@ -156,6 +165,69 @@ final class CalendarWatcherTests: XCTestCase {
     try? await Task.sleep(nanoseconds: 20_000_000)
     let finalLookupCount = await fakeLookup.callCount
     XCTAssertEqual(finalLookupCount, 2)
+  }
+
+  func testPeriodicPollCanCommitAfterManualRefresh() async {
+    let initialEvent = calendarEvent(title: "Initial")
+    let manualEvent = calendarEvent(title: "Manual")
+    let periodicEvent = calendarEvent(title: "Periodic")
+    let fake = ControlledCalendarLookup()
+    let watcher = CalendarWatcher(
+      lookup: fake, pollInterval: 0.01, notificationSource: FakeCalendarChangeNotificationSource())
+
+    let start = Task { await watcher.start() }
+    await fake.waitForFetchCount(1)
+    await fake.completeFetch(number: 1, with: [initialEvent])
+    await start.value
+
+    await fake.waitForFetchCount(2)
+    let manualRefresh = Task { await watcher.refreshNow() }
+    await fake.waitForFetchCount(3)
+    await fake.completeFetch(number: 3, with: [manualEvent])
+    await manualRefresh.value
+
+    await fake.completeFetch(number: 2, with: [periodicEvent])
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    let snapshot = await watcher.currentCache()
+    XCTAssertEqual(
+      snapshot.events.map(\.title),
+      ["Periodic"],
+      "Manual refresh must not retire the active periodic poll generation")
+    await fake.completeAllPending(with: [])
+    await watcher.stop()
+  }
+
+  func testPeriodicPollCanCommitAfterCalendarChangeNotificationRefresh() async {
+    let initialEvent = calendarEvent(title: "Initial")
+    let notificationEvent = calendarEvent(title: "Notification")
+    let periodicEvent = calendarEvent(title: "Periodic")
+    let fakeLookup = ControlledCalendarLookup()
+    let fakeNotifications = FakeCalendarChangeNotificationSource()
+    let watcher = CalendarWatcher(
+      lookup: fakeLookup, pollInterval: 0.01, notificationSource: fakeNotifications)
+
+    let start = Task { await watcher.start() }
+    await fakeLookup.waitForFetchCount(1)
+    await fakeLookup.completeFetch(number: 1, with: [initialEvent])
+    await start.value
+    await fakeNotifications.waitForObserverCount(1)
+
+    await fakeLookup.waitForFetchCount(2)
+    await fakeNotifications.postChange()
+    await fakeLookup.waitForFetchCount(3)
+    await fakeLookup.completeFetch(number: 3, with: [notificationEvent])
+
+    await fakeLookup.completeFetch(number: 2, with: [periodicEvent])
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    let snapshot = await watcher.currentCache()
+    XCTAssertEqual(
+      snapshot.events.map(\.title),
+      ["Periodic"],
+      "EventKit notification refresh must not retire the active periodic poll generation")
+    await fakeLookup.completeAllPending(with: [])
+    await watcher.stop()
   }
 
   func testEventKitLookupSkipsDeclinedTentativeCancelledAndPastEventsByPolicy() throws {
@@ -205,7 +277,9 @@ actor FakeCalendarLookup: CalendarLookupProtocol {
   private func resumeSatisfiedWaiters() {
     let ready = waiters.filter { callCount >= $0.0 }
     waiters.removeAll { callCount >= $0.0 }
-    ready.forEach { $0.1.resume() }
+    for waiter in ready {
+      waiter.1.resume()
+    }
   }
 }
 
@@ -243,21 +317,33 @@ private actor ControlledCalendarLookup: CalendarLookupProtocol {
   func completeAllPending(with events: [CalendarEvent]) {
     let fetches = pending.values
     pending.removeAll()
-    fetches.forEach { $0.continuation.resume(returning: events) }
+    for fetch in fetches {
+      fetch.continuation.resume(returning: events)
+    }
   }
 
   private func resumeSatisfiedFetchCountWaiters() {
     let ready = fetchCountWaiters.filter { nextFetchNumber >= $0.0 }
     fetchCountWaiters.removeAll { nextFetchNumber >= $0.0 }
-    ready.forEach { $0.1.resume() }
+    for waiter in ready {
+      waiter.1.resume()
+    }
   }
 }
 
 private actor FakeCalendarChangeNotificationSource: CalendarChangeNotificationSource {
   private var observers: [UUID: @Sendable () -> Void] = [:]
+  private var observerCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
   var activeObserverCount: Int {
     observers.count
+  }
+
+  func waitForObserverCount(_ expectedCount: Int) async {
+    if observers.count >= expectedCount { return }
+    await withCheckedContinuation { continuation in
+      observerCountWaiters.append((expectedCount, continuation))
+    }
   }
 
   nonisolated func addCalendarChangeObserver(_ handler: @escaping @Sendable () -> Void)
@@ -276,6 +362,15 @@ private actor FakeCalendarChangeNotificationSource: CalendarChangeNotificationSo
 
   private func addObserver(id: UUID, handler: @escaping @Sendable () -> Void) {
     observers[id] = handler
+    resumeSatisfiedObserverCountWaiters()
+  }
+
+  private func resumeSatisfiedObserverCountWaiters() {
+    let ready = observerCountWaiters.filter { observers.count >= $0.0 }
+    observerCountWaiters.removeAll { observers.count >= $0.0 }
+    for waiter in ready {
+      waiter.1.resume()
+    }
   }
 
   func removeObserver(id: UUID) {

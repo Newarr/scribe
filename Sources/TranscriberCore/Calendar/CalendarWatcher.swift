@@ -100,7 +100,7 @@ public actor CalendarWatcher {
   private var cache = CalendarCache()
   private var pollTask: Task<Void, Never>?
   private var notificationObserver: CalendarChangeObserver?
-  private var refreshGeneration: UInt64 = 0
+  private var lifecycleGeneration: UInt64 = 0
 
   public init(
     lookup: CalendarLookupProtocol = CalendarLookupAdapter(),
@@ -122,11 +122,11 @@ public actor CalendarWatcher {
     notificationObserver?.invalidate()
     notificationObserver = nil
 
-    refreshGeneration &+= 1
-    let generation = refreshGeneration
+    lifecycleGeneration &+= 1
+    let generation = lifecycleGeneration
 
     await refreshNow(generation: generation)
-    guard refreshGeneration == generation else { return }
+    guard lifecycleGeneration == generation else { return }
 
     notificationObserver = notificationSource.addCalendarChangeObserver { [weak self] in
       Task { await self?.refreshNow() }
@@ -154,7 +154,7 @@ public actor CalendarWatcher {
   /// in-progress refresh is allowed to drain before `stop()` returns and
   /// no further polls can happen for this watcher instance.
   public func stop() async {
-    refreshGeneration &+= 1
+    lifecycleGeneration &+= 1
     notificationObserver?.invalidate()
     notificationObserver = nil
 
@@ -167,8 +167,7 @@ public actor CalendarWatcher {
   /// Forces an immediate refresh outside the regular cadence. Called on
   /// wake-from-sleep so a multi-hour gap doesn't leave the cache stale.
   public func refreshNow() async {
-    refreshGeneration &+= 1
-    await refreshNow(generation: refreshGeneration)
+    await refreshNow(generation: lifecycleGeneration)
   }
 
   private func refreshNow(generation: UInt64) async {
@@ -176,7 +175,7 @@ public actor CalendarWatcher {
     let windowStart = now.addingTimeInterval(-windowSpan.past)
     let windowEnd = now.addingTimeInterval(windowSpan.future)
     let events = await lookup.fetchEvents(from: windowStart, to: windowEnd)
-    guard refreshGeneration == generation, !Task.isCancelled else { return }
+    guard lifecycleGeneration == generation, !Task.isCancelled else { return }
     cache = CalendarCache(events: events, refreshedAt: now)
     Log.calendar.info("Calendar cache refreshed: count=\(events.count, privacy: .public)")
   }
