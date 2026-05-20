@@ -34,7 +34,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         let event: CalendarEvent?
 
         var app: MeetingApp { candidate.app }
-        let continuation: CheckedContinuation<Choice, Never>
+        private var continuations: [CheckedContinuation<Choice, Never>]
         var notificationIdentifiers: Set<String> = []
         weak var modalWindow: NSWindow?
         var isModalVisible = false
@@ -50,7 +50,19 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             self.identifier = identifier
             self.candidate = candidate
             self.event = event
-            self.continuation = continuation
+            self.continuations = [continuation]
+        }
+
+        func addAwaiter(_ continuation: CheckedContinuation<Choice, Never>) {
+            continuations.append(continuation)
+        }
+
+        func resumeAll(returning choice: Choice) {
+            let awaiters = continuations
+            continuations.removeAll(keepingCapacity: false)
+            for continuation in awaiters {
+                continuation.resume(returning: choice)
+            }
         }
     }
 
@@ -84,8 +96,6 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private var pendingEndPrompts: [String: PendingEndPrompt] = [:]
     private var activePromptIdentifier: String?
     private var registeredCategories = false
-    private var authorizationKnown = false
-    private var authorizationGranted = false
 
     var hasActivePrompt: Bool { activePromptIdentifier != nil }
 
@@ -115,9 +125,13 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         await ensureRegistered()
 
         return await withCheckedContinuation { continuation in
-            if let activeIdentifier = activePromptIdentifier, activeIdentifier == identifier {
-                Log.lifecycle.info("Coalescing duplicate start prompt for trigger identity \(identifier, privacy: .public)")
+            if let entry = pending[identifier] {
+                Log.lifecycle.info("Coalescing duplicate start prompt for trigger identity \(identifier, privacy: .public); appending awaiter without replacing prompt state")
+                entry.addAwaiter(continuation)
+                activePromptIdentifier = identifier
+                return
             }
+
             let entry = Pending(
                 identifier: identifier,
                 candidate: candidate,
@@ -407,34 +421,25 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func ensureAuthorization() async -> Bool {
-        if authorizationKnown { return authorizationGranted }
-
         let center = UNUserNotificationCenter.current()
+        // Re-query every time instead of caching process-lifetime denial or
+        // grant. Users can flip notification permission in System Settings
+        // while Scribe is running, and both start/end redundant channels must
+        // immediately reflect denied -> granted and granted -> denied changes.
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
-            authorizationKnown = true
-            authorizationGranted = true
             return true
         case .denied:
-            authorizationKnown = true
-            authorizationGranted = false
             return false
         case .notDetermined:
             do {
-                let granted = try await center.requestAuthorization(options: [.alert, .sound])
-                authorizationKnown = true
-                authorizationGranted = granted
-                return granted
+                return try await center.requestAuthorization(options: [.alert, .sound])
             } catch {
                 Log.lifecycle.error("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
-                authorizationKnown = true
-                authorizationGranted = false
                 return false
             }
         @unknown default:
-            authorizationKnown = true
-            authorizationGranted = false
             return false
         }
     }
@@ -496,7 +501,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         }
-        entry.continuation.resume(returning: choice)
+        entry.resumeAll(returning: choice)
     }
 
     private func dismissModalIfVisible(for entry: Pending) {
