@@ -276,7 +276,12 @@ public actor TranscriptionWorker {
         lines.append("")
         lines.append("> Transcription failed (attempt \(failedAttempts)/\(policy.maxAttempts)). Retrying.")
         lines.append(">")
-        lines.append("> Last error: \(String(describing: lastError))")
+        // Route last-error text through PersistedErrorRedactor before
+        // persisting to transcript.md. Retrying transcripts are durable
+        // local records and must not store standalone API-key-shaped tokens,
+        // signed URLs, or high-entropy secrets even mid-retry (VAL-STORAGE-004).
+        let redactedError = PersistedErrorRedactor.redact(String(describing: lastError))
+        lines.append("> Last error: \(redactedError)")
 
         let body = lines.joined(separator: "\n")
         do {
