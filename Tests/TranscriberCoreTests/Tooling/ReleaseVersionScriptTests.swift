@@ -84,6 +84,101 @@ final class ReleaseVersionScriptTests: XCTestCase {
     XCTAssertTrue(source.contains(#"${EXPECTED_VERSION}" != "${VERSION}"#))
   }
 
+  func testReleaseFixtureValidationDoesNotRequireReleaseOnlyCredentials() throws {
+    let result = runProcess(
+      repositoryRoot().appendingPathComponent("scripts/release.sh").path,
+      arguments: ["--fixture-validate"],
+      currentDirectory: repositoryRoot()
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.stderr)
+    XCTAssertFalse(result.stderr.contains("create-dmg"), result.stderr)
+    XCTAssertFalse(result.stderr.contains("codesign-identity"), result.stderr)
+    XCTAssertFalse(result.stderr.contains("scribe-notary"), result.stderr)
+  }
+
+  func testExportOptionsEscapesDeveloperIDIdentityWithXMLCharacters() throws {
+    let output = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ReleaseVersionScriptTests")
+      .appendingPathComponent(UUID().uuidString)
+      .appendingPathComponent("ExportOptions.plist")
+    try FileManager.default.createDirectory(
+      at: output.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: output.deletingLastPathComponent()) }
+
+    let identity = "Developer ID Application: A & B <Team> (TEAMID)"
+    let result = runProcess(
+      repositoryRoot().appendingPathComponent("scripts/release.sh").path,
+      arguments: ["--fixture-export-options", output.path, identity],
+      currentDirectory: repositoryRoot()
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.stderr)
+    XCTAssertEqual(
+      runProcess("/usr/bin/plutil", arguments: ["-lint", output.path]).exitCode,
+      0
+    )
+    XCTAssertEqual(
+      runProcess(
+        "/usr/libexec/PlistBuddy",
+        arguments: ["-c", "Print :signingCertificate", output.path]
+      ).stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+      identity
+    )
+  }
+
+  func testReleaseBuildIntermediatesAreExcludedFromGitAndDiscovery() throws {
+    let root = repositoryRoot()
+    let generatedIntermediate =
+      "TranscriberApp/.dd-release/Build/Intermediates.noindex/Scribe.build/DerivedSources/GeneratedAssetSymbols.swift"
+    let genericIntermediate =
+      "scratch/Build/Intermediates.noindex/Scribe.build/DerivedSources/resource_bundle_accessor.swift"
+
+    XCTAssertEqual(
+      runProcess(
+        "/usr/bin/git",
+        arguments: ["check-ignore", "-q", generatedIntermediate],
+        currentDirectory: root
+      ).exitCode,
+      0
+    )
+    XCTAssertEqual(
+      runProcess(
+        "/usr/bin/git",
+        arguments: ["check-ignore", "-q", genericIntermediate],
+        currentDirectory: root
+      ).exitCode,
+      0
+    )
+    XCTAssertNotEqual(
+      runProcess(
+        "/usr/bin/git",
+        arguments: ["ls-files", "--error-unmatch", generatedIntermediate],
+        currentDirectory: root
+      ).exitCode,
+      0
+    )
+
+    let clawpatchConfig = try String(
+      contentsOf: root.appendingPathComponent(".clawpatch/config.json"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(clawpatchConfig.contains(#""TranscriberApp/.dd-release/**""#))
+    XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates.noindex/**""#))
+    XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates/**""#))
+    XCTAssertTrue(clawpatchConfig.contains(#""**/DerivedSources/**""#))
+
+    let project = try String(
+      contentsOf: root.appendingPathComponent("TranscriberApp/Scribe.xcodeproj/project.pbxproj"),
+      encoding: .utf8
+    )
+    XCTAssertFalse(project.contains("TranscriberApp/.dd-release"))
+    XCTAssertFalse(project.contains("Intermediates.noindex"))
+    XCTAssertFalse(project.contains("DerivedSources"))
+  }
+
   static func isStrictSemVer(_ value: String) -> Bool {
     let numericIdentifier = #"0|[1-9][0-9]*"#
     let prereleaseIdentifier = #"(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"#
