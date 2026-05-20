@@ -502,18 +502,14 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         }
     }
 
-    /// Full inventory regression guard: every .swift file under TranscriberApp/Scribe
-    /// that constructs an NSAlert/NSWindow/NSPanel/NSPopover must also contain a
-    /// WindowChromeSharing.confidential assignment (or be an acknowledged system-panel exception).
+    /// Full inventory regression guard: every NSAlert/NSWindow/NSPanel/NSPopover
+    /// construction site under TranscriberApp/Scribe is validated independently.
     ///
-    /// This test FAILS when a new confidential AppKit surface is added without applying
-    /// WindowChromeSharing.confidential, acting as the authoritative regression guard.
+    /// This intentionally checks sites, not files: adding an unprotected constructor to
+    /// a file that already contains another confidential assignment must still fail.
+    /// System-owned file panels are documented exceptions because Scribe does not own
+    /// their backing NSWindow.
     func testFullScribeAppKitInventoryAllSurfacesHaveConfidentialSharingOrAreSystemPanels() throws {
-        // System-provided panels (NSOpenPanel, NSSavePanel) run as separate App Extension
-        // processes in macOS and have their own window hosting; Scribe does not own their
-        // NSWindow and therefore cannot set sharingType on them. These are excluded.
-        let systemPanelPatterns = ["NSOpenPanel()", "NSSavePanel()"]
-
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
             .deletingLastPathComponent()  // Permissions
@@ -531,10 +527,12 @@ final class PrivacyUISourceGuardTests: XCTestCase {
             return
         }
 
-        // AppKit surface construction patterns that indicate Scribe owns a confidential window.
         let appKitConstructors = ["NSAlert()", "NSWindow(", "NSPanel(", "NSPopover()"]
-
+        let explicitSystemPanelExceptions = [
+            "NSOpenPanel(", "NSOpenPanel()", "NSSavePanel(", "NSSavePanel()",
+        ]
         var violations: [String] = []
+        var inspectedSites = 0
 
         for case let fileURL as URL in enumerator {
             guard fileURL.pathExtension == "swift" else { continue }
@@ -547,37 +545,147 @@ final class PrivacyUISourceGuardTests: XCTestCase {
                 continue
             }
 
-            // Check if this file constructs any Scribe-owned AppKit surface.
-            // System panels (NSOpenPanel, NSSavePanel) are excluded since Scribe does not own
-            // their NSWindow and cannot set sharingType on them.
-            var hasScribeOwnedSurface = false
-            for constructor in appKitConstructors {
-                let isSystemPanel = systemPanelPatterns.contains(constructor)
-                if !isSystemPanel && source.contains(constructor) {
-                    hasScribeOwnedSurface = true
-                    break
-                }
+            let constructorSites = appKitConstructors.flatMap { constructor in
+                ranges(of: constructor, in: source).map { (constructor: constructor, range: $0) }
             }
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
 
-            guard hasScribeOwnedSurface else { continue }
+            for (index, site) in constructorSites.enumerated() {
+                guard !isExplicitSystemPanelException(
+                    at: site.range,
+                    in: source,
+                    exceptions: explicitSystemPanelExceptions
+                ) else { continue }
 
-            // Every file with Scribe-owned AppKit surfaces must use WindowChromeSharing.confidential.
-            if !source.contains("WindowChromeSharing.confidential") {
-                violations.append(filename)
+                inspectedSites += 1
+                let nextConstructorStart = constructorSites.dropFirst(index + 1).first?.range.lowerBound
+                let siteEnd = nextConstructorStart ?? source.endIndex
+                let siteContext = String(source[site.range.lowerBound..<siteEnd])
+
+                guard constructorSiteIsProtected(site.constructor, context: siteContext) else {
+                    let location = lineAndColumn(for: site.range.lowerBound, in: source)
+                    let snippet = constructorSnippet(at: site.range, in: source)
+                    violations.append(
+                        "\(filename):\(location.line):\(location.column) `\(snippet)` lacks local WindowChromeSharing.confidential protection"
+                    )
+                    continue
+                }
             }
         }
 
+        XCTAssertGreaterThan(
+            inspectedSites,
+            0,
+            "Expected to inspect at least one Scribe-owned AppKit construction site"
+        )
         XCTAssertTrue(
             violations.isEmpty,
             """
-            The following TranscriberApp/Scribe source files construct Scribe-owned AppKit surfaces \
-            (NSAlert/NSWindow/NSPanel/NSPopover) without applying WindowChromeSharing.confidential. \
-            Each confidential surface must set `window.sharingType = WindowChromeSharing.confidential` \
-            before the window/alert is shown. The only permitted exception is the explicit \
-            SCRIBE_VISUAL_TEST_OVERRIDE=1 path documented in DesignSystem.swift.
-            Violations: \(violations.joined(separator: ", "))
+            Found Scribe-owned AppKit construction sites without local capture-exclusion protection.
+            Each NSAlert/NSWindow/NSPanel/NSPopover site must set `sharingType = WindowChromeSharing.confidential` in its own local constructor/display window before use, except documented system panels (NSOpenPanel/NSSavePanel) and the explicit SCRIBE_VISUAL_TEST_OVERRIDE=1 path in DesignSystem.swift.
+            Violations:
+            \(violations.joined(separator: "\n"))
             """
         )
+    }
+
+    private func constructorSiteIsProtected(_ constructor: String, context: String) -> Bool {
+        let protection = "WindowChromeSharing.confidential"
+        guard let protectionRange = context.range(of: protection) else { return false }
+
+        if constructor == "NSPopover()" {
+            // NSPopover backing windows exist only after AppKit shows the popover, so
+            // the valid local pattern is `popover.show(...)` followed immediately by
+            // setting the backing window sharing type.
+            guard let showRange = firstRange(ofAny: ["popover.show(", "show(relativeTo:"], in: context) else {
+                return false
+            }
+            return showRange.lowerBound < protectionRange.lowerBound
+        }
+
+        if constructor == "NSAlert()" {
+            return protectionAppearsBeforeFirstUse(
+                protectionRange: protectionRange,
+                useMarkers: ["runModal()", "beginSheetModal", "runModal"],
+                in: context
+            )
+        }
+
+        return protectionAppearsBeforeFirstUse(
+            protectionRange: protectionRange,
+            useMarkers: [
+                "makeKeyAndOrderFront",
+                "orderFrontRegardless",
+                "orderFront(",
+                "runModal",
+                "showWindow",
+            ],
+            in: context
+        )
+    }
+
+    private func protectionAppearsBeforeFirstUse(
+        protectionRange: Range<String.Index>,
+        useMarkers: [String],
+        in context: String
+    ) -> Bool {
+        guard let firstUse = firstRange(ofAny: useMarkers, in: context) else {
+            return true
+        }
+        return protectionRange.lowerBound < firstUse.lowerBound
+    }
+
+    private func firstRange(ofAny patterns: [String], in source: String) -> Range<String.Index>? {
+        patterns
+            .compactMap { source.range(of: $0) }
+            .min { $0.lowerBound < $1.lowerBound }
+    }
+
+    private func ranges(of pattern: String, in source: String) -> [Range<String.Index>] {
+        var result: [Range<String.Index>] = []
+        var searchRange = source.startIndex..<source.endIndex
+        while let range = source.range(of: pattern, range: searchRange) {
+            result.append(range)
+            searchRange = range.upperBound..<source.endIndex
+        }
+        return result
+    }
+
+    private func isExplicitSystemPanelException(
+        at range: Range<String.Index>,
+        in source: String,
+        exceptions: [String]
+    ) -> Bool {
+        let lineStart = source[..<range.lowerBound].lastIndex(of: "\n")
+            .map { source.index(after: $0) } ?? source.startIndex
+        let lineEnd = source[range.lowerBound...].firstIndex(of: "\n") ?? source.endIndex
+        let line = String(source[lineStart..<lineEnd])
+        return exceptions.contains { line.contains($0) }
+    }
+
+    private func lineAndColumn(for index: String.Index, in source: String) -> (line: Int, column: Int) {
+        var line = 1
+        var lineStart = source.startIndex
+        var cursor = source.startIndex
+        while cursor < index {
+            if source[cursor] == "\n" {
+                line += 1
+                lineStart = source.index(after: cursor)
+            }
+            cursor = source.index(after: cursor)
+        }
+        return (line, source.distance(from: lineStart, to: index) + 1)
+    }
+
+    private func constructorSnippet(at range: Range<String.Index>, in source: String) -> String {
+        let lineStart = source[..<range.lowerBound].lastIndex(of: "\n")
+            .map { source.index(after: $0) } ?? source.startIndex
+        let snippetEnd = source.index(range.upperBound, offsetBy: 220, limitedBy: source.endIndex) ?? source.endIndex
+        return String(source[lineStart..<snippetEnd])
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(4)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Helpers
