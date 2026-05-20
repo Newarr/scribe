@@ -203,14 +203,14 @@ public struct FileSystemLocalModelDiskSpaceProbe: LocalModelDiskSpaceProbing {
     public init() {}
 
     public func availableBytes(at url: URL) async -> Int64? {
-        let target = url.path
-        let existingPath: String
-        if FileManager.default.fileExists(atPath: target) {
-            existingPath = target
-        } else {
-            existingPath = url.deletingLastPathComponent().path
+        var probeURL = url
+        var isDirectory: ObjCBool = false
+        while !FileManager.default.fileExists(atPath: probeURL.path, isDirectory: &isDirectory) {
+            let parent = probeURL.deletingLastPathComponent()
+            guard parent.path != probeURL.path else { return nil }
+            probeURL = parent
         }
-        guard let values = try? FileManager.default.attributesOfFileSystem(forPath: existingPath),
+        guard let values = try? FileManager.default.attributesOfFileSystem(forPath: probeURL.path),
               let free = values[.systemFreeSize] as? NSNumber else {
             return nil
         }
@@ -463,7 +463,10 @@ private struct LocalModelDownloadWorker {
                 throw LocalModelManagerError.unsupportedRuntime
             }
             let available = await diskSpace.availableBytes(at: cacheRoot)
-            if let available, available < manifest.requiredFreeBytes {
+            guard let available else {
+                throw LocalModelManagerError.insufficientDiskSpace(required: manifest.requiredFreeBytes, available: nil)
+            }
+            if available < manifest.requiredFreeBytes {
                 throw LocalModelManagerError.insufficientDiskSpace(required: manifest.requiredFreeBytes, available: available)
             }
             try fileManager.createDirectory(at: modelCacheURL(), withIntermediateDirectories: true)
