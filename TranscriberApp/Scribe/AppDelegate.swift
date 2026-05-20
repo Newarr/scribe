@@ -926,7 +926,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             switch final {
             case .complete:
-                status = .finalized
+                status = .idle
+                resetMenuAfterWorker(status: status)
                 markSavedFlash()
             case .failed, .cancelled:
                 status = .failed
@@ -1984,6 +1985,11 @@ self.resetMenuAfterWorker(status: self.status)
         durationSeconds: Int,
         engineLabel: String
     ) {
+        guard FileManager.default.fileExists(atPath: dir.url.path),
+              FileManager.default.fileExists(atPath: dir.transcript.path) else {
+            Log.engine.error("Saved notification suppressed because durable transcript or folder is missing")
+            return
+        }
         let title = event?.title ?? "Manual recording"
         let sizeBytes = totalAudioBytes(in: dir)
         let summary = SavedNotificationWindowController.Summary(
@@ -1997,20 +2003,23 @@ self.resetMenuAfterWorker(status: self.status)
         savedNotification.present(summary)
     }
 
-    /// Sums the byte sizes of the canonical mic + system audio files
-    /// for the saved notification's MB caption. Best-effort: errors
-    /// fall back to 0 (the notification still shows, just without an
-    /// accurate size).
+    /// Uses canonical `audio.m4a` for the saved notification's MB
+    /// caption when present. Raw mic/system streams are only a fallback
+    /// for legacy or partially recovered sessions where canonical audio
+    /// has not been published.
     private nonisolated func totalAudioBytes(in dir: SessionDirectory) -> Int64 {
-        let candidates = [dir.micFinal, dir.systemFinal]
-        var total: Int64 = 0
-        for url in candidates {
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let size = attrs[.size] as? NSNumber {
-                total += size.int64Value
-            }
+        if let canonicalSize = audioByteSize(at: dir.url.appendingPathComponent("audio.m4a")) {
+            return canonicalSize
         }
-        return total
+        return [dir.micFinal, dir.systemFinal].compactMap(audioByteSize(at:)).reduce(0, +)
+    }
+
+    private nonisolated func audioByteSize(at url: URL) -> Int64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber else {
+            return nil
+        }
+        return size.int64Value
     }
 }
 

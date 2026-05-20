@@ -50,6 +50,28 @@ final class RecordingMenuAnimationTests: XCTestCase {
         XCTAssertFalse(layout.contains("onAction(.promptStartRecording)"), "Queued context while recording must not expose a start action that interrupts capture.")
     }
 
+    func testActiveRecordingRendersAccessibleDataDrivenMicAndSystemMeters() throws {
+        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("private struct LiveAudioMeters"), "Recording popover must render explicit live audio meters.")
+        XCTAssertTrue(source.contains("micLevel: model.micLevel"), "MIC meter must be driven from RecordingMenuModel.micLevel.")
+        XCTAssertTrue(source.contains("systemLevel: model.systemLevel"), "SYS meter must be driven from RecordingMenuModel.systemLevel.")
+        XCTAssertTrue(source.contains("label: \"MIC\""), "MIC channel label must be visible.")
+        XCTAssertTrue(source.contains("label: \"SYS\""), "SYS channel label must be visible.")
+        XCTAssertTrue(source.contains("accessibilityLabel(accessibilityLabel)"), "Meters must expose channel-specific VoiceOver labels.")
+        XCTAssertTrue(source.contains("accessibilityValue(\"\\(stateText), \\(Int((normalizedLevel * 100).rounded())) percent\")"), "Meters must expose active/silent state and level value to VoiceOver.")
+        XCTAssertTrue(source.contains("isSilent ? \"silent\" : \"active\""), "Silent-channel state must be text/accessibility backed, not color-only.")
+    }
+
+    func testRecentsRemainBoundedFiveItemShortcut() throws {
+        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("static let recentsLimit = 5"), "Menu recents must show the spec-bounded five item shortcut, not a broader history UI.")
+        XCTAssertTrue(source.contains("Open Folder"), "Recent rows must expose inline Open Folder actions.")
+        XCTAssertTrue(source.contains("Open Transcript"), "Recent rows must expose inline Open Transcript actions.")
+        XCTAssertFalse(source.localizedCaseInsensitiveContains("search transcripts"), "Menu must not become a transcript history/search UI.")
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile

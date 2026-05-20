@@ -312,7 +312,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
 
 @MainActor
 final class RecordingMenuModel: ObservableObject {
-    static let recentsLimit = 3
+    static let recentsLimit = 5
 
     @Published var status: SessionStatus
     @Published var setupNeedsAttention: Bool = false
@@ -577,11 +577,18 @@ private struct RecordingPopoverContent: View {
                     .foregroundStyle(palette.text)
                     .monospacedDigit()
             }
+            LiveAudioMeters(
+                micLevel: model.micLevel,
+                systemLevel: model.systemLevel,
+                palette: palette
+            )
+            .frame(height: 72)
             AnimatedWaveform(
                 palette: palette,
                 isAnimating: model.status == .recording
             )
-                .frame(height: 118)
+                .frame(height: 72)
+                .accessibilityHidden(true)
             privacyStatusBlock(palette: palette)
             Text(activeStatusCopy)
                 .font(activeStatusFont)
@@ -1036,6 +1043,88 @@ struct MenuHeaderMark: Shape {
         path.addRoundedRect(in: scaledRect(x: 10.0, y: 5.0, width: 2.0, height: 8.0), cornerSize: corner)
         path.addRoundedRect(in: scaledRect(x: 13.0, y: 7.0, width: 2.0, height: 4.0), cornerSize: corner)
         return path
+    }
+}
+
+
+private struct LiveAudioMeters: View {
+    let micLevel: Float
+    let systemLevel: Float
+    let palette: RecordingPopoverPalette
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ChannelAudioMeter(
+                label: "MIC",
+                accessibilityLabel: "Microphone level",
+                level: micLevel,
+                palette: palette
+            )
+            ChannelAudioMeter(
+                label: "SYS",
+                accessibilityLabel: "System audio level",
+                level: systemLevel,
+                palette: palette
+            )
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.controlFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(palette.controlStroke, lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct ChannelAudioMeter: View {
+    let label: String
+    let accessibilityLabel: String
+    let level: Float
+    let palette: RecordingPopoverPalette
+
+    private var normalizedLevel: Double {
+        min(1, max(0, Double(level)))
+    }
+
+    private var isSilent: Bool {
+        normalizedLevel <= 0.01
+    }
+
+    private var stateText: String {
+        isSilent ? "silent" : "active"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(SwiftUI.Font.custom(DS.monoFamily, size: 11).weight(.semibold))
+                .tracking(1.2)
+                .foregroundStyle(isSilent ? palette.warning : palette.metaText)
+                .frame(width: 30, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(palette.line.opacity(isSilent ? 0.35 : 0.65))
+                    Capsule()
+                        .fill(isSilent ? palette.warning.opacity(0.75) : palette.live.opacity(0.95))
+                        .frame(width: max(3, proxy.size.width * CGFloat(normalizedLevel)))
+                }
+            }
+            .frame(height: 7)
+            Text(stateText.uppercased())
+                .font(SwiftUI.Font.custom(DS.monoFamily, size: 10).weight(.medium))
+                .tracking(1.0)
+                .foregroundStyle(isSilent ? palette.warning : palette.metaText)
+                .frame(width: 54, alignment: .trailing)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue("\(stateText), \(Int((normalizedLevel * 100).rounded())) percent")
     }
 }
 

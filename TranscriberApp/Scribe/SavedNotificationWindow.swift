@@ -150,8 +150,12 @@ private struct SavedNotificationView: View {
             HStack(spacing: 6) {
                 Button(action: onOpenFolder) { Text("Open folder") }
                     .buttonStyle(GhostButtonStyle())
+                    .keyboardShortcut("o", modifiers: [.command])
+                    .accessibilityLabel("Open saved recording folder")
                 Button(action: onOpenTranscript) { Text("Open transcript") }
                     .buttonStyle(GhostButtonStyle())
+                    .keyboardShortcut("t", modifiers: [.command])
+                    .accessibilityLabel("Open saved transcript")
                 Spacer()
             }
             // Hairline progress indicator (6s drain). Re-keyed on
@@ -166,6 +170,9 @@ private struct SavedNotificationView: View {
         .offset(x: didAppear ? 0 : 12)
         .animation(.easeOut(duration: 0.22), value: didAppear)
         .onAppear { didAppear = true }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Transcript saved")
+        .accessibilityValue("\(model.summary.title), \(model.metaCaption)")
         .onHover { isHovering in
             hovering = isHovering
             if isHovering { onPauseAutoDismiss() } else { onResumeAutoDismiss() }
