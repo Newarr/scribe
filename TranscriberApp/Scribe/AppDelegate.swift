@@ -456,9 +456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             },
             requestScreenRecording: { [weak self] in
-                guard let self else { return .notDetermined }
-                _ = await self.permissions.requestScreenRecording()
-                return await self.permissions.screenRecordingStatus()
+                guard let self else { return OnboardingScreenRecordingRequestResult(requestGranted: false, status: .notDetermined) }
+                let requestGranted = await self.permissions.requestScreenRecording()
+                let status = await self.permissions.screenRecordingStatus()
+                return OnboardingScreenRecordingRequestResult(requestGranted: requestGranted, status: status)
             },
             selectEngine: { [weak self] engine in
                 guard let self else { return }

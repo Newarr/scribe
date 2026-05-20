@@ -14,7 +14,7 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
     private let requestMicrophone: @MainActor () async -> PermissionStatus
     private let requestCalendar: @MainActor () async -> PermissionStatus
     private let requestNotifications: @MainActor () async -> PermissionStatus
-    private let requestScreenRecording: @MainActor () async -> PermissionStatus
+    private let requestScreenRecording: @MainActor () async -> OnboardingScreenRecordingRequestResult
     private let selectEngine: @MainActor (EngineMode) async -> Void
     private let saveOutputFolder: @MainActor (URL) async -> Void
     private let runTestRecording: @MainActor () async -> Bool
@@ -28,7 +28,7 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
         requestMicrophone: @escaping @MainActor () async -> PermissionStatus,
         requestCalendar: @escaping @MainActor () async -> PermissionStatus,
         requestNotifications: @escaping @MainActor () async -> PermissionStatus,
-        requestScreenRecording: @escaping @MainActor () async -> PermissionStatus,
+        requestScreenRecording: @escaping @MainActor () async -> OnboardingScreenRecordingRequestResult,
         selectEngine: @escaping @MainActor (EngineMode) async -> Void,
         saveOutputFolder: @escaping @MainActor (URL) async -> Void,
         runTestRecording: @escaping @MainActor () async -> Bool,
@@ -106,6 +106,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var pendingAPIKey: String = ""
     @Published var apiKeySaveError: String? = nil
+    @Published var screenRecordingDeferredGrant = false
 
     private let flowController: OnboardingFlowController
     private let snapshotProvider: OnboardingWindowController.SnapshotProvider
@@ -114,7 +115,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
     private let requestMicrophone: @MainActor () async -> PermissionStatus
     private let requestCalendar: @MainActor () async -> PermissionStatus
     private let requestNotifications: @MainActor () async -> PermissionStatus
-    private let requestScreenRecording: @MainActor () async -> PermissionStatus
+    private let requestScreenRecording: @MainActor () async -> OnboardingScreenRecordingRequestResult
     private let selectEngine: @MainActor (EngineMode) async -> Void
     private let saveOutputFolder: @MainActor (URL) async -> Void
     private let runTestRecording: @MainActor () async -> Bool
@@ -128,7 +129,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
         requestMicrophone: @escaping @MainActor () async -> PermissionStatus,
         requestCalendar: @escaping @MainActor () async -> PermissionStatus,
         requestNotifications: @escaping @MainActor () async -> PermissionStatus,
-        requestScreenRecording: @escaping @MainActor () async -> PermissionStatus,
+        requestScreenRecording: @escaping @MainActor () async -> OnboardingScreenRecordingRequestResult,
         selectEngine: @escaping @MainActor (EngineMode) async -> Void,
         saveOutputFolder: @escaping @MainActor (URL) async -> Void,
         runTestRecording: @escaping @MainActor () async -> Bool,
@@ -156,6 +157,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
             step = snapshot.testRecordingComplete ? .welcome : OnboardingFlowPresenter.resumeStep(from: snapshot)
         }
         await refreshDerivedState(from: snapshot)
+        await flowController.startLocalModelStagingIfNeeded(localModelStatus: snapshot.localModelStatus)
         await enterCurrentStep()
     }
 
@@ -222,8 +224,12 @@ private final class OnboardingWindowViewModel: ObservableObject {
             holdThenAdvanceIfGranted(permissionResult, allowDenied: true)
         case .screenRecording:
             await flowController.enter(.screenRecording)
-            permissionResult = await requestScreenRecording()
-            holdThenAdvanceIfGranted(permissionResult)
+            let result = await requestScreenRecording()
+            permissionResult = result.status
+            screenRecordingDeferredGrant = result.isDeferredGrantRequiringRelaunch
+            if result.isDeferredGrantRequiringRelaunch == false {
+                holdThenAdvanceIfGranted(result.status)
+            }
         case .elevenLabsAPIKey:
             let candidate = pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !candidate.isEmpty else {
@@ -272,6 +278,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
             return
         }
         permissionResult = nil
+        screenRecordingDeferredGrant = false
         step = OnboardingFlowStep.ordered[index + 1]
     }
 
@@ -341,6 +348,9 @@ private struct OnboardingWindowView: View {
                 Text(copy.tagline)
                     .font(DS.Font.caption)
                     .foregroundStyle(DS.Color.foregroundSecondary)
+                if model.screenRecordingDeferredGrant {
+                    deferredScreenRecordingGuidance
+                }
             }
         case .elevenLabsAPIKey:
             VStack(alignment: .leading, spacing: 12) {
@@ -382,6 +392,26 @@ private struct OnboardingWindowView: View {
                     .font(DS.Font.bodyEmphasis)
             }
         }
+    }
+
+    private var deferredScreenRecordingGuidance: some View {
+        let guidance = OnboardingFlowPresenter.screenRecordingDeferredGuidance
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(guidance.title, systemImage: "exclamationmark.triangle")
+                .font(DS.Font.bodyEmphasis)
+                .foregroundStyle(DS.Color.warning)
+                .accessibilityLabel("Warning: \(guidance.title)")
+            Text(guidance.message)
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .accessibilityLabel("Screen Recording relaunch guidance: \(guidance.message)")
+            Button(guidance.actionTitle) { AppDelegate.relaunchAndTerminate() }
+                .buttonStyle(SecondaryButtonStyle())
+                .accessibilityLabel(guidance.actionTitle)
+                .accessibilityHint("Quits and reopens Scribe so macOS Screen Recording permission takes effect, then onboarding resumes after this step.")
+        }
+        .padding(12)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.Color.warning.opacity(0.6), lineWidth: 1))
     }
 
     private func engineRow(_ option: OnboardingEngineOptionState) -> some View {

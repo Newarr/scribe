@@ -455,6 +455,101 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(copy.whatIsNotCaptured.contains("browser history"))
         XCTAssertTrue(copy.tagline.contains("no video or screen content ever leaves your machine"))
     }
+
+
+    func testScreenRecordingDeferredGrantResultRequiresRelaunchGuidance() {
+        let result = OnboardingScreenRecordingRequestResult(requestGranted: true, status: .denied)
+        XCTAssertTrue(result.isDeferredGrantRequiringRelaunch)
+
+        let guidance = OnboardingFlowPresenter.screenRecordingDeferredGuidance
+        XCTAssertTrue(guidance.title.contains("Restart Scribe"))
+        XCTAssertTrue(guidance.message.contains("macOS approved Screen & System Audio Recording"))
+        XCTAssertTrue(guidance.message.contains("relaunches"))
+        XCTAssertTrue(guidance.message.contains("onboarding will resume past this step"))
+        XCTAssertEqual(guidance.actionTitle, "Relaunch Scribe")
+    }
+
+    func testScreenRecordingGrantedStatusIsNotDeferredAfterRelaunch() {
+        let outputRoot = URL(fileURLWithPath: "/tmp/Scribe", isDirectory: true)
+        let localReady = LocalModelCacheStatus.verified(.init(modelID: CohereMLXBackend.modelID, cacheURL: outputRoot, diskUsageBytes: 1))
+        let result = OnboardingScreenRecordingRequestResult(requestGranted: false, status: .granted)
+        XCTAssertFalse(result.isDeferredGrantRequiringRelaunch)
+
+        XCTAssertEqual(OnboardingFlowPresenter.resumeStep(from: .init(
+            microphone: .granted,
+            calendar: .denied,
+            notifications: .denied,
+            screenRecording: .granted,
+            cloudKeyAvailable: false,
+            localModelStatus: localReady,
+            selectedEngine: .local,
+            outputFolderReady: false,
+            testRecordingComplete: false
+        )), .outputFolder, "after relaunch sees Screen Recording as granted, onboarding must resume past the Screen Recording step")
+    }
+
+    func testResumedOnboardingPastScreenRecordingStartsLocalModelStagingOnce() async {
+        let starter = DownloadStarterSpy()
+        let controller = OnboardingFlowController(downloadStarter: starter)
+        let notDownloaded = LocalModelCacheStatus.notDownloaded(modelID: CohereMLXBackend.modelID)
+
+        await controller.startLocalModelStagingIfNeeded(localModelStatus: notDownloaded)
+        await controller.startLocalModelStagingIfNeeded(localModelStatus: notDownloaded)
+
+        let counts = await starter.counts()
+        XCTAssertEqual(counts.start, 1, "resumed onboarding must start Local staging once even when it resumes after the Screen Recording visual step")
+        XCTAssertEqual(counts.retry, 0)
+    }
+
+    func testLocalModelStagingDoesNotRestartWhenAlreadyReady() async {
+        let starter = DownloadStarterSpy()
+        let controller = OnboardingFlowController(downloadStarter: starter)
+        let readyLocal = LocalModelCacheStatus.verified(.init(
+            modelID: CohereMLXBackend.modelID,
+            cacheURL: URL(fileURLWithPath: "/tmp/model"),
+            diskUsageBytes: 1
+        ))
+
+        await controller.startLocalModelStagingIfNeeded(localModelStatus: readyLocal)
+        let counts = await starter.counts()
+        XCTAssertEqual(counts.start, 0)
+        XCTAssertEqual(counts.retry, 0)
+    }
+
+    func testOnboardingWindowSourceSurfacesAccessibleDeferredScreenRecordingGuidance() throws {
+        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("screenRecordingDeferredGrant"), "Onboarding must retain a deferred Screen Recording grant state")
+        XCTAssertTrue(source.contains("OnboardingScreenRecordingRequestResult"), "Onboarding request seam must preserve requestGranted plus post-request status")
+        XCTAssertTrue(source.contains("deferredScreenRecordingGuidance"), "Onboarding must render explicit deferred relaunch guidance")
+        XCTAssertTrue(source.contains("guidance.actionTitle"), "Deferred guidance must expose the shared relaunch action")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Warning:"), "Deferred warning must be announced as a warning to VoiceOver")
+        XCTAssertTrue(source.contains("Screen Recording relaunch guidance"), "Deferred explanation must have accessible status text")
+        XCTAssertTrue(source.contains("accessibilityHint"), "Relaunch action must include an accessibility hint")
+    }
+
+    func testOnboardingWindowSourcePreservesRecordOnlyCopyBoundaries() throws {
+        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("records mic + system audio"))
+        XCTAssertTrue(source.contains("durable Markdown transcripts next to saved audio"))
+
+        let forbidden = [
+            "import audio",
+            "import transcript",
+            "clipboard transcript",
+            "live transcript",
+            "transcript history",
+            "summary",
+            "summaries",
+            "AI notes",
+            "chat",
+            "polish",
+            "vector"
+        ]
+        for phrase in forbidden {
+            XCTAssertFalse(source.localizedCaseInsensitiveContains(phrase), "Onboarding must not advertise unsupported product surface: \\(phrase)")
+        }
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile
