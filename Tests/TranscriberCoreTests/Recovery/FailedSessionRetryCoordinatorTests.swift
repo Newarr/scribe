@@ -64,6 +64,32 @@ final class FailedSessionRetryCoordinatorTests: XCTestCase {
         XCTAssertEqual(metadata.audio, "audio.m4a")
     }
 
+
+    func testRetryWithMissingCanonicalAudioDoesNotConstructWorker() async throws {
+        let session = try makeFailedSession(engine: "elevenlabs", audioBytes: Data("canonical".utf8))
+        try FileManager.default.removeItem(at: session.url.appendingPathComponent("audio.m4a"))
+        try Data("mic raw".utf8).write(to: session.micFinal)
+        try Data("system raw".utf8).write(to: session.systemFinal)
+
+        do {
+            _ = try await FailedSessionRetryCoordinator.retry(
+                sessionDirectory: session.url,
+                engineFactory: { mode in
+                    XCTFail("engine factory must not be called without canonical audio.m4a; got \(mode)")
+                    return RetryRecordingEngine(responses: [])
+                },
+                sleep: { _ in }
+            )
+            XCTFail("retry should reject raw streams without canonical saved audio")
+        } catch let error as FailedSessionRetryCoordinator.RetryError {
+            XCTAssertEqual(error, .savedAudioMissing)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: session.micFinal), Data("mic raw".utf8))
+        XCTAssertEqual(try Data(contentsOf: session.systemFinal), Data("system raw".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session.url.appendingPathComponent("audio.m4a").path))
+    }
+
     func testRetryValidatesSavedAudioAndFailedTranscript() async throws {
         let session = try makeFailedSession(engine: "elevenlabs", audioBytes: Data())
         try FileManager.default.removeItem(at: session.url.appendingPathComponent("audio.m4a"))

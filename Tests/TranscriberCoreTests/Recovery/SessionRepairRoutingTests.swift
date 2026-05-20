@@ -35,6 +35,20 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertEqual(notice?.localRepairPayloads, [])
     }
 
+
+    func testRetrySavedAudioMissingTakesPrecedenceOverLocalSetup() {
+        let session = URL(fileURLWithPath: "/tmp/failed-local-missing-audio", isDirectory: true)
+
+        let route = SessionRepairRouting.routeRetry(
+            sessionDirectory: session,
+            error: .localSetupRequired,
+            savedAudioExists: false,
+            persistedEngine: "cohere"
+        )
+
+        XCTAssertEqual(route, .unavailable("Saved audio is missing for this failed session."))
+    }
+
     func testRetryLocalSetupRequiredRoutesToSessionSpecificCohereRepair() {
         let session = URL(fileURLWithPath: "/tmp/failed-local", isDirectory: true)
 
@@ -51,7 +65,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         )))
     }
 
-    func testFailedRecentWithoutSavedAudioExposesRepairAndSavedAudioFailureExposesRetry() {
+    func testFailedRecentWithoutSavedAudioExposesNoRetryAndSavedAudioFailureExposesRetry() {
         let noAudio = SessionFolderEnumerator.Entry(
             directory: URL(fileURLWithPath: "/tmp/no-audio", isDirectory: true),
             transcript: URL(fileURLWithPath: "/tmp/no-audio/transcript.md"),
@@ -73,10 +87,7 @@ final class SessionRepairRoutingTests: XCTestCase {
             engineIdentifier: "cohere"
         )
 
-        XCTAssertEqual(SessionRepairRouting.recentAction(for: noAudio), .repair(SessionRepairRouting.LocalRepairPayload(
-            sessionDirectory: noAudio.directory,
-            reason: "Saved audio is missing; open setup to repair this failed session before retrying."
-        )))
+        XCTAssertEqual(SessionRepairRouting.recentAction(for: noAudio), .none)
         XCTAssertEqual(SessionRepairRouting.recentAction(for: withAudio), .retry(sessionDirectory: withAudio.directory))
     }
 

@@ -147,22 +147,18 @@ public enum TranscriptWriter {
         details providedDetails: TranscriptFailureDetails? = nil
     ) throws {
         let details = providedDetails ?? TranscriptFailureDetails(errorMessage: errorMessage)
-        let audioRef = audioReferenceList(c.audioRelativePaths)
-        let audioSummary = failureAudioSummary(paths: c.audioRelativePaths, duration: details.audioDurationSeconds, size: details.audioSizeBytes)
         let body = """
         \(frontmatter(status: "failed", context: c, failureDetails: details))
 
         # Transcription Failed
 
-        Audio is saved at \(audioRef)\(audioSummary). The recording itself is intact and complete; only transcription failed.
+        \(failureExplanation(context: c, details: details))
 
         \(engineDisplayName(c.engine)) returned `\(details.errorCode)` after \(details.retryCount) retries. \(details.errorMessage)
 
         ## What you can do
 
-        - Retry from the Scribe menu bar: click the icon, then `Retry` next to this session.
-        - Or transcribe locally: Settings → Engine → Cohere (local), then retry.
-        - Or transcribe outside Scribe: open \(audioRef) in any other tool.
+        \(failureGuidance(context: c))
         """
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -234,6 +230,47 @@ public enum TranscriptWriter {
         }
     }
 
+
+    private static func failureExplanation(context c: TranscriptContext, details: TranscriptFailureDetails) -> String {
+        let audioRef = audioReferenceList(c.audioRelativePaths)
+        let audioSummary = failureAudioSummary(paths: c.audioRelativePaths, duration: details.audioDurationSeconds, size: details.audioSizeBytes)
+        if c.audioRelativePaths.isEmpty {
+            return "No usable audio was captured for this session, so Scribe cannot retry transcription from saved audio."
+        }
+        if c.audioRelativePaths == ["audio.m4a"] {
+            return "Audio is saved at \(audioRef)\(audioSummary). The recording itself is intact and complete; only transcription failed."
+        }
+        if c.audioRelativePaths.count == 1 {
+            return "Only \(audioRef) was preserved for this session\(audioSummary). Scribe requires both microphone and system audio for retry, and the missing side cannot be reconstructed."
+        }
+        return "Captured audio streams are preserved at \(audioRef)\(audioSummary), but canonical `audio.m4a` was not created. Scribe can retry only after canonical saved audio exists."
+    }
+
+    private static func failureGuidance(context c: TranscriptContext) -> String {
+        if c.audioRelativePaths.isEmpty {
+            return """
+            - Check microphone, System Audio, and output-folder setup before starting a new recording.
+            - Keep this transcript as the failure record; there is no saved audio file for Scribe to retry.
+            """
+        }
+        if c.audioRelativePaths == ["audio.m4a"] {
+            return """
+            - Retry from the Scribe menu bar: click the icon, then `Retry` next to this session.
+            - Or transcribe locally: Settings → Engine → Cohere (local), then retry.
+            - Or transcribe outside Scribe: open `audio.m4a` in any other tool.
+            """
+        }
+        if c.audioRelativePaths.count == 1 {
+            return """
+            - Keep the surviving audio file for manual recovery: \(audioReferenceList(c.audioRelativePaths)).
+            - Start a new Scribe recording after microphone and System Audio are both available; a normal retry cannot restore the missing side.
+            """
+        }
+        return """
+        - Keep the preserved source audio files for manual recovery: \(audioReferenceList(c.audioRelativePaths)).
+        - Scribe retry is available only for failed sessions with canonical `audio.m4a`.
+        """
+    }
 
     private static func failureAudioSummary(paths: [String], duration: Int?, size: Int?) -> String {
         var parts: [String] = []

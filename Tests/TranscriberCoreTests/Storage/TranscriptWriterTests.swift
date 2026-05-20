@@ -103,7 +103,73 @@ final class TranscriptWriterTests: XCTestCase {
 
         try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "boom")
         let failed = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(failed.contains("Audio is saved at `mic.m4a` and `system.m4a`"))
+        XCTAssertTrue(failed.contains("Captured audio streams are preserved at `mic.m4a` and `system.m4a`"), failed)
+    }
+
+
+    func testNoAudioFailureCopyDoesNotPromiseIntactRecording() throws {
+        let url = tmp.appendingPathComponent("no-audio.md")
+        let context = TranscriptContext(
+            title: "No Audio", date: "2026-05-20", engine: "elevenlabs",
+            audioRelativePaths: [],
+            startedAt: "2026-05-20T10:00:00Z", endedAt: "2026-05-20T10:05:00Z",
+            attendees: [], language: nil
+        )
+
+        try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "Session audio is missing")
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("No usable audio was captured"), content)
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("intact and complete"), content)
+        XCTAssertFalse(content.contains("Retry from the Scribe menu bar"), content)
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("transcribe locally"), content)
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("transcribe outside Scribe"), content)
+        XCTAssertFalse(content.contains("open `"), content)
+    }
+
+    func testOneSidedFailureCopyDoesNotPromiseScribeRetry() throws {
+        let url = tmp.appendingPathComponent("one-sided.md")
+        let context = TranscriptContext(
+            title: "One Sided", date: "2026-05-20", engine: "cohere",
+            audioRelativePaths: ["mic.m4a"],
+            startedAt: "2026-05-20T10:00:00Z", endedAt: "2026-05-20T10:05:00Z",
+            attendees: [], language: nil
+        )
+
+        try TranscriptWriter.writeFailed(at: url, context: context, errorMessage: "Only mic survived")
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(content.contains("Only `mic.m4a` was preserved"), content)
+        XCTAssertTrue(content.contains("requires both microphone and system audio"), content)
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("intact and complete"), content)
+        XCTAssertFalse(content.contains("Retry from the Scribe menu bar"), content)
+        XCTAssertFalse(content.localizedCaseInsensitiveContains("transcribe locally"), content)
+    }
+
+    func testFailureGuidanceMatchesAvailableAudioAndSupportedActions() throws {
+        let canonicalURL = tmp.appendingPathComponent("canonical.md")
+        let canonical = TranscriptContext(
+            title: "Canonical", date: "2026-05-20", engine: "elevenlabs",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-05-20T10:00:00Z", endedAt: "2026-05-20T10:05:00Z",
+            attendees: [], language: nil
+        )
+        try TranscriptWriter.writeFailed(at: canonicalURL, context: canonical, errorMessage: "timeout")
+        let canonicalContent = try String(contentsOf: canonicalURL, encoding: .utf8)
+        XCTAssertTrue(canonicalContent.contains("Retry from the Scribe menu bar"), canonicalContent)
+        XCTAssertTrue(canonicalContent.contains("open `audio.m4a`"), canonicalContent)
+
+        let rawURL = tmp.appendingPathComponent("raw.md")
+        let raw = TranscriptContext(
+            title: "Raw", date: "2026-05-20", engine: "elevenlabs",
+            audioRelativePaths: ["mic.m4a", "system.m4a"],
+            startedAt: "2026-05-20T10:00:00Z", endedAt: "2026-05-20T10:05:00Z",
+            attendees: [], language: nil
+        )
+        try TranscriptWriter.writeFailed(at: rawURL, context: raw, errorMessage: "audio finalizer failed")
+        let rawContent = try String(contentsOf: rawURL, encoding: .utf8)
+        XCTAssertTrue(rawContent.contains("canonical `audio.m4a` was not created"), rawContent)
+        XCTAssertFalse(rawContent.contains("Retry from the Scribe menu bar"), rawContent)
     }
 
     func testFailedTranscriptIncludesBoundedFailureDetails() throws {

@@ -124,7 +124,9 @@ public actor SessionSupervisor {
                 )
                 let message = "Session audio is one-sided (only \(stream.rawValue) survived). Per V1 spec the engine requires both microphone and system audio to produce diarized output; the surviving file at \(survivingFile.lastPathComponent) is preserved for manual recovery."
                 do {
-                    try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: message)
+                    let details = TranscriptFailureDetails(errorCode: "one_sided_audio", errorMessage: message)
+                    try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: message, details: details)
+                    try Self.writeFailedMetadata(in: dir, context: context, details: details)
                     result.partialAudioMarkedFailed += 1
                 } catch {
                     Log.engine.error("supervisor: writeFailed (partial audio) failed: \(String(describing: error), privacy: .public)")
@@ -145,7 +147,10 @@ public actor SessionSupervisor {
                 let baseContext = Self.recoveryContext(existing: existing, dir: dir, contextFactory: contextFactory)
                 let context = Self.contextOverridingAudio(base: baseContext, paths: [])
                 do {
-                    try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: "Session audio is missing. The capture session may have been interrupted before any audio was written.")
+                    let message = "Session audio is missing. The capture session may have been interrupted before any audio was written."
+                    let details = TranscriptFailureDetails(errorCode: "no_audio_captured", errorMessage: message)
+                    try TranscriptWriter.writeFailed(at: dir.transcript, context: context, errorMessage: message, details: details)
+                    try Self.writeFailedMetadata(in: dir, context: context, details: details)
                     result.markedFailed += 1
                 } catch {
                     Log.engine.error("supervisor: writeFailed (no audio) failed: \(String(describing: error), privacy: .public)")
@@ -208,6 +213,22 @@ public actor SessionSupervisor {
                 }
             }
         }
+    }
+
+
+    private static func writeFailedMetadata(
+        in dir: SessionDirectory,
+        context: TranscriptContext,
+        details: TranscriptFailureDetails
+    ) throws {
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: context,
+            audio: MetadataJSONWriter.primaryAudioReference(context: context),
+            aecStatus: .failed,
+            failureDetails: details
+        )
+        try MetadataJSONWriter.write(at: dir.url.appendingPathComponent("metadata.json"), metadata: metadata)
     }
 
     private static func recoveryContext(

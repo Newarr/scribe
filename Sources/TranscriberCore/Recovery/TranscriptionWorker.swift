@@ -520,9 +520,10 @@ public actor TranscriptionWorker {
         // the array). The transcript's `audio:` key still lists every track,
         // so JSON consumers preferring single-asset semantics get the
         // primary while transcript readers see the full set.
-        let primaryAudio = audioPath.isEmpty
-            ? (context.audioRelativePaths.first ?? "mic.m4a")
-            : audioPath
+        let primaryAudio = MetadataJSONWriter.primaryAudioReference(
+            context: context,
+            preferredAudioPath: audioPath
+        )
         // Codex rc1-final P1.3: aec_status is part of the metadata
         // contract per spec line 117 / 119 even though the AEC backend
         // ships as a placeholder in rc1. Always write `failed` so the

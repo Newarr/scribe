@@ -77,6 +77,11 @@ public enum MetadataJSONWriter {
         }
     }
 
+    public static func primaryAudioReference(context: TranscriptContext, preferredAudioPath: String = "") -> String {
+        if !preferredAudioPath.isEmpty { return preferredAudioPath }
+        return context.audioRelativePaths.first ?? ""
+    }
+
     public static func write(at url: URL, metadata: Metadata) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

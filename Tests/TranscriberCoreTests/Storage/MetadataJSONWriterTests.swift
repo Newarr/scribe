@@ -54,6 +54,44 @@ final class MetadataJSONWriterTests: XCTestCase {
         XCTAssertNil(decoded.language)
     }
 
+
+    func testFailedMetadataAudioReferencesMatchTranscript() throws {
+        let noAudio = TranscriptContext(
+            title: "No audio",
+            date: "2026-05-20",
+            engine: "elevenlabs",
+            audioRelativePaths: [],
+            startedAt: "2026-05-20T10:00:00Z",
+            endedAt: "2026-05-20T10:05:00Z",
+            attendees: [],
+            language: nil
+        )
+        XCTAssertEqual(MetadataJSONWriter.primaryAudioReference(context: noAudio), "")
+        let noAudioMetadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: noAudio,
+            audio: MetadataJSONWriter.primaryAudioReference(context: noAudio)
+        )
+        XCTAssertEqual(noAudioMetadata.audio, "")
+
+        let oneSided = TranscriptContext(
+            title: "One sided",
+            date: "2026-05-20",
+            engine: "cohere",
+            audioRelativePaths: ["system.m4a"],
+            startedAt: "2026-05-20T10:00:00Z",
+            endedAt: "2026-05-20T10:05:00Z",
+            attendees: [],
+            language: nil
+        )
+        let oneSidedMetadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: oneSided,
+            audio: MetadataJSONWriter.primaryAudioReference(context: oneSided)
+        )
+        XCTAssertEqual(oneSidedMetadata.audio, "system.m4a")
+    }
+
     func testFailedMetadataIncludesFailureDetails() throws {
         let details = TranscriptFailureDetails(
             errorCode: "elevenlabs_timeout",
