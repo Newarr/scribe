@@ -322,6 +322,42 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(attempt.repairReason)
     }
 
+
+    func testSetEngineModeIfReadyPreservesConcurrentSettingsMutation() async throws {
+        let suite = try makeSuite()
+        let root = tempDir()
+        let concurrentRoot = tempDir()
+        let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: root, engineMode: .cloud))
+        let readiness = SuspendingReadiness(localStatus: .verified(.init(
+            modelID: CohereMLXBackend.modelID,
+            cacheURL: tempDir(),
+            diskUsageBytes: 1
+        )))
+
+        let selectionTask = Task {
+            await store.setEngineModeIfReady(.local, readiness: readiness)
+        }
+
+        await readiness.waitUntilProbeStarted()
+        await store.setOutputRoot(concurrentRoot)
+        await store.setKeepRawStreams(true)
+        await store.setAECEnabled(false)
+        await store.setAppearanceTheme(.dark)
+        await store.setPrivacyAcknowledged(true)
+        await readiness.resume()
+
+        let attempt = await selectionTask.value
+        XCTAssertTrue(attempt.accepted)
+
+        let snapshot = await store.snapshot()
+        XCTAssertEqual(snapshot.engineMode, .local)
+        XCTAssertEqual(snapshot.outputRoot, concurrentRoot)
+        XCTAssertEqual(snapshot.keepRawStreams, true)
+        XCTAssertEqual(snapshot.aecEnabled, false)
+        XCTAssertEqual(snapshot.appearanceTheme, .dark)
+        XCTAssertEqual(snapshot.privacyAcknowledged, true)
+    }
+
     func testStoreSetEngineModeIfReadyDoesNotPersistRejectedLocal() async throws {
         let suite = try makeSuite()
         let root = tempDir()
@@ -354,4 +390,52 @@ private struct StubReadiness: EngineReadinessProbing {
     func cloudKeyAvailable() async -> Bool { cloudKey }
     func localModelStatus() async -> LocalModelCacheStatus { localStatus }
     func localModelID() -> String { CohereMLXBackend.modelID }
+}
+
+
+private actor SuspendingReadiness: EngineReadinessProbing {
+    private let localStatusValue: LocalModelCacheStatus
+    private var startedContinuation: CheckedContinuation<Void, Never>?
+    private var resumeContinuation: CheckedContinuation<Void, Never>?
+    private var probeStarted = false
+    private var resumed = false
+
+    init(localStatus: LocalModelCacheStatus) {
+        self.localStatusValue = localStatus
+    }
+
+    func cloudKeyAvailable() async -> Bool {
+        await suspendUntilResumed()
+        return true
+    }
+
+    func localModelStatus() async -> LocalModelCacheStatus {
+        await suspendUntilResumed()
+        return localStatusValue
+    }
+
+    nonisolated func localModelID() -> String { CohereMLXBackend.modelID }
+
+    func waitUntilProbeStarted() async {
+        if probeStarted { return }
+        await withCheckedContinuation { continuation in
+            startedContinuation = continuation
+        }
+    }
+
+    func resume() {
+        resumed = true
+        resumeContinuation?.resume()
+        resumeContinuation = nil
+    }
+
+    private func suspendUntilResumed() async {
+        probeStarted = true
+        startedContinuation?.resume()
+        startedContinuation = nil
+        if resumed { return }
+        await withCheckedContinuation { continuation in
+            resumeContinuation = continuation
+        }
+    }
 }

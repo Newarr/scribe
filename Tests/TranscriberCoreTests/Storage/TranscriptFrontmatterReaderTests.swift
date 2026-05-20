@@ -27,6 +27,39 @@ final class TranscriptFrontmatterReaderTests: XCTestCase {
         XCTAssertEqual(parsed?.attempts, 0)
     }
 
+
+    func testWriterEscapedQuotesAndBackslashesRoundTripExactly() throws {
+        let context = TranscriptContext(
+            title: #"Project "Alpha" \ Beta"#,
+            date: "2026-04-29",
+            engine: "elevenlabs",
+            audioRelativePaths: [#"folder\audio "final".m4a"#, #"system\side "B".m4a"#],
+            scheduledStart: "2026-04-29T14:30:00Z",
+            scheduledEnd: "2026-04-29T15:00:00Z",
+            actualStart: "2026-04-29T14:31:00Z",
+            actualEnd: "2026-04-29T15:01:00Z",
+            organizer: TranscriptPerson(name: #"Org "Lead" \ Owner"#, email: #"owner+\"test"@example.com"#),
+            location: #"Room "A" \ Floor 2"#,
+            calendarEventID: #"event\id"quoted""#,
+            attendees: [
+                TranscriptPerson(name: #"Alice "A" \ Remote"#, email: #"alice+\"qa"@example.com"#),
+                TranscriptPerson(name: #"Bob \ Builder "B""#, email: #"bob\team@example.com"#)
+            ],
+            language: "en"
+        )
+        let markdown = TranscriptWriter.frontmatter(status: "pending", context: context) + "\n\nbody"
+
+        let parsed = TranscriptFrontmatterReader.readFromString(markdown)
+        XCTAssertEqual(parsed?.status, .pending)
+        XCTAssertEqual(parsed?.context.title, context.title)
+        XCTAssertEqual(parsed?.context.audioRelativePaths, context.audioRelativePaths)
+        XCTAssertEqual(parsed?.context.organizer, context.organizer)
+        XCTAssertEqual(parsed?.context.location, context.location)
+        XCTAssertEqual(parsed?.context.calendarEventID, context.calendarEventID)
+        XCTAssertEqual(parsed?.context.attendees, context.attendees)
+        XCTAssertEqual(parsed?.context.language, context.language)
+    }
+
     func testParsesAttemptsFromRetryingTranscript() {
         // Synthesized retrying transcript matching what TranscriptionWorker.writeRetrying writes.
         let md = """
