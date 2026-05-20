@@ -185,6 +185,60 @@ final class TranscriptionWorkerTests: XCTestCase {
     return sqrt(sum / Double(end - start))
   }
 
+  func testCloudRequestUsesSanitizedCalendarKeytermsOnly() async throws {
+    let session = dir()
+    try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+    try writeAACSilence(to: session.micFinal, durationSec: 0.3)
+    try writeAACSilence(to: session.systemFinal, durationSec: 0.3)
+
+    let event = CalendarEvent(
+      title: "Vendor sync meet.vendor.cloud/room-abc dial in +1 555 123 4567 passcode 123456",
+      startDate: Date(),
+      endDate: Date().addingTimeInterval(1800),
+      attendees: [
+        .init(name: "Szymon", email: "szymon@example.com", isCurrentUser: true),
+        .init(name: "Nora Vendor", email: "nora@vendor.cloud", isCurrentUser: false),
+      ]
+    )
+    let engine = RecordingEngine(responses: [.success(makeResponse())])
+    let worker = makeWorker(
+      engine: engine,
+      directory: session,
+      context: makeContext(engine: "elevenlabs"),
+      request: EngineRequest(
+        audioURL: session.url.appendingPathComponent("audio.m4a"),
+        mode: .singleChannelDiarized(numSpeakers: 2),
+        languageCode: nil,
+        keyterms: event.keyterms,
+        modelID: "scribe_v2"
+      )
+    )
+
+    let final = await worker.run()
+    XCTAssertEqual(final, .complete)
+
+    let observedKeyterms = await engine.keyterms
+    XCTAssertTrue(
+      observedKeyterms.contains("Vendor"),
+      "safe title words should reach the engine request: \(observedKeyterms)")
+    XCTAssertTrue(
+      observedKeyterms.contains("Nora Vendor"),
+      "attendee display names should reach the engine request: \(observedKeyterms)")
+    XCTAssertLessThanOrEqual(
+      observedKeyterms.count, 16, "engine request keyterms must stay bounded")
+    let forbiddenFragments = [
+      "meet.vendor.cloud", "room", "http", "www", "@", "szymon@example.com",
+      "nora@vendor.cloud", "555", "123", "4567", "123456", "passcode",
+      "dial", "description", "password",
+    ]
+    for fragment in forbiddenFragments {
+      XCTAssertFalse(
+        observedKeyterms.contains { $0.lowercased().contains(fragment.lowercased()) },
+        "forbidden calendar fragment \(fragment) reached EngineRequest.keyterms: \(observedKeyterms)"
+      )
+    }
+  }
+
   func testLocalSuccessWritesCohereArtifacts() async throws {
     let session = dir()
     try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
@@ -1023,6 +1077,7 @@ enum LocalFixtureError: Error { case inferenceFailed }
 actor RecordingEngine: TranscriptionEngine {
   private var queue: [Result<EngineResponse, Error>]
   private(set) var audioURLs: [URL] = []
+  private(set) var keyterms: [String] = []
 
   init(responses: [Result<EngineResponse, Error>]) {
     self.queue = responses
@@ -1032,6 +1087,7 @@ actor RecordingEngine: TranscriptionEngine {
 
   func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
     audioURLs.append(request.audioURL)
+    keyterms = request.keyterms
     guard !queue.isEmpty else { throw FakeEngine.FakeError.noMoreResponses }
     let next = queue.removeFirst()
     switch next {
