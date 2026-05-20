@@ -1097,6 +1097,13 @@ enum DebugVisualSnapshotWriter {
         scale: CGFloat = 2
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let previousAppearance = NSAppearance.current
+        if name.localizedCaseInsensitiveContains("light") {
+            NSAppearance.current = NSAppearance(named: .aqua)
+        } else if name.localizedCaseInsensitiveContains("dark") {
+            NSAppearance.current = NSAppearance(named: .darkAqua)
+        }
+        defer { NSAppearance.current = previousAppearance }
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         guard let image = renderer.nsImage else {

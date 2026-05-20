@@ -600,6 +600,15 @@ final class OnboardingFlowTests: XCTestCase {
         }
     }
 
+
+    func testInstalledVisualSnapshotsCoverKeyEntryAndSkipToLocalPath() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("onboarding-elevenlabs-key-entry-light"), "visual snapshot set must include the ElevenLabs key-entry step")
+        XCTAssertTrue(source.contains("onboarding-skip-to-local-readiness-light"), "visual snapshot set must include the Skip-to-Local path")
+        XCTAssertTrue(source.contains("Paste ElevenLabs API key…"), "key-entry snapshot must show the secure empty key field placeholder")
+        XCTAssertTrue(source.contains("Continue with Local"), "skip path snapshot must expose the Local continuation")
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile

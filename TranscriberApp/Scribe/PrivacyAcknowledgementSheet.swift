@@ -186,14 +186,22 @@ private struct PrivacyAcknowledgementView: View {
   @MainActor
   enum PrivacyAcknowledgementVisualSnapshotRenderer {
     static func renderAll(to directory: URL) throws {
-      let view = PrivacyAcknowledgementView(onAcknowledged: {})
-        .environment(\.colorScheme, ColorScheme.light)
-        .preferredColorScheme(.light)
-      try DebugVisualSnapshotWriter.write(
-        view,
-        named: "installed-smoke-privacy-acknowledgement-light",
-        to: directory
-      )
+      let cases: [(name: String, scheme: ColorScheme)] = [
+        ("installed-smoke-privacy-acknowledgement-light", .light),
+        ("installed-smoke-privacy-acknowledgement-dark", .dark),
+      ]
+
+      for item in cases {
+        let view = PrivacyAcknowledgementView(onAcknowledged: {})
+          .background(item.scheme == .light ? SwiftUI.Color.white : SwiftUI.Color.black)
+          .environment(\.colorScheme, item.scheme)
+          .preferredColorScheme(item.scheme)
+        try DebugVisualSnapshotWriter.write(
+          view,
+          named: item.name,
+          to: directory
+        )
+      }
     }
   }
 #endif

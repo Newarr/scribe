@@ -72,6 +72,15 @@ final class RecordingMenuAnimationTests: XCTestCase {
         XCTAssertFalse(source.localizedCaseInsensitiveContains("search transcripts"), "Menu must not become a transcript history/search UI.")
     }
 
+
+    func testVisualSnapshotRecordingFixtureUsesObviousNonzeroMeterLevels() throws {
+        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("model.micLevel = 0.72"), "recording visual fixture must show an obvious nonzero MIC meter")
+        XCTAssertTrue(source.contains("model.systemLevel = 0.58"), "recording visual fixture must show an obvious nonzero SYS meter")
+        XCTAssertTrue(source.contains("max(model.micLevel, 0.72)"), "debug recording menu fixture should also force visible MIC activity")
+        XCTAssertTrue(source.contains("max(model.systemLevel, 0.58)"), "debug recording menu fixture should also force visible SYS activity")
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile

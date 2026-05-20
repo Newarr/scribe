@@ -732,6 +732,24 @@ final class PrivacyUISourceGuardTests: XCTestCase {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+
+    // MARK: - Manual QA visual snapshot follow-up
+
+    func testPrivacyVisualSnapshotRendererCoversLightAndDarkAppearances() throws {
+        let source = try appSource("PrivacyAcknowledgementSheet.swift")
+        XCTAssertTrue(source.contains("installed-smoke-privacy-acknowledgement-light"))
+        XCTAssertTrue(source.contains("installed-smoke-privacy-acknowledgement-dark"))
+        XCTAssertTrue(source.contains("preferredColorScheme(item.scheme)"), "Privacy snapshots must force the intended appearance per capture.")
+    }
+
+    func testVaultWarningCopyIsConciseScannableAndKeepsSyncRiskMeaning() throws {
+        let source = try appSource("SettingsWindow.swift")
+        XCTAssertTrue(source.contains("Synced folder warning"), "Vault warning should have a short heading for scannability.")
+        XCTAssertTrue(source.contains("Sync races can corrupt durable meeting audio"), "Vault warning must retain the sync-risk meaning.")
+        XCTAssertTrue(source.contains("Use a local folder like ~/Scribe while recording"), "Vault warning should be action-oriented.")
+        XCTAssertFalse(source.contains("Heads up: this Vault is in"), "Dense paragraph-style warning copy should not return.")
+    }
+
     // MARK: - Helpers
 
     private func appSource(_ file: String) throws -> String {

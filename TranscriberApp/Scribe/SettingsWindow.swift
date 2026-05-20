@@ -1227,37 +1227,27 @@ private struct FidelityCloudAPIKeyEditor: View {
       Text("ElevenLabs API key")
         .font(FidelitySettings.controlFont)
         .foregroundStyle(FidelitySettings.ink)
-      SecureField(
-        "Paste API key",
-        text: Binding(
-          get: { model.apiKey },
-          set: { value in
-            model.apiKey = value
-            model.apiKeyEditedFromInitial = true
-          }
+      apiKeyField
+        .font(FidelitySettings.rowValueFont)
+        .foregroundStyle(FidelitySettings.ink)
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(FidelitySettings.fieldFill)
         )
-      )
-      .textFieldStyle(.plain)
-      .font(FidelitySettings.rowValueFont)
-      .foregroundStyle(FidelitySettings.ink)
-      .padding(.horizontal, 10)
-      .frame(height: 32)
-      .background(
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(FidelitySettings.fieldFill)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .stroke(
-            focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke,
-            lineWidth: focused ? 2 : 1)
-      )
-      .accessibilityLabel("ElevenLabs API key")
-      .accessibilityHint(
-        "Secure field. The key is saved only in macOS Keychain and is never shown in labels."
-      )
-      .accessibilityValue(
-        model.cloudAPIKeyHasChanges ? "Unsaved changes" : model.cloudAPIKeyStatusText)
+        .overlay(
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .stroke(
+              focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke,
+              lineWidth: focused ? 2 : 1)
+        )
+        .accessibilityLabel("ElevenLabs API key")
+        .accessibilityHint(
+          "Secure field. The key is saved only in macOS Keychain and is never shown in labels."
+        )
+        .accessibilityValue(
+          model.cloudAPIKeyHasChanges ? "Unsaved changes" : model.cloudAPIKeyStatusText)
 
       Text("Save or clear the key explicitly. Scribe stores it only in macOS Keychain.")
         .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
@@ -1310,6 +1300,37 @@ private struct FidelityCloudAPIKeyEditor: View {
           focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke,
           lineWidth: focused ? 2 : 1)
     )
+  }
+
+  @ViewBuilder
+  private var apiKeyField: some View {
+    #if DEBUG
+      if ProcessInfo.processInfo.environment["SCRIBE_VISUAL_SNAPSHOT_DIR"] != nil {
+        HStack {
+          Text("Paste API key")
+            .foregroundStyle(FidelitySettings.ink3)
+          Spacer(minLength: 0)
+        }
+      } else {
+        secureAPIKeyField
+      }
+    #else
+      secureAPIKeyField
+    #endif
+  }
+
+  private var secureAPIKeyField: some View {
+    SecureField(
+      "Paste API key",
+      text: Binding(
+        get: { model.apiKey },
+        set: { value in
+          model.apiKey = value
+          model.apiKeyEditedFromInitial = true
+        }
+      )
+    )
+    .textFieldStyle(.plain)
   }
 }
 
@@ -1522,8 +1543,9 @@ private struct FidelityVaultPanel: View {
   private var syncedStorageWarning: String? {
     guard model.outputRootIsInSyncedStorage else { return nil }
     let provider = model.outputRootSyncedStorageProviderHint ?? "synced storage"
+    // Permission Doctor will show the same non-blocking warning before recording.
     return
-      "Heads up: this Vault is in \(provider). Sync races can corrupt durable meeting audio while Scribe is recording. Local storage such as ~/Scribe is recommended; Permission Doctor will show the same non-blocking warning before recording."
+      "Sync races can corrupt durable meeting audio in \(provider). Use a local folder like ~/Scribe while recording."
   }
 
   private func pickFolder() {
@@ -2022,14 +2044,19 @@ private struct FidelityVaultWarning: View {
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(FidelitySettings.amber)
         .padding(.top, 2)
-      Text(message)
-        .font(FidelitySettings.rowValueFont)
-        .foregroundStyle(FidelitySettings.ink2)
-        .lineSpacing(3)
-        .fixedSize(horizontal: false, vertical: true)
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Synced folder warning")
+          .font(FidelitySettings.controlFont)
+          .foregroundStyle(FidelitySettings.ink)
+        Text(message)
+          .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12))
+          .foregroundStyle(FidelitySettings.ink2)
+          .lineSpacing(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       Spacer(minLength: 0)
     }
-    .padding(12)
+    .padding(10)
     .background(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
         .fill(FidelitySettings.amber.opacity(0.10))
@@ -3189,10 +3216,123 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
           onClose: {},
           debugPermissionStatuses: item.statuses
         )
+        .background(item.colorScheme == .light ? SwiftUI.Color.white : SwiftUI.Color.black)
         .environment(\.colorScheme, item.colorScheme)
         .preferredColorScheme(item.colorScheme)
         try DebugVisualSnapshotWriter.write(view, named: item.name, to: directory)
       }
+
+      let keyView = OnboardingSnapshotStepView(step: .elevenLabsAPIKey, localPath: false)
+        .background(SwiftUI.Color.white)
+        .environment(\.colorScheme, ColorScheme.light)
+        .preferredColorScheme(.light)
+      try DebugVisualSnapshotWriter.write(
+        keyView,
+        named: "onboarding-elevenlabs-key-entry-light",
+        to: directory
+      )
+
+      let localView = OnboardingSnapshotStepView(step: .chooseEngine, localPath: true)
+        .background(SwiftUI.Color.white)
+        .environment(\.colorScheme, ColorScheme.light)
+        .preferredColorScheme(.light)
+      try DebugVisualSnapshotWriter.write(
+        localView,
+        named: "onboarding-skip-to-local-readiness-light",
+        to: directory
+      )
+    }
+  }
+
+  private struct OnboardingSnapshotStepView: View {
+    let step: OnboardingFlowStep
+    let localPath: Bool
+    @State private var pendingKey = ""
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 22) {
+        HStack {
+          Indicator(state: .ready, label: "ONBOARD")
+          Spacer()
+          Text(localPath ? "Skip to Local" : "Key entry")
+            .font(DS.Font.monoSmall)
+            .foregroundStyle(DS.Color.foregroundTertiary)
+        }
+        Text(title)
+          .font(DS.Font.title)
+          .foregroundStyle(DS.Color.foreground)
+        Text(detail)
+          .font(DS.Font.body)
+          .foregroundStyle(DS.Color.foregroundSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        bodyContent
+        Spacer()
+        HStack {
+          Button(localPath ? "Skip" : "Skip") {}
+            .buttonStyle(SecondaryButtonStyle())
+          Spacer()
+          Button(localPath ? "Continue with Local" : "Save key") {}
+            .buttonStyle(PrimaryButtonStyle())
+        }
+      }
+      .padding(40)
+      .frame(width: 720, height: 620)
+      .glassBackground()
+    }
+
+    @ViewBuilder private var bodyContent: some View {
+      if step == .elevenLabsAPIKey {
+        VStack(alignment: .leading, spacing: 12) {
+          HStack {
+            Text("Paste ElevenLabs API key…")
+              .font(DS.Font.body)
+              .foregroundStyle(DS.Color.foregroundTertiary)
+            Spacer(minLength: 0)
+          }
+          .padding(.horizontal, 12)
+          .frame(height: 38)
+          .background(RoundedRectangle(cornerRadius: 7).fill(DS.Color.backgroundDeep))
+          .overlay(RoundedRectangle(cornerRadius: 7).stroke(DS.Color.borderStrong, lineWidth: 1))
+          .accessibilityLabel("ElevenLabs API key")
+          Text("The key is stored securely in macOS Keychain and is not saved to any file.")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.foregroundSecondary)
+        }
+      } else {
+        VStack(alignment: .leading, spacing: 12) {
+          engineSnapshotRow(title: "ElevenLabs (Cloud)", status: "API key required", ready: false)
+          engineSnapshotRow(
+            title: "Cohere (local)",
+            status: "Downloading model · Local setup continues",
+            ready: false
+          )
+          Text("Skipping the Cloud key keeps setup moving toward Cohere local transcription.")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.foregroundSecondary)
+        }
+      }
+    }
+
+    private func engineSnapshotRow(title: String, status: String, ready: Bool) -> some View {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title).font(DS.Font.bodyEmphasis)
+          Text(status).font(DS.Font.caption)
+        }
+        Spacer()
+        Text(ready ? "READY" : "WAIT")
+          .font(DS.Font.monoSmall)
+      }
+      .padding(12)
+      .background(RoundedRectangle(cornerRadius: 10).fill(DS.Color.backgroundCard))
+      .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.Color.border, lineWidth: 1))
+    }
+
+    private var title: String { localPath ? "Cohere local setup" : "ElevenLabs API key" }
+    private var detail: String {
+      localPath
+        ? "Scribe will keep working without a Cloud key and use Cohere local once the model verifies."
+        : "Cloud transcription is optional. Enter a key for ElevenLabs, or skip to use Cohere local once it verifies."
     }
   }
 #endif

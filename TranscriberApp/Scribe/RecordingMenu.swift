@@ -288,6 +288,8 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         case "recording":
             model.status = .recording
             model.elapsedSeconds = max(model.elapsedSeconds, 261)
+            model.micLevel = max(model.micLevel, 0.72)
+            model.systemLevel = max(model.systemLevel, 0.58)
             model.recordingSourceLabel = model.recordingSourceLabel == "Recording" ? "Zoom · Design review" : model.recordingSourceLabel
             model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
         case "stopping":
@@ -1436,6 +1438,8 @@ enum RecordingMenuVisualSnapshotRenderer {
         model.recordingSourceLabel = source
         model.elapsedSeconds = elapsed
         model.sessionEngineMode = .cloud
+        model.micLevel = 0.72
+        model.systemLevel = 0.58
         model.outcomeFolderName = folderName
         if let folderName {
             model.outcomeFolderURL = URL(fileURLWithPath: "/tmp/\(folderName)", isDirectory: true)
