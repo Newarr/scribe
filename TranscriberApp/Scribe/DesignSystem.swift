@@ -675,18 +675,24 @@ struct ScribeSwitchStyle: ToggleStyle {
 // MARK: - Confidential UI sharing type
 
 /// `NSWindow.sharingType` per codex UX-4 (confidential UI must not
-/// appear in screen-shared video). Release builds return `.none`;
-/// DEBUG builds return `.readWrite` so screenshots and screen
-/// recordings still work during development. Every Scribe-owned
-/// window/popover/panel reads from here.
+/// appear in screen-shared video). Both Debug and Release builds
+/// return `.none` by default so prompts and popovers never appear in
+/// screen-shared video regardless of build configuration.
+///
+/// To enable screen capture during visual testing or screenshot
+/// automation set the environment variable
+/// `SCRIBE_VISUAL_TEST_OVERRIDE=1` before launching the app.
+/// This override is intentional and explicit; it must not be set in
+/// production or CI acceptance runs.
 @MainActor
 enum WindowChromeSharing {
     static var confidential: NSWindow.SharingType {
         #if DEBUG
-        return .readWrite
-        #else
-        return .none
+        if ProcessInfo.processInfo.environment["SCRIBE_VISUAL_TEST_OVERRIDE"] == "1" {
+            return .readWrite
+        }
         #endif
+        return .none
     }
 }
 

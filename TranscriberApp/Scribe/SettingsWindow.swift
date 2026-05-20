@@ -1003,7 +1003,7 @@ private struct FidelityGeneralPanel: View {
                 .foregroundStyle(FidelitySettings.ink)
                 .tracking(-0.55)
                 .padding(.bottom, 6)
-            Text("Scribe records and transcribes locally on your Mac. Nothing leaves the device.")
+            Text("Scribe records audio locally and saves transcripts to your Mac. Local (Cohere) transcription keeps everything on-device. Cloud (ElevenLabs) uploads audio to ElevenLabs for transcription.")
                 .font(FidelitySettings.subtitleFont)
                 .foregroundStyle(FidelitySettings.ink2)
                 .lineSpacing(4)
@@ -1396,7 +1396,6 @@ private struct FidelityShortcutsPanel: View {
     let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
     let onSettingsChange: @MainActor (SessionSettings) async -> Void
     @State private var menuShortcut = KeyboardShortcutSetting(key: "S", keyCode: 1, modifiers: [.control, .command])
-    @State private var clipboardShortcut: KeyboardShortcutSetting?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1425,21 +1424,6 @@ private struct FidelityShortcutsPanel: View {
                         FidelityGhostButton("Change…") {
                             ShortcutCapturePanel.present(current: menuShortcut) { shortcut in
                                 menuShortcut = shortcut
-                            }
-                        }
-                    }
-                }
-                FidelityRowDivider()
-                FidelityRow(label: "New transcript from clipboard") {
-                    HStack(spacing: 8) {
-                        if let clipboardShortcut {
-                            FidelityKeyboardShortcutDisplay(shortcut: clipboardShortcut)
-                        } else {
-                            FidelityHelpText("Not set")
-                        }
-                        FidelityGhostButton(clipboardShortcut == nil ? "Set…" : "Change…") {
-                            ShortcutCapturePanel.present(current: clipboardShortcut ?? model.startStopShortcut) { shortcut in
-                                clipboardShortcut = shortcut
                             }
                         }
                     }
@@ -1514,7 +1498,7 @@ private struct FidelityPrivacyPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             FidelityPanelIntro(
                 title: "Privacy",
-                subtitle: "Everything stays on your Mac. These options give you a little extra control."
+                subtitle: "Audio files always stay on your Mac. Local (Cohere) transcription keeps everything on-device. Cloud (ElevenLabs) uploads mixed audio to ElevenLabs; when Calendar access is granted and a matching event exists, title and attendee keyterms may also be sent."
             )
 
             FidelitySection(title: "Visibility") {

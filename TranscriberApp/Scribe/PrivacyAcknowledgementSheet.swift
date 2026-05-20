@@ -104,26 +104,26 @@ private struct PrivacyAcknowledgementView: View {
 
             // Three benefit-led rows. The voice is product-first, not
             // compliance-first: each row tells the user something
-            // good Scribe does for them. The one decision they own
-            // (cloud vs local) shows up as a feature, not a warning.
+            // good Scribe does for them. Cloud vs local tradeoffs are
+            // stated truthfully so the user makes an informed choice.
             VStack(alignment: .leading, spacing: 18) {
                 privacyRow(
                     state: .ready,
                     label: "CAPTURE",
-                    title: "Every meeting, transcribed",
-                    detail: "Sits in your menu bar. Captures audio and writes a clean transcript to your Scribe folder. The files always stay on your Mac."
+                    title: "Every meeting, audio saved locally",
+                    detail: "Sits in your menu bar. Captures mic and system audio and saves it to your Scribe folder. Audio files always stay on your Mac."
+                )
+                privacyRow(
+                    state: .ready,
+                    label: "TRANSCRIPTION",
+                    title: "Local or Cloud — your choice",
+                    detail: "Local (Cohere): transcription runs entirely on your Mac — no audio leaves the device. Cloud (ElevenLabs): mixed audio is uploaded to ElevenLabs for transcription; if you have Calendar access, title and attendee keyterms may also be sent."
                 )
                 privacyRow(
                     state: .ready,
                     label: "MARKDOWN",
                     title: "Transcripts your agents already understand",
-                    detail: "Each session is plain Markdown with frontmatter. Drop the folder into Obsidian, Cursor, Claude, or any tool that reads a directory."
-                )
-                privacyRow(
-                    state: .ready,
-                    label: "YOUR CALL",
-                    title: "Cloud fidelity or local privacy",
-                    detail: "Pick ElevenLabs for top-tier transcripts, or a local model that keeps every byte on your Mac. Switch any time in Settings."
+                    detail: "Each session is plain Markdown with frontmatter saved locally. Drop the folder into Obsidian, Cursor, Claude, or any tool that reads a directory."
                 )
             }
 
