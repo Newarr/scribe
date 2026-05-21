@@ -12772,6 +12772,20 @@
           ]
         }
       ]
+    },
+    {
+      "type": "rectangle",
+      "id": "ApA6O",
+      "x": -981,
+      "y": 1951,
+      "fill": {
+        "type": "image",
+        "enabled": true,
+        "url": "image.png",
+        "mode": "fill"
+      },
+      "width": 1448,
+      "height": 1086
     }
   ],
   "themes": {
