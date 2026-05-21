@@ -45,10 +45,12 @@ deferred to v1.1 product work.
 
 ### Settings
 
-- **Local mode hidden until shipped**. Engine section is now a
-  single "ElevenLabs (Cloud)" panel + a "Local transcription —
-  coming later" disabled note. SettingsFormModel pins engineMode
-  to .cloud on Save. (UX-10 + UX-11 P0)
+- **Local Cohere ships as an explicit engine option**. Engine settings
+  expose Cloud (ElevenLabs) and Local (Cohere via Swift/MLX) with
+  readiness/repair states. Local requires the pinned
+  `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` model cache and
+  supported MLX runtime; failures preserve audio and never silently
+  switch to Cloud. (UX-10 + UX-11 P0, updated for rc4 implementation)
 - **Default output folder**: `~/Documents/Scribe/` →
   `~/Scribe/`. macOS 13+ syncs Documents to iCloud Drive by
   default; recording into a synced folder produces conflicts.

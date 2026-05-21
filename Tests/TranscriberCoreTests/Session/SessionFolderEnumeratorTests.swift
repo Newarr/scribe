@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import TranscriberCore
 
@@ -37,6 +38,39 @@ final class SessionFolderEnumeratorTests: XCTestCase {
             )
         }
         return dir
+    }
+
+
+    private func writeFailedSessionWithAudioNode(name: String, audioNode: AudioNodeKind) throws -> URL {
+        let dir = try writeSession(name: name, status: "failed", title: name)
+        let audioURL = dir.appendingPathComponent("audio.m4a")
+        switch audioNode {
+        case .regularFile:
+            try Data("audio".utf8).write(to: audioURL)
+        case .directory:
+            try FileManager.default.createDirectory(at: audioURL, withIntermediateDirectories: true)
+        case .symlinkToDirectory:
+            let target = dir.appendingPathComponent("audio-target", isDirectory: true)
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: audioURL, withDestinationURL: target)
+        case .fifo:
+            XCTAssertEqual(mkfifo(audioURL.path, S_IRUSR | S_IWUSR), 0)
+        case .unreadableRegularFile:
+            try Data("audio".utf8).write(to: audioURL)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: audioURL.path)
+        case .missing:
+            break
+        }
+        return dir
+    }
+
+    private enum AudioNodeKind {
+        case regularFile
+        case directory
+        case symlinkToDirectory
+        case fifo
+        case unreadableRegularFile
+        case missing
     }
 
     // MARK: tests
@@ -95,4 +129,24 @@ final class SessionFolderEnumeratorTests: XCTestCase {
         XCTAssertEqual(statuses["Done"], .complete)
         XCTAssertEqual(statuses["Broken"], .failed)
     }
+
+    func testFailedRecentHasSavedAudioOnlyForReadableRegularCanonicalAudio() throws {
+        _ = try writeFailedSessionWithAudioNode(name: "regular", audioNode: .regularFile)
+        _ = try writeFailedSessionWithAudioNode(name: "directory", audioNode: .directory)
+        _ = try writeFailedSessionWithAudioNode(name: "symlink-directory", audioNode: .symlinkToDirectory)
+        _ = try writeFailedSessionWithAudioNode(name: "fifo", audioNode: .fifo)
+        _ = try writeFailedSessionWithAudioNode(name: "unreadable", audioNode: .unreadableRegularFile)
+        _ = try writeFailedSessionWithAudioNode(name: "missing", audioNode: .missing)
+
+        let entries = SessionFolderEnumerator.recents(under: root, limit: 10)
+        let byDirectory = Dictionary(uniqueKeysWithValues: entries.map { ($0.directory.lastPathComponent, $0) })
+
+        XCTAssertEqual(byDirectory["regular"]?.hasSavedAudio, true)
+        XCTAssertEqual(byDirectory["directory"]?.hasSavedAudio, false)
+        XCTAssertEqual(byDirectory["symlink-directory"]?.hasSavedAudio, false)
+        XCTAssertEqual(byDirectory["fifo"]?.hasSavedAudio, false)
+        XCTAssertEqual(byDirectory["unreadable"]?.hasSavedAudio, false)
+        XCTAssertEqual(byDirectory["missing"]?.hasSavedAudio, false)
+    }
+
 }

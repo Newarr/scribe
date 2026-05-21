@@ -35,6 +35,20 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertEqual(notice?.localRepairPayloads, [])
     }
 
+
+    func testRetrySavedAudioMissingTakesPrecedenceOverLocalSetup() {
+        let session = URL(fileURLWithPath: "/tmp/failed-local-missing-audio", isDirectory: true)
+
+        let route = SessionRepairRouting.routeRetry(
+            sessionDirectory: session,
+            error: .localSetupRequired,
+            savedAudioExists: false,
+            persistedEngine: "cohere"
+        )
+
+        XCTAssertEqual(route, .unavailable("Saved audio is missing for this failed session."))
+    }
+
     func testRetryLocalSetupRequiredRoutesToSessionSpecificCohereRepair() {
         let session = URL(fileURLWithPath: "/tmp/failed-local", isDirectory: true)
 
@@ -51,7 +65,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         )))
     }
 
-    func testFailedRecentWithoutSavedAudioExposesRepairAndSavedAudioFailureExposesRetry() {
+    func testFailedRecentWithoutSavedAudioExposesNoRetryAndSavedAudioFailureExposesRetry() {
         let noAudio = SessionFolderEnumerator.Entry(
             directory: URL(fileURLWithPath: "/tmp/no-audio", isDirectory: true),
             transcript: URL(fileURLWithPath: "/tmp/no-audio/transcript.md"),
@@ -73,10 +87,7 @@ final class SessionRepairRoutingTests: XCTestCase {
             engineIdentifier: "cohere"
         )
 
-        XCTAssertEqual(SessionRepairRouting.recentAction(for: noAudio), .repair(SessionRepairRouting.LocalRepairPayload(
-            sessionDirectory: noAudio.directory,
-            reason: "Saved audio is missing; open setup to repair this failed session before retrying."
-        )))
+        XCTAssertEqual(SessionRepairRouting.recentAction(for: noAudio), .none)
         XCTAssertEqual(SessionRepairRouting.recentAction(for: withAudio), .retry(sessionDirectory: withAudio.directory))
     }
 
@@ -280,6 +291,45 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(notificationSource.contains("currentModel.summary = summary"), "visible saved notification panel must refresh its model when a newer transcript is saved")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.folderURL"), "visible panel actions must read the refreshed model, not stale captured summary")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.transcriptURL"), "visible panel transcript action must read the refreshed model")
+    }
+
+    func testRetrySuccessResetsAppAndMenuToIdle() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        guard let retryRange = source.range(of: "private func retryFailedSession(at sessionURL: URL) async") else {
+            return XCTFail("AppDelegate must keep failed-session retry routed through a visible state transition")
+        }
+        let body = String(source[retryRange.lowerBound..<source.index(retryRange.lowerBound, offsetBy: min(2200, source.distance(from: retryRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(body.contains("case .complete:"), "Retry completion must handle successful workers explicitly.")
+        XCTAssertTrue(body.contains("status = .idle"), "Successful retry must return app status to idle instead of finalized/transcribing.")
+        XCTAssertTrue(body.contains("resetMenuAfterWorker(status: status)"), "Successful retry must clear active/finalized menu fields and rebuild the idle menu.")
+        XCTAssertFalse(body.contains("case .complete:\n                status = .finalized"), "Successful retry must not leave the menu in finalized/transcribing state.")
+    }
+
+    func testSavedNotificationUsesCanonicalAudioAndExistingArtifacts() throws {
+        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("FileManager.default.fileExists(atPath: dir.transcript.path)"), "Saved notification must be suppressed until durable transcript exists.")
+        XCTAssertTrue(source.contains("audioByteSize(at: dir.url.appendingPathComponent(\"audio.m4a\"))"), "Saved notification size must prefer canonical audio.m4a.")
+        guard let sizeRange = source.range(of: "private nonisolated func totalAudioBytes") else {
+            return XCTFail("AppDelegate must calculate saved notification audio size in one helper")
+        }
+        let sizeBody = String(source[sizeRange.lowerBound..<source.index(sizeRange.lowerBound, offsetBy: min(900, source.distance(from: sizeRange.lowerBound, to: source.endIndex)))])
+        XCTAssertLessThan(
+            sizeBody.distance(from: sizeBody.startIndex, to: sizeBody.range(of: "audio.m4a")?.lowerBound ?? sizeBody.endIndex),
+            sizeBody.distance(from: sizeBody.startIndex, to: sizeBody.range(of: "dir.micFinal")?.lowerBound ?? sizeBody.endIndex),
+            "Canonical audio.m4a must be checked before raw stream fallback."
+        )
+    }
+
+    func testSavedNotificationActionsAreKeyboardAndVoiceOverReachable() throws {
+        let source = try String(contentsOfFile: appSourcePath("SavedNotificationWindow.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Open saved recording folder\")"), "Open Folder action must have a meaningful VoiceOver label.")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Open saved transcript\")"), "Open Transcript action must have a meaningful VoiceOver label.")
+        XCTAssertTrue(source.contains("keyboardShortcut(\"o\", modifiers: [.command])"), "Open Folder action must be keyboard reachable.")
+        XCTAssertTrue(source.contains("keyboardShortcut(\"t\", modifiers: [.command])"), "Open Transcript action must be keyboard reachable.")
+        XCTAssertTrue(source.contains("accessibilityValue(\"\\(model.summary.title), \\(model.metaCaption)\")"), "Saved notification summary must expose useful VoiceOver value without transcript content.")
     }
 
     func testNoStaleLocalBinaryRustOrWhisperCopyInModifiedAppSurfaces() throws {

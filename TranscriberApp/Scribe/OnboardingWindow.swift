@@ -10,10 +10,11 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
     private let flowController: OnboardingFlowController
     private let snapshotProvider: SnapshotProvider
     private let cloudKeyAvailable: @MainActor () async -> Bool
+    private let saveCloudAPIKey: @MainActor (String) async -> Bool
     private let requestMicrophone: @MainActor () async -> PermissionStatus
     private let requestCalendar: @MainActor () async -> PermissionStatus
     private let requestNotifications: @MainActor () async -> PermissionStatus
-    private let requestScreenRecording: @MainActor () async -> PermissionStatus
+    private let requestScreenRecording: @MainActor () async -> OnboardingScreenRecordingRequestResult
     private let selectEngine: @MainActor (EngineMode) async -> Void
     private let saveOutputFolder: @MainActor (URL) async -> Void
     private let runTestRecording: @MainActor () async -> Bool
@@ -23,10 +24,11 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
         flowController: OnboardingFlowController,
         snapshotProvider: @escaping SnapshotProvider,
         cloudKeyAvailable: @escaping @MainActor () async -> Bool,
+        saveCloudAPIKey: @escaping @MainActor (String) async -> Bool,
         requestMicrophone: @escaping @MainActor () async -> PermissionStatus,
         requestCalendar: @escaping @MainActor () async -> PermissionStatus,
         requestNotifications: @escaping @MainActor () async -> PermissionStatus,
-        requestScreenRecording: @escaping @MainActor () async -> PermissionStatus,
+        requestScreenRecording: @escaping @MainActor () async -> OnboardingScreenRecordingRequestResult,
         selectEngine: @escaping @MainActor (EngineMode) async -> Void,
         saveOutputFolder: @escaping @MainActor (URL) async -> Void,
         runTestRecording: @escaping @MainActor () async -> Bool,
@@ -35,6 +37,7 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
         self.flowController = flowController
         self.snapshotProvider = snapshotProvider
         self.cloudKeyAvailable = cloudKeyAvailable
+        self.saveCloudAPIKey = saveCloudAPIKey
         self.requestMicrophone = requestMicrophone
         self.requestCalendar = requestCalendar
         self.requestNotifications = requestNotifications
@@ -60,6 +63,7 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
             flowController: flowController,
             snapshotProvider: snapshotProvider,
             cloudKeyAvailable: cloudKeyAvailable,
+            saveCloudAPIKey: saveCloudAPIKey,
             requestMicrophone: requestMicrophone,
             requestCalendar: requestCalendar,
             requestNotifications: requestNotifications,
@@ -100,14 +104,18 @@ private final class OnboardingWindowViewModel: ObservableObject {
     @Published var testRecordingState = OnboardingTestRecordingState(isEnabled: false, waitingCopy: nil)
     @Published var permissionResult: PermissionStatus?
     @Published var isBusy = false
+    @Published var pendingAPIKey: String = ""
+    @Published var apiKeySaveError: String? = nil
+    @Published var screenRecordingDeferredGrant = false
 
     private let flowController: OnboardingFlowController
     private let snapshotProvider: OnboardingWindowController.SnapshotProvider
     private let cloudKeyAvailable: @MainActor () async -> Bool
+    private let saveCloudAPIKey: @MainActor (String) async -> Bool
     private let requestMicrophone: @MainActor () async -> PermissionStatus
     private let requestCalendar: @MainActor () async -> PermissionStatus
     private let requestNotifications: @MainActor () async -> PermissionStatus
-    private let requestScreenRecording: @MainActor () async -> PermissionStatus
+    private let requestScreenRecording: @MainActor () async -> OnboardingScreenRecordingRequestResult
     private let selectEngine: @MainActor (EngineMode) async -> Void
     private let saveOutputFolder: @MainActor (URL) async -> Void
     private let runTestRecording: @MainActor () async -> Bool
@@ -117,10 +125,11 @@ private final class OnboardingWindowViewModel: ObservableObject {
         flowController: OnboardingFlowController,
         snapshotProvider: @escaping OnboardingWindowController.SnapshotProvider,
         cloudKeyAvailable: @escaping @MainActor () async -> Bool,
+        saveCloudAPIKey: @escaping @MainActor (String) async -> Bool,
         requestMicrophone: @escaping @MainActor () async -> PermissionStatus,
         requestCalendar: @escaping @MainActor () async -> PermissionStatus,
         requestNotifications: @escaping @MainActor () async -> PermissionStatus,
-        requestScreenRecording: @escaping @MainActor () async -> PermissionStatus,
+        requestScreenRecording: @escaping @MainActor () async -> OnboardingScreenRecordingRequestResult,
         selectEngine: @escaping @MainActor (EngineMode) async -> Void,
         saveOutputFolder: @escaping @MainActor (URL) async -> Void,
         runTestRecording: @escaping @MainActor () async -> Bool,
@@ -129,6 +138,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
         self.flowController = flowController
         self.snapshotProvider = snapshotProvider
         self.cloudKeyAvailable = cloudKeyAvailable
+        self.saveCloudAPIKey = saveCloudAPIKey
         self.requestMicrophone = requestMicrophone
         self.requestCalendar = requestCalendar
         self.requestNotifications = requestNotifications
@@ -147,6 +157,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
             step = snapshot.testRecordingComplete ? .welcome : OnboardingFlowPresenter.resumeStep(from: snapshot)
         }
         await refreshDerivedState(from: snapshot)
+        await flowController.startLocalModelStagingIfNeeded(localModelStatus: snapshot.localModelStatus)
         await enterCurrentStep()
     }
 
@@ -163,7 +174,18 @@ private final class OnboardingWindowViewModel: ObservableObject {
 
     func skipTapped() {
         guard step.canSkip else { return }
-        advance()
+        if step == .elevenLabsAPIKey {
+            // Skipping key entry routes to Local guidance: advance to
+            // chooseEngine and let the presenter surface Local readiness.
+            Task {
+                await selectEngine(.local)
+                advance()
+                await refreshDerivedState(from: await snapshotProvider())
+                await enterCurrentStep()
+            }
+        } else {
+            advance()
+        }
     }
 
     func choose(_ engine: EngineMode) {
@@ -202,10 +224,28 @@ private final class OnboardingWindowViewModel: ObservableObject {
             holdThenAdvanceIfGranted(permissionResult, allowDenied: true)
         case .screenRecording:
             await flowController.enter(.screenRecording)
-            permissionResult = await requestScreenRecording()
-            holdThenAdvanceIfGranted(permissionResult)
+            let result = await requestScreenRecording()
+            permissionResult = result.status
+            screenRecordingDeferredGrant = result.isDeferredGrantRequiringRelaunch
+            if result.isDeferredGrantRequiringRelaunch == false {
+                holdThenAdvanceIfGranted(result.status)
+            }
         case .elevenLabsAPIKey:
-            advance()
+            let candidate = pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !candidate.isEmpty else {
+                // Empty key — treat as skip, routing to Local guidance.
+                await selectEngine(.local)
+                advance()
+                break
+            }
+            let saved = await saveCloudAPIKey(candidate)
+            if saved {
+                apiKeySaveError = nil
+                pendingAPIKey = ""
+                advance()
+            } else {
+                apiKeySaveError = "Could not save the ElevenLabs API key to Keychain. Check Keychain Access and try again."
+            }
         case .chooseEngine:
             let snapshot = await snapshotProvider()
             if let next = OnboardingFlowPresenter.defaultEngineAfterVerification(
@@ -238,6 +278,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
             return
         }
         permissionResult = nil
+        screenRecordingDeferredGrant = false
         step = OnboardingFlowStep.ordered[index + 1]
     }
 
@@ -307,6 +348,28 @@ private struct OnboardingWindowView: View {
                 Text(copy.tagline)
                     .font(DS.Font.caption)
                     .foregroundStyle(DS.Color.foregroundSecondary)
+                if model.screenRecordingDeferredGrant {
+                    deferredScreenRecordingGuidance
+                }
+            }
+        case .elevenLabsAPIKey:
+            VStack(alignment: .leading, spacing: 12) {
+                SecureField("Paste ElevenLabs API key…", text: Binding(
+                    get: { model.pendingAPIKey },
+                    set: { model.pendingAPIKey = $0; model.apiKeySaveError = nil }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("ElevenLabs API key")
+                .accessibilityHint("Paste your ElevenLabs API key here. The key is stored in macOS Keychain and never saved elsewhere.")
+                Text("The key is stored securely in macOS Keychain and is not saved to any file.")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.foregroundSecondary)
+                if let error = model.apiKeySaveError {
+                    Text(error)
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.warning)
+                        .accessibilityLabel("ElevenLabs key save error: \(error)")
+                }
             }
         case .chooseEngine:
             VStack(alignment: .leading, spacing: 12) {
@@ -329,6 +392,26 @@ private struct OnboardingWindowView: View {
                     .font(DS.Font.bodyEmphasis)
             }
         }
+    }
+
+    private var deferredScreenRecordingGuidance: some View {
+        let guidance = OnboardingFlowPresenter.screenRecordingDeferredGuidance
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(guidance.title, systemImage: "exclamationmark.triangle")
+                .font(DS.Font.bodyEmphasis)
+                .foregroundStyle(DS.Color.warning)
+                .accessibilityLabel("Warning: \(guidance.title)")
+            Text(guidance.message)
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.foregroundSecondary)
+                .accessibilityLabel("Screen Recording relaunch guidance: \(guidance.message)")
+            Button(guidance.actionTitle) { AppDelegate.relaunchAndTerminate() }
+                .buttonStyle(SecondaryButtonStyle())
+                .accessibilityLabel(guidance.actionTitle)
+                .accessibilityHint("Quits and reopens Scribe so macOS Screen Recording permission takes effect, then onboarding resumes after this step.")
+        }
+        .padding(12)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.Color.warning.opacity(0.6), lineWidth: 1))
     }
 
     private func engineRow(_ option: OnboardingEngineOptionState) -> some View {
@@ -387,12 +470,15 @@ private struct OnboardingWindowView: View {
         switch model.step {
         case .done: return "Start using Scribe"
         case .testRecording: return "Run test recording"
-        case .elevenLabsAPIKey: return "Skip for now"
+        case .elevenLabsAPIKey:
+            return model.pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Skip (use Local)" : "Save key"
         default: return "Continue"
         }
     }
 
     private var primaryDisabled: Bool {
-        model.step == .testRecording && !model.testRecordingState.isEnabled
+        if model.step == .testRecording { return !model.testRecordingState.isEnabled }
+        return false
     }
 }

@@ -22,13 +22,33 @@ public enum MultichannelWAVBuilder {
     ) async throws {
         let micFile = try AVAudioFile(forReading: mic)
         let sysFile = try AVAudioFile(forReading: system)
+        try build(micReader: micFile, systemReader: sysFile, output: output, sampleRate: sampleRate)
+    }
 
+    static func build(
+        micReader: AudioPCMReadable,
+        systemReader: AudioPCMReadable,
+        output: URL,
+        sampleRate: Double = 16000
+    ) throws {
         let monoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
-        let micBuf = try resampleFully(file: micFile, to: monoFormat)
-        let sysBuf = try resampleFully(file: sysFile, to: monoFormat)
+        let micBuf: AVAudioPCMBuffer
+        do {
+            micBuf = try AudioReadSupport.resampleFully(reader: micReader, to: monoFormat)
+        } catch {
+            throw BuildError.readFailed(micReader.sourceURL)
+        }
+        let sysBuf: AVAudioPCMBuffer
+        do {
+            sysBuf = try AudioReadSupport.resampleFully(reader: systemReader, to: monoFormat)
+        } catch {
+            throw BuildError.readFailed(systemReader.sourceURL)
+        }
 
         let frames = max(micBuf.frameLength, sysBuf.frameLength)
-        guard frames > 0 else { return }
+        guard micBuf.frameLength > 0, sysBuf.frameLength > 0, frames > 0 else {
+            throw BuildError.readFailed(micBuf.frameLength == 0 ? micReader.sourceURL : systemReader.sourceURL)
+        }
 
         let stereoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 2, interleaved: false)!
         let stereo = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames)!
@@ -43,47 +63,19 @@ public enum MultichannelWAVBuilder {
             ch1[i] = i < Int(sysBuf.frameLength) ? sysSrc[i] : 0
         }
 
-        let outFile = try AVAudioFile(forWriting: output, settings: [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 2,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsFloatKey: false
-        ])
-        try outFile.write(from: stereo)
-    }
-
-    private static func resampleFully(file: AVAudioFile, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let totalFrames = AVAudioFrameCount(
-            Double(file.length) * format.sampleRate / file.fileFormat.sampleRate
-        )
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: totalFrames + 1024)!
-        let converter = AVAudioConverter(from: file.processingFormat, to: format)!
-        let readBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 8192)!
-
-        var endOfFile = false
-        var status: AVAudioConverterOutputStatus = .haveData
-        while status == .haveData && !endOfFile {
-            var error: NSError?
-            status = converter.convert(to: buffer, error: &error) { _, outStatus in
-                do {
-                    try file.read(into: readBuffer)
-                } catch {
-                    outStatus.pointee = .endOfStream
-                    endOfFile = true
-                    return nil
-                }
-                if readBuffer.frameLength == 0 {
-                    outStatus.pointee = .endOfStream
-                    endOfFile = true
-                    return nil
-                }
-                outStatus.pointee = .haveData
-                return readBuffer
+        do {
+            try AudioReadSupport.writeAtomically(output: output, settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 2,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsFloatKey: false
+            ]) { outFile in
+                try outFile.write(from: stereo)
             }
-            if let err = error { throw err }
+        } catch {
+            throw BuildError.writeFailed(output)
         }
-        return buffer
     }
 }

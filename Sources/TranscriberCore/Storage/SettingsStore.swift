@@ -249,7 +249,7 @@ public actor SettingsStore {
         let current = snapshot()
         let attempt = await EngineSelectionPolicy.evaluate(requested: mode, current: current.engineMode, readiness: readiness)
         guard attempt.accepted else { return attempt }
-        var updated = current
+        var updated = snapshot()
         updated.engineMode = attempt.selectedEngineMode
         try? commit(updated)
         return attempt

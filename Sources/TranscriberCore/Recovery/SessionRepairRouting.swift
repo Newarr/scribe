@@ -86,13 +86,13 @@ public enum SessionRepairRouting {
         persistedEngine: String? = nil
     ) -> RetryRoute {
         guard let sessionDirectory else { return .unavailable("No failed session is selected.") }
-        if error == .localSetupRequired || (persistedEngine?.lowercased() == "cohere" && !savedAudioExists) {
+        guard savedAudioExists else { return .unavailable("Saved audio is missing for this failed session.") }
+        if error == .localSetupRequired {
             return .localSetupRequired(LocalRepairPayload(
                 sessionDirectory: sessionDirectory,
                 reason: "Cohere setup is required before retrying this Local session."
             ))
         }
-        guard savedAudioExists else { return .unavailable("Saved audio is missing for this failed session.") }
         if let error {
             switch error {
             case .localSetupRequired:
@@ -123,9 +123,6 @@ public enum SessionRepairRouting {
                     reason: "Cohere setup is required before retrying this Local session."
                 ))
         }
-        return .repair(LocalRepairPayload(
-            sessionDirectory: entry.directory,
-            reason: "Saved audio is missing; open setup to repair this failed session before retrying."
-        ))
+        return .none
     }
 }

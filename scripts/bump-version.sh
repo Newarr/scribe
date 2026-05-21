@@ -33,19 +33,23 @@ if [[ -n "$(git -C "${PROJECT_DIR}" status --porcelain)" ]]; then
     exit 65
 fi
 
-# Codex rc2-audit RELEASE-1: validate SemVer 2.0 BNF before injecting
-# the value into Swift / YAML / file paths. Rejects shell metacharacters,
-# quotes, and any string that doesn't match the canonical SemVer regex.
-# Pattern: 1*DIGIT.1*DIGIT.1*DIGIT[-PRERELEASE][+BUILD]
-# PRERELEASE = ALPHANUM[.ALPHANUM]*
-# BUILD      = ALPHANUM[.ALPHANUM]*
-SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+# Validate against the strict SemVer 2.0 grammar before injecting the
+# value into Swift / YAML / file paths. This rejects leading-zero numeric
+# core parts, empty prerelease/build identifiers, and leading-zero numeric
+# prerelease identifiers. Build metadata remains fully represented in
+# BuildInfo/changelog/release metadata, but never in Apple short-version
+# fields derived below.
+NUMERIC_IDENTIFIER='0|[1-9][0-9]*'
+PRERELEASE_IDENTIFIER='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+BUILD_IDENTIFIER='[0-9A-Za-z-]+'
+SEMVER_RE="^(${NUMERIC_IDENTIFIER})\.(${NUMERIC_IDENTIFIER})\.(${NUMERIC_IDENTIFIER})(-(${PRERELEASE_IDENTIFIER})(\.(${PRERELEASE_IDENTIFIER}))*)?(\+(${BUILD_IDENTIFIER})(\.(${BUILD_IDENTIFIER}))*)?$"
 if [[ ! "${NEW_VERSION}" =~ ${SEMVER_RE} ]]; then
     echo "Version '${NEW_VERSION}' is not valid SemVer 2.0." >&2
     echo "  Required: MAJOR.MINOR.PATCH[-prerelease][+build]" >&2
-    echo "  Examples: 1.0.0, 1.0.0-rc1, 1.0.0+build42, 1.2.3-rc.1+build.42" >&2
+    echo "  Examples: 1.0.0, 1.0.0-rc.1, 1.0.0+build.42, 1.2.3-rc.1+build.42" >&2
     exit 64
 fi
+BUNDLE_SHORT_VERSION="${NEW_VERSION%%[-+]*}"
 
 BUILD_INFO="${PROJECT_DIR}/Sources/TranscriberCore/BuildInfo.swift"
 PROJECT_YML="${PROJECT_DIR}/TranscriberApp/project.yml"
@@ -62,8 +66,8 @@ echo "==> Bumping ${CURRENT_VERSION} -> ${NEW_VERSION} (build ${CURRENT_BUILD} -
 sed -i.bak -E "s/(public static let version = )\"[^\"]+\"/\1\"${NEW_VERSION}\"/" "${BUILD_INFO}"
 rm "${BUILD_INFO}.bak"
 
-# 2. project.yml MARKETING_VERSION.
-sed -i.bak -E "s/(MARKETING_VERSION: )\"[^\"]+\"/\1\"${NEW_VERSION}\"/" "${PROJECT_YML}"
+# 2. project.yml MARKETING_VERSION (Apple numeric-only short version).
+sed -i.bak -E "s/(MARKETING_VERSION: )\"[^\"]+\"/\1\"${BUNDLE_SHORT_VERSION}\"/" "${PROJECT_YML}"
 # 3. project.yml CURRENT_PROJECT_VERSION (monotonic int).
 sed -i.bak -E "s/(CURRENT_PROJECT_VERSION: )\"[^\"]+\"/\1\"${NEW_BUILD}\"/" "${PROJECT_YML}"
 rm "${PROJECT_YML}.bak"
@@ -105,7 +109,7 @@ cat <<EOF
 
 ==> Bumped to ${NEW_VERSION}
    BuildInfo.version          = ${NEW_VERSION}
-   MARKETING_VERSION          = ${NEW_VERSION}
+   MARKETING_VERSION          = ${BUNDLE_SHORT_VERSION}
    CURRENT_PROJECT_VERSION    = ${NEW_BUILD}
    CHANGELOG.md updated.
 

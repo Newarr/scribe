@@ -28,8 +28,8 @@ public enum FailedSessionRetryCoordinator {
             throw RetryError.sessionDirectoryMissing
         }
         let dir = SessionDirectory(url: sessionURL)
-        let audioURL = sessionURL.appendingPathComponent("audio.m4a")
-        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+        let audioURL = CanonicalAudio.url(in: sessionURL)
+        guard CanonicalAudio.isUsable(at: audioURL) else {
             throw RetryError.savedAudioMissing
         }
         guard let frontmatter = TranscriptFrontmatterReader.read(at: dir.transcript), frontmatter.status == .failed else {

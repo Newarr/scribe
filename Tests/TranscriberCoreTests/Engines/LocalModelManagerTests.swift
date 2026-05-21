@@ -78,6 +78,39 @@ final class LocalModelManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot().appendingPathComponent("model.safetensors").path))
     }
 
+    func testFileSystemDiskProbeWalksUpToExistingAncestor() async throws {
+        let nestedCacheRoot = root
+            .appendingPathComponent("missing", isDirectory: true)
+            .appendingPathComponent("nested", isDirectory: true)
+            .appendingPathComponent("ModelCache", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nestedCacheRoot.deletingLastPathComponent().path))
+
+        let availableBytes = await FileSystemLocalModelDiskSpaceProbe().availableBytes(at: nestedCacheRoot)
+
+        XCTAssertNotNil(availableBytes)
+        XCTAssertGreaterThan(availableBytes ?? 0, 0)
+    }
+
+    func testUnknownDiskCapacityBlocksDownloadBeforeDownloaderStarts() async throws {
+        let bytes = Data("verified model".utf8)
+        let manifest = manifestFor(bytes: bytes, requiredFreeBytes: 1_000)
+        let downloader = DataDownloader(bytes: bytes)
+        let manager = makeManager(
+            manifest: manifest,
+            downloader: downloader,
+            diskSpace: FixedDiskSpaceProbe(availableBytes: nil)
+        )
+
+        let status = await manager.startDownload()
+
+        XCTAssertFalse(status.isReady)
+        assertFailureCode(status, .insufficientDiskSpace)
+        let downloadCount = await downloader.downloadCount()
+        XCTAssertEqual(downloadCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelRoot().path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ModelCache").path))
+    }
+
     func testFailedDownloadExposesReasonAndRetryReplacesPartialWithOneVerifiedCache() async throws {
         let bytes = Data("verified model".utf8)
         let manifest = manifestFor(bytes: bytes)

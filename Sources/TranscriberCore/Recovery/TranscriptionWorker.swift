@@ -276,7 +276,12 @@ public actor TranscriptionWorker {
         lines.append("")
         lines.append("> Transcription failed (attempt \(failedAttempts)/\(policy.maxAttempts)). Retrying.")
         lines.append(">")
-        lines.append("> Last error: \(String(describing: lastError))")
+        // Route last-error text through PersistedErrorRedactor before
+        // persisting to transcript.md. Retrying transcripts are durable
+        // local records and must not store standalone API-key-shaped tokens,
+        // signed URLs, or high-entropy secrets even mid-retry (VAL-STORAGE-004).
+        let redactedError = PersistedErrorRedactor.redact(String(describing: lastError))
+        lines.append("> Last error: \(redactedError)")
 
         let body = lines.joined(separator: "\n")
         do {
@@ -515,9 +520,10 @@ public actor TranscriptionWorker {
         // the array). The transcript's `audio:` key still lists every track,
         // so JSON consumers preferring single-asset semantics get the
         // primary while transcript readers see the full set.
-        let primaryAudio = audioPath.isEmpty
-            ? (context.audioRelativePaths.first ?? "mic.m4a")
-            : audioPath
+        let primaryAudio = MetadataJSONWriter.primaryAudioReference(
+            context: context,
+            preferredAudioPath: audioPath
+        )
         // Codex rc1-final P1.3: aec_status is part of the metadata
         // contract per spec line 117 / 119 even though the AEC backend
         // ships as a placeholder in rc1. Always write `failed` so the

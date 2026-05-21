@@ -78,14 +78,10 @@ public enum TranscriptFrontmatterReader {
                     return (parsedStatus, attempts, normalizeDiagnosticsEngine(engineRaw))
                 }
                 if line.hasPrefix("status:") {
-                    statusRaw = String(line.dropFirst("status:".count))
-                        .trimmingCharacters(in: .whitespaces)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    statusRaw = scalarValue(String(line.dropFirst("status:".count)))
                 }
                 if line.hasPrefix("engine:") {
-                    engineRaw = String(line.dropFirst("engine:".count))
-                        .trimmingCharacters(in: .whitespaces)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    engineRaw = scalarValue(String(line.dropFirst("engine:".count)))
                 }
                 if line.hasPrefix("attempts:") && statusRaw == "retrying" {
                     let v = String(line.dropFirst("attempts:".count))
@@ -142,8 +138,7 @@ public enum TranscriptFrontmatterReader {
                 while i < lines.count {
                     let item = lines[i]
                     if item.hasPrefix("  - ") {
-                        audioPaths.append(String(item.dropFirst(4))
-                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
+                        audioPaths.append(scalarValue(String(item.dropFirst(4))))
                         i += 1
                     } else {
                         break
@@ -195,9 +190,7 @@ public enum TranscriptFrontmatterReader {
 
             if let colon = trimmed.firstIndex(of: ":") {
                 let key = String(trimmed[..<colon])
-                let value = String(trimmed[trimmed.index(after: colon)...])
-                    .trimmingCharacters(in: .whitespaces)
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                let value = scalarValue(String(trimmed[trimmed.index(after: colon)...]))
                 fields[key] = value
             }
             i += 1
@@ -241,8 +234,36 @@ public enum TranscriptFrontmatterReader {
     }
 
     private static func value(after prefix: String, in line: String) -> String {
-        String(line.dropFirst(prefix.count))
-            .trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        scalarValue(String(line.dropFirst(prefix.count)))
+    }
+
+    private static func scalarValue(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2, trimmed.first == "\"", trimmed.last == "\"" else { return trimmed }
+        let inner = trimmed.dropFirst().dropLast()
+        var result = ""
+        var iterator = inner.makeIterator()
+        while let character = iterator.next() {
+            if character == "\\", let escaped = iterator.next() {
+                switch escaped {
+                case "\"":
+                    result.append("\"")
+                case "\\":
+                    result.append("\\")
+                case "n":
+                    result.append("\n")
+                case "r":
+                    result.append("\r")
+                case "t":
+                    result.append("\t")
+                default:
+                    result.append("\\")
+                    result.append(escaped)
+                }
+            } else {
+                result.append(character)
+            }
+        }
+        return result
     }
 }

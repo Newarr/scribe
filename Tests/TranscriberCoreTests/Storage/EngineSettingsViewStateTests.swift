@@ -117,6 +117,88 @@ final class EngineSettingsViewStateTests: XCTestCase {
         XCTAssertNil(SessionRepairRouting.engineSettingsFocus(for: nil))
     }
 
+
+    func testSettingsCloudKeyEditorHasSecureExplicitCommitClearAndSafeClose() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("FidelityCloudAPIKeyEditor"), "Settings Engine must expose a Cloud key editor")
+        XCTAssertTrue(source.contains("SecureField("), "Cloud key entry must use secure text entry")
+        XCTAssertTrue(source.contains("Save key"), "Cloud key editor needs a visible commit action")
+        XCTAssertTrue(source.contains("Clear key"), "Cloud key editor needs a visible delete action")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"ElevenLabs API key\")"), "Secure key field needs a purpose label")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Save ElevenLabs API key\")"), "Save action must be accessible")
+        XCTAssertTrue(source.contains("accessibilityLabel(\"Clear ElevenLabs API key\")"), "Clear action must be accessible")
+        XCTAssertFalse(source.contains("accessibilityValue(model.apiKey)"), "Accessibility must not expose raw key values")
+        XCTAssertTrue(source.contains("canCloseOrSurfaceUnsavedCloudKeyWarning"), "Close path must guard unsaved key edits")
+        XCTAssertTrue(source.contains("windowShouldClose"), "Title-bar close must use the safe-close guard")
+    }
+
+    func testSettingsSavePersistsKeychainBeforeSettingsCommitAndReadinessRefresh() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+
+        guard let saveRange = source.range(of: "onSave: { [weak self, weak host] settings in") else {
+            return XCTFail("Settings save handler not found")
+        }
+        let saveBody = String(source[saveRange.lowerBound..<source.index(saveRange.lowerBound, offsetBy: min(850, source.distance(from: saveRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(saveBody.contains("guard await model.persistAPIKeyIfChanged() else { return }"), "Save must stop if Keychain persistence fails")
+        XCTAssertLessThan(saveBody.range(of: "persistAPIKeyIfChanged")!.lowerBound, saveBody.range(of: "self.store.commit")!.lowerBound, "Keychain persistence must happen before settings commit")
+        XCTAssertLessThan(saveBody.range(of: "self.store.commit")!.lowerBound, saveBody.range(of: "model.refreshEngineViewState")!.lowerBound, "Readiness refresh must happen after persistence and settings commit")
+        XCTAssertFalse(saveBody.contains("apiKey"), "Save handler must not write the raw key into settings")
+
+        guard let persistRange = source.range(of: "func persistAPIKeyIfChanged(keychainOverride") else {
+            return XCTFail("Keychain persistence helper with injectable seam not found")
+        }
+        let persistBody = String(source[persistRange.lowerBound..<source.index(persistRange.lowerBound, offsetBy: min(1400, source.distance(from: persistRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(persistBody.contains("KeychainStore(service: keychainService, account: keychainAccount)"), "Key writes must go through the configured Keychain locator")
+        XCTAssertTrue(persistBody.contains("try keychain.write(candidate)"), "Saving must write the key to Keychain")
+        XCTAssertTrue(persistBody.contains("try keychain.delete()"), "Clearing must delete the Keychain item")
+        XCTAssertTrue(persistBody.contains("Could not update the ElevenLabs API key in Keychain"), "Failure copy must be non-secret and actionable")
+        XCTAssertFalse(persistBody.contains("localizedDescription"), "Keychain failure UI should not echo low-level strings that may include sensitive context")
+    }
+
+    func testSaveKeyAndClearKeyCommitNonSecretSettingsViaOnCommitSettings() throws {
+        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+
+        // Save key button: Keychain persist must happen before onCommitSettings
+        guard let saveKeyRange = source.range(of: "\"Save key\"") else {
+            return XCTFail("Save key button not found")
+        }
+        let saveKeyBody = String(source[saveKeyRange.lowerBound..<source.index(saveKeyRange.lowerBound, offsetBy: min(700, source.distance(from: saveKeyRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(saveKeyBody.contains("persistAPIKeyIfChanged"), "Save key must call persistAPIKeyIfChanged (Keychain-first)")
+        XCTAssertTrue(saveKeyBody.contains("onCommitSettings"), "Save key must call onCommitSettings to commit concurrent non-secret settings on success")
+        let persistIdx = saveKeyBody.range(of: "persistAPIKeyIfChanged")!.lowerBound
+        let commitIdx = saveKeyBody.range(of: "onCommitSettings")!.lowerBound
+        XCTAssertLessThan(persistIdx, commitIdx, "persistAPIKeyIfChanged must appear before onCommitSettings in Save key body")
+        // Failure path: onCommitSettings is NOT called when Keychain fails (guarded by `if ok`)
+        XCTAssertTrue(saveKeyBody.contains("if ok"), "Save key must guard onCommitSettings on Keychain success")
+
+        // Clear key button: Keychain delete must happen before onCommitSettings
+        guard let clearKeyRange = source.range(of: "\"Clear key\"") else {
+            return XCTFail("Clear key button not found")
+        }
+        let clearKeyBody = String(source[clearKeyRange.lowerBound..<source.index(clearKeyRange.lowerBound, offsetBy: min(700, source.distance(from: clearKeyRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(clearKeyBody.contains("clearCloudAPIKey"), "Clear key must call clearCloudAPIKey (Keychain-first)")
+        XCTAssertTrue(clearKeyBody.contains("onCommitSettings"), "Clear key must call onCommitSettings to commit concurrent non-secret settings on success")
+        let clearIdx = clearKeyBody.range(of: "clearCloudAPIKey")!.lowerBound
+        let clearCommitIdx = clearKeyBody.range(of: "onCommitSettings")!.lowerBound
+        XCTAssertLessThan(clearIdx, clearCommitIdx, "clearCloudAPIKey must appear before onCommitSettings in Clear key body")
+        XCTAssertTrue(clearKeyBody.contains("if ok"), "Clear key must guard onCommitSettings on Keychain success")
+
+        // FidelityCloudAPIKeyEditor must declare and receive onCommitSettings
+        guard let editorRange = source.range(of: "struct FidelityCloudAPIKeyEditor") else {
+            return XCTFail("FidelityCloudAPIKeyEditor struct not found")
+        }
+        let editorDecl = String(source[editorRange.lowerBound..<source.index(editorRange.lowerBound, offsetBy: min(600, source.distance(from: editorRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(editorDecl.contains("onCommitSettings"), "FidelityCloudAPIKeyEditor must declare onCommitSettings property")
+
+        // FidelityCloudAPIKeyEditor init site in FidelityAudioPanel must pass onCommitSettings
+        guard let editorInitRange = source.range(of: "FidelityCloudAPIKeyEditor(") else {
+            return XCTFail("FidelityCloudAPIKeyEditor instantiation not found")
+        }
+        let editorInit = String(source[editorInitRange.lowerBound..<source.index(editorInitRange.lowerBound, offsetBy: min(400, source.distance(from: editorInitRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(editorInit.contains("onCommitSettings"), "FidelityCloudAPIKeyEditor must be initialized with onCommitSettings callback")
+    }
+
     func testProductionSettingsRetryAndRemoveButtonsCallAppOwnedLocalModelManagerActions() throws {
         let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
         let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)

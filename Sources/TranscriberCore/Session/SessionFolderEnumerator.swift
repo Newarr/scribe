@@ -50,7 +50,7 @@ public enum SessionFolderEnumerator {
             if entries.count >= limit { break }
             let dir = SessionDirectory(url: candidate.url)
             guard fm.fileExists(atPath: dir.transcript.path) else { continue }
-            let savedAudioExists = fm.fileExists(atPath: dir.url.appendingPathComponent("audio.m4a").path)
+            let savedAudioExists = CanonicalAudio.isUsable(in: dir.url, fileManager: fm)
             guard let frontmatter = TranscriptFrontmatterReader.read(at: dir.transcript) else {
                 if savedAudioExists { entries.append(Entry(
                     directory: candidate.url,

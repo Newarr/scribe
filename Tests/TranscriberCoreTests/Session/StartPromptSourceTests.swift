@@ -156,6 +156,46 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertTrue(source.contains(#"content.body = "Last reminder while this call appears active.""#))
     }
 
+    func testDuplicatePromptCoalescesAwaitersWithoutReplacingPendingEntry() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("if let entry = pending[identifier]"), "duplicate prompt path must look up the existing pending prompt")
+        XCTAssertTrue(source.contains("entry.addAwaiter(continuation)"), "duplicate prompt path must append the new awaiter")
+        XCTAssertTrue(source.contains("return\n            }\n\n            let entry = Pending"), "duplicate prompt path must return before creating a replacement Pending")
+        XCTAssertTrue(source.contains("appending awaiter without replacing prompt state"))
+        XCTAssertTrue(source.contains("func resumeAll(returning choice: Choice)"), "resolution must complete every coalesced awaiter")
+        XCTAssertTrue(source.contains("entry.resumeAll(returning: choice)"), "resolve must resume all awaiters rather than a single overwritten continuation")
+    }
+
+    func testNotificationAuthorizationIsRequeriedForEveryPrompt() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("Re-query every time instead of caching process-lifetime denial or"))
+        XCTAssertFalse(source.contains("authorizationKnown"), "denied/granted notification authorization must not be cached for the app lifetime")
+        XCTAssertFalse(source.contains("authorizationGranted"), "notification grant state must be re-read after System Settings changes")
+        XCTAssertTrue(source.contains("let settings = await center.notificationSettings()"))
+        XCTAssertTrue(source.contains("return try await center.requestAuthorization(options: [.alert, .sound])"))
+    }
+
+    func testEndPromptNotificationActionsAreGenerationGuardedAndClearSurfaces() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("let generation: Int"))
+        XCTAssertTrue(source.contains(#""generation": generation"#), "end prompt notifications must carry the generation that produced them")
+        XCTAssertTrue(source.contains("generation == entry.generation"), "notification actions must be ignored unless their generation is still active")
+        XCTAssertTrue(source.contains("Ignoring stale end prompt notification action"))
+        XCTAssertTrue(source.contains("clearEndPromptNotification(promptID: promptID)"), "accepted keep/stop notification actions must clear pending/delivered notification requests")
+        XCTAssertTrue(source.contains("await entry.onKeep(entry.generation)"))
+        XCTAssertTrue(source.contains("await entry.onStopNow(entry.generation)"))
+    }
+
+    func testEndPromptRegistrationUsesOnlyRecordingConsentActions() throws {
+        let source = try source
+        XCTAssertTrue(source.contains(#"title: "Keep Recording""#))
+        XCTAssertTrue(source.contains(#"title: "Stop Now""#))
+        XCTAssertFalse(source.contains("Import"))
+        XCTAssertFalse(source.contains("Live Transcript"))
+        XCTAssertFalse(source.contains("Transcript history"))
+        XCTAssertFalse(source.contains("Summary"))
+    }
+
 
     func testLateJoinCalendarPromptCopyStatesCaptureFromNowOnward() throws {
         let source = try source

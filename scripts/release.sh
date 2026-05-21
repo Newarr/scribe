@@ -26,13 +26,76 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
     echo "Usage: $0 <version>" >&2
     echo "  e.g. $0 1.0.0-rc1" >&2
+    echo "  fixture checks: $0 --fixture-validate" >&2
+    echo "  fixture plist:  $0 --fixture-export-options <path> <identity>" >&2
+}
+
+generate_export_options_plist() {
+    local export_plist="$1"
+    local identity="$2"
+
+    rm -f "${export_plist}"
+    /usr/bin/plutil -create xml1 "${export_plist}"
+    /usr/bin/plutil -insert method -string developer-id "${export_plist}"
+    /usr/bin/plutil -insert signingStyle -string manual "${export_plist}"
+    /usr/bin/plutil -insert signingCertificate -string "${identity}" "${export_plist}"
+}
+
+run_fixture_validation() {
+    local fixture_dir
+    fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/scribe-release-fixture.XXXXXX")"
+    trap 'rm -rf "${fixture_dir}"' RETURN
+
+    generate_export_options_plist \
+        "${fixture_dir}/ExportOptions.plist" \
+        'Developer ID Application: A & B <Team> (TEAMID)'
+    /usr/bin/plutil -lint "${fixture_dir}/ExportOptions.plist" >/dev/null
+
+    git -C "${PROJECT_DIR}" check-ignore -q \
+        TranscriberApp/.dd-release/Build/Intermediates.noindex/Scribe.build/DerivedSources/GeneratedAssetSymbols.swift
+    git -C "${PROJECT_DIR}" ls-files --error-unmatch \
+        TranscriberApp/.dd-release/Build/Intermediates.noindex/Scribe.build/DerivedSources/GeneratedAssetSymbols.swift \
+        >/dev/null 2>&1 && {
+        echo "Release build intermediate is tracked by git." >&2
+        return 1
+    }
+
+    if grep -R -E 'TranscriberApp/\.dd-release|Intermediates\.noindex|DerivedSources' \
+        "${PROJECT_DIR}/TranscriberApp/Scribe.xcodeproj" >/dev/null 2>&1; then
+        echo "Generated release intermediates are present in the Xcode project." >&2
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    --fixture-export-options)
+        if [[ $# -ne 3 ]]; then
+            usage
+            exit 64
+        fi
+        generate_export_options_plist "$2" "$3"
+        exit 0
+        ;;
+    --fixture-validate)
+        if [[ $# -ne 1 ]]; then
+            usage
+            exit 64
+        fi
+        run_fixture_validation
+        exit 0
+        ;;
+esac
+
+if [[ $# -ne 1 ]]; then
+    usage
     exit 64
 fi
 VERSION="$1"
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARCHIVE_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.xcarchive"
 EXPORT_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.export"
 DMG_PATH="${PROJECT_DIR}/build/Scribe-${VERSION}.dmg"
@@ -66,11 +129,13 @@ if [[ "${EXPECTED_VERSION}" != "${VERSION}" ]]; then
     echo "Run scripts/bump-version.sh ${VERSION} first." >&2
     exit 65
 fi
+BUNDLE_SHORT_VERSION="${VERSION%%[-+]*}"
 
-# Codex rc2-audit P0: project.yml MARKETING_VERSION must also match.
+# Codex rc2-audit P0: project.yml MARKETING_VERSION must match the
+# Apple numeric-only bundle short version, not prerelease/build metadata.
 PROJECT_VERSION="$(grep -E 'MARKETING_VERSION:' "${PROJECT_DIR}/TranscriberApp/project.yml" | sed -nE 's/.*"([^"]+)".*/\1/p')"
-if [[ "${PROJECT_VERSION}" != "${VERSION}" ]]; then
-    echo "project.yml MARKETING_VERSION is ${PROJECT_VERSION}, but BuildInfo says ${VERSION}." >&2
+if [[ "${PROJECT_VERSION}" != "${BUNDLE_SHORT_VERSION}" ]]; then
+    echo "project.yml MARKETING_VERSION is ${PROJECT_VERSION}, but ${VERSION} requires numeric bundle short version ${BUNDLE_SHORT_VERSION}." >&2
     exit 65
 fi
 
@@ -163,20 +228,7 @@ fi
 
 # 7. Export with Developer ID profile.
 EXPORT_PLIST="${PROJECT_DIR}/build/ExportOptions.plist"
-cat > "${EXPORT_PLIST}" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>method</key>
-    <string>developer-id</string>
-    <key>signingStyle</key>
-    <string>manual</string>
-    <key>signingCertificate</key>
-    <string>${IDENTITY}</string>
-</dict>
-</plist>
-EOF
+generate_export_options_plist "${EXPORT_PLIST}" "${IDENTITY}"
 
 echo "==> xcodebuild -exportArchive"
 xcodebuild \
@@ -245,8 +297,8 @@ DMG_APP="${MOUNT_DIR}/Scribe.app"
 [[ -d "${DMG_APP}" ]] || { echo "DMG missing Scribe.app"; exit 1; }
 
 DMG_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${DMG_APP}/Contents/Info.plist" 2>/dev/null || true)"
-if [[ "${DMG_BUNDLE_VERSION}" != "${VERSION}" ]]; then
-    echo "DMG ships Scribe.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected ${VERSION}." >&2
+if [[ "${DMG_BUNDLE_VERSION}" != "${BUNDLE_SHORT_VERSION}" ]]; then
+    echo "DMG ships Scribe.app with CFBundleShortVersionString=${DMG_BUNDLE_VERSION}, expected numeric bundle short version ${BUNDLE_SHORT_VERSION} for ${VERSION}." >&2
     exit 1
 fi
 

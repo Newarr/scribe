@@ -27,9 +27,9 @@ public enum OnboardingFlowStep: String, Sendable, Equatable, Hashable, CaseItera
 
     public var canSkip: Bool {
         switch self {
-        case .calendar, .notifications:
+        case .calendar, .notifications, .elevenLabsAPIKey:
             return true
-        case .welcome, .microphone, .screenRecording, .elevenLabsAPIKey, .chooseEngine, .outputFolder, .testRecording, .done:
+        case .welcome, .microphone, .screenRecording, .chooseEngine, .outputFolder, .testRecording, .done:
             return false
         }
     }
@@ -201,11 +201,43 @@ public struct OnboardingScreenRecordingCopy: Sendable, Equatable {
     }
 }
 
+public struct OnboardingScreenRecordingRequestResult: Sendable, Equatable {
+    public let requestGranted: Bool
+    public let status: PermissionStatus
+
+    public init(requestGranted: Bool, status: PermissionStatus) {
+        self.requestGranted = requestGranted
+        self.status = status
+    }
+
+    public var isDeferredGrantRequiringRelaunch: Bool {
+        requestGranted && status != .granted
+    }
+}
+
+public struct OnboardingDeferredPermissionGuidance: Sendable, Equatable {
+    public let title: String
+    public let message: String
+    public let actionTitle: String
+
+    public init(title: String, message: String, actionTitle: String) {
+        self.title = title
+        self.message = message
+        self.actionTitle = actionTitle
+    }
+}
+
 public enum OnboardingFlowPresenter {
     public static let screenRecordingCopy = OnboardingScreenRecordingCopy(
         whatIsCaptured: "Scribe captures microphone audio and system audio so meeting voices are recorded together.",
         whatIsNotCaptured: "Scribe does not capture video, screenshots, keystrokes, browser history, or screen content.",
         tagline: "macOS calls this 'Screen Recording' for technical reasons, but no video or screen content ever leaves your machine."
+    )
+
+    public static let screenRecordingDeferredGuidance = OnboardingDeferredPermissionGuidance(
+        title: "Restart Scribe to finish enabling Screen Recording",
+        message: "macOS approved Screen & System Audio Recording, but the running Scribe process cannot see the new grant until it relaunches. Relaunch Scribe, then onboarding will resume past this step.",
+        actionTitle: "Relaunch Scribe"
     )
 
     public static func resumeStep(from snapshot: OnboardingResumeSnapshot) -> OnboardingFlowStep {
@@ -317,6 +349,11 @@ public actor OnboardingFlowController {
 
     public func enter(_ step: OnboardingFlowStep) async {
         guard step == .screenRecording else { return }
+        await startLocalModelStagingIfNeeded(localModelStatus: .notDownloaded(modelID: CohereMLXBackend.modelID))
+    }
+
+    public func startLocalModelStagingIfNeeded(localModelStatus: LocalModelCacheStatus) async {
+        guard Self.shouldStartAutomaticLocalModelStaging(for: localModelStatus) else { return }
         guard hasStartedScreenRecordingDownload == false else { return }
         hasStartedScreenRecordingDownload = true
         let starter = downloadStarter
@@ -324,6 +361,15 @@ public actor OnboardingFlowController {
             await starter.startDownload()
         }
         await Task.yield()
+    }
+
+    private static func shouldStartAutomaticLocalModelStaging(for status: LocalModelCacheStatus) -> Bool {
+        switch status {
+        case .notDownloaded, .downloading, .verifying:
+            return true
+        case .verified, .failed, .unsupported:
+            return false
+        }
     }
 
     @discardableResult

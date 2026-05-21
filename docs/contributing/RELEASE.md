@@ -1,6 +1,6 @@
 # Release Process
 
-V1.0-rc1 is the code-complete state. Tagging `v1.0.0` requires the user to validate against [`TESTING.md`](TESTING.md) (Phase υ).
+V1.0-rc4 is the current code-complete release candidate. Tagging `v1.0.0` requires the user to validate against [`TESTING.md`](TESTING.md) (Phase υ).
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ After running, regenerate the Xcode project (`cd TranscriberApp && xcodegen`) an
 1. `swift test` against the package.
 2. `xcodegen` to regenerate the Xcode project.
 3. `xcodebuild archive` produces `Scribe.xcarchive`.
-4. `xcodebuild -exportArchive` with a `Developer ID` profile signs the bundled binaries (including any future Cohere Rust binary in `Resources/`) with the same Team ID as the app.
+4. `xcodebuild -exportArchive` with a `Developer ID` profile signs the bundled binaries with the same Team ID as the app. Local Cohere uses the Swift/MLX dependency path and pinned model artifacts rather than a bundled Rust executable.
 5. `xcrun notarytool submit ... --keychain-profile scribe-notary --wait` notarizes; on success the staple is attached.
 6. The notarized `.app` is wrapped in a DMG via `create-dmg` (Phase σ, not yet wired).
 

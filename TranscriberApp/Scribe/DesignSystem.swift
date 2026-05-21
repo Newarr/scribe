@@ -634,21 +634,28 @@ struct ScribeSwitchStyle: ToggleStyle {
     private let inset: CGFloat = 1
 
     func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .center, spacing: DS.Spacing.ml) {
-            configuration.label
-                .layoutPriority(1)
-            Spacer(minLength: DS.Spacing.s)
-            switchView(isOn: configuration.isOn)
-                .onTapGesture {
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        configuration.isOn.toggle()
-                    }
-                }
-                .accessibilityElement()
-                .accessibilityAddTraits(.isButton)
-                .accessibilityValue(configuration.isOn ? "on" : "off")
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) {
+                configuration.isOn.toggle()
+            }
+        } label: {
+            HStack(alignment: .center, spacing: DS.Spacing.ml) {
+                configuration.label
+                    .layoutPriority(1)
+                Spacer(minLength: DS.Spacing.s)
+                switchView(isOn: configuration.isOn)
+            }
+            .contentShape(Rectangle())
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityValue(configuration.isOn ? "on" : "off")
+        .accessibilityAction {
+            withAnimation(.easeOut(duration: 0.12)) {
+                configuration.isOn.toggle()
+            }
+        }
     }
 
     @ViewBuilder
@@ -675,18 +682,24 @@ struct ScribeSwitchStyle: ToggleStyle {
 // MARK: - Confidential UI sharing type
 
 /// `NSWindow.sharingType` per codex UX-4 (confidential UI must not
-/// appear in screen-shared video). Release builds return `.none`;
-/// DEBUG builds return `.readWrite` so screenshots and screen
-/// recordings still work during development. Every Scribe-owned
-/// window/popover/panel reads from here.
+/// appear in screen-shared video). Both Debug and Release builds
+/// return `.none` by default so prompts and popovers never appear in
+/// screen-shared video regardless of build configuration.
+///
+/// To enable screen capture during visual testing or screenshot
+/// automation set the environment variable
+/// `SCRIBE_VISUAL_TEST_OVERRIDE=1` before launching the app.
+/// This override is intentional and explicit; it must not be set in
+/// production or CI acceptance runs.
 @MainActor
 enum WindowChromeSharing {
     static var confidential: NSWindow.SharingType {
         #if DEBUG
-        return .readWrite
-        #else
-        return .none
+        if ProcessInfo.processInfo.environment["SCRIBE_VISUAL_TEST_OVERRIDE"] == "1" {
+            return .readWrite
+        }
         #endif
+        return .none
     }
 }
 
@@ -1084,6 +1097,13 @@ enum DebugVisualSnapshotWriter {
         scale: CGFloat = 2
     ) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let previousAppearance = NSAppearance.current
+        if name.localizedCaseInsensitiveContains("light") {
+            NSAppearance.current = NSAppearance(named: .aqua)
+        } else if name.localizedCaseInsensitiveContains("dark") {
+            NSAppearance.current = NSAppearance(named: .darkAqua)
+        }
+        defer { NSAppearance.current = previousAppearance }
         let renderer = ImageRenderer(content: view)
         renderer.scale = scale
         guard let image = renderer.nsImage else {

@@ -247,6 +247,22 @@ final class PermissionDoctorTests: XCTestCase {
     }
 
 
+    func testSyncedStorageProviderLabelsCoverVaultWarningPaths() {
+        let probe = DefaultOutputFolderProbe()
+        let cases: [(String, String)] = [
+            ("/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Scribe", "iCloud Drive"),
+            ("/Users/me/Library/CloudStorage/Dropbox/Scribe", "Dropbox"),
+            ("/Users/me/Library/CloudStorage/OneDrive-Personal/Scribe", "OneDrive"),
+            ("/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/Scribe", "Google Drive"),
+            ("/Users/me/Library/CloudStorage/Box/Scribe", "Box"),
+            ("/Users/me/Library/CloudStorage/ProtonDrive/Scribe", "synced storage"),
+        ]
+
+        for (path, provider) in cases {
+            XCTAssertEqual(probe.syncedStorageHint(URL(fileURLWithPath: path)), provider, path)
+        }
+    }
+
     func testRecommendedCalendarAndNotificationsSurfaceWarningsNotBlockers() async {
         let outputRoot = makeWritableTempDir()
         defer { try? FileManager.default.removeItem(at: outputRoot) }

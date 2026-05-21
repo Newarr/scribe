@@ -54,6 +54,44 @@ final class MetadataJSONWriterTests: XCTestCase {
         XCTAssertNil(decoded.language)
     }
 
+
+    func testFailedMetadataAudioReferencesMatchTranscript() throws {
+        let noAudio = TranscriptContext(
+            title: "No audio",
+            date: "2026-05-20",
+            engine: "elevenlabs",
+            audioRelativePaths: [],
+            startedAt: "2026-05-20T10:00:00Z",
+            endedAt: "2026-05-20T10:05:00Z",
+            attendees: [],
+            language: nil
+        )
+        XCTAssertEqual(MetadataJSONWriter.primaryAudioReference(context: noAudio), "")
+        let noAudioMetadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: noAudio,
+            audio: MetadataJSONWriter.primaryAudioReference(context: noAudio)
+        )
+        XCTAssertEqual(noAudioMetadata.audio, "")
+
+        let oneSided = TranscriptContext(
+            title: "One sided",
+            date: "2026-05-20",
+            engine: "cohere",
+            audioRelativePaths: ["system.m4a"],
+            startedAt: "2026-05-20T10:00:00Z",
+            endedAt: "2026-05-20T10:05:00Z",
+            attendees: [],
+            language: nil
+        )
+        let oneSidedMetadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: oneSided,
+            audio: MetadataJSONWriter.primaryAudioReference(context: oneSided)
+        )
+        XCTAssertEqual(oneSidedMetadata.audio, "system.m4a")
+    }
+
     func testFailedMetadataIncludesFailureDetails() throws {
         let details = TranscriptFailureDetails(
             errorCode: "elevenlabs_timeout",
@@ -104,6 +142,31 @@ final class MetadataJSONWriterTests: XCTestCase {
         XCTAssertEqual(metadata.attempt_count, 4)
     }
 
+
+    /// VAL-STORAGE-004: standalone sk_-prefixed token must be redacted from
+    /// persisted metadata.json failure details.
+    func testFailedMetadataRedactsStandaloneSkPrefixedToken() throws {
+        let raw = "ElevenLabs returned 401. xi-api-key: sk_TEST-API-KEY-SENTINEL was rejected."
+        let details = TranscriptFailureDetails(
+            errorCode: "unauthorized",
+            errorMessage: raw,
+            retryCount: 0,
+            attemptCount: 1,
+            audioDurationSeconds: nil,
+            audioSizeBytes: nil
+        )
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .failed,
+            context: makeContext(),
+            audio: "audio.m4a",
+            failureDetails: details
+        )
+        let encoded = String(data: try JSONEncoder().encode(metadata), encoding: .utf8) ?? ""
+        XCTAssertFalse(encoded.contains("sk_TEST"), "sk_ token must be redacted from metadata: \(encoded)")
+        XCTAssertFalse(encoded.contains("SENTINEL"), "sk_ token value must be redacted: \(encoded)")
+        XCTAssertTrue((metadata.error_message ?? "").contains("[redacted]"),
+                      "redacted marker must appear in error_message: \(metadata.error_message ?? "")")
+    }
 
     func testFailedMetadataRedactsAuthorizationBearerHeaderFormsBeforeGenericKeyValueRedaction() throws {
         let raw = "Provider returned Authorization=Bearer abc123 and Authorization: Bearer def456 plus bearer ghi789 and X-API-Key = jkl012"

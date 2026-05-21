@@ -394,6 +394,15 @@ final class SessionSupervisorTests: XCTestCase {
         // Frontmatter audio key uses single-string form when there's
         // exactly one path; substring check is the cheapest assertion.
         XCTAssertTrue(body.contains("audio: \"mic.m4a\"") || body.contains("audio:\n  - \"mic.m4a\""), "frontmatter must list only the surviving file: \(body)")
+        XCTAssertFalse(body.localizedCaseInsensitiveContains("intact and complete"), body)
+        XCTAssertFalse(body.contains("Retry from the Scribe menu bar"), body)
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "failed")
+        XCTAssertEqual(metadata.audio, "mic.m4a")
+        XCTAssertEqual(metadata.error_code, "one_sided_audio")
     }
 
     /// Phase ζ P0.2 mirror image: system-only also lands a failed
@@ -416,6 +425,14 @@ final class SessionSupervisorTests: XCTestCase {
         XCTAssertTrue(body.contains("only system survived"), body)
         XCTAssertTrue(body.contains("system.m4a"), body)
         XCTAssertFalse(body.contains("mic.m4a"), "failed transcript body must NOT promise mic.m4a when only system survived: \(body)")
+        XCTAssertFalse(body.contains("Retry from the Scribe menu bar"), body)
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "failed")
+        XCTAssertEqual(metadata.audio, "system.m4a")
+        XCTAssertEqual(metadata.error_code, "one_sided_audio")
     }
 
     /// Codex Phase ζ P0.1: a session whose `.partial` rename failed
@@ -474,6 +491,17 @@ final class SessionSupervisorTests: XCTestCase {
         let body = try String(contentsOf: dir.transcript, encoding: .utf8)
         XCTAssertFalse(body.contains("\"mic.m4a\""), "no-audio failed transcript must not promise files that don't exist: \(body)")
         XCTAssertFalse(body.contains("\"system.m4a\""), body)
+        XCTAssertTrue(body.contains("No usable audio was captured"), body)
+        XCTAssertFalse(body.localizedCaseInsensitiveContains("intact and complete"), body)
+        XCTAssertFalse(body.contains("Retry from the Scribe menu bar"), body)
+        XCTAssertFalse(body.localizedCaseInsensitiveContains("transcribe outside Scribe"), body)
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "failed")
+        XCTAssertEqual(metadata.audio, "")
+        XCTAssertEqual(metadata.error_code, "no_audio_captured")
     }
 
     func testFailedSessionIsSkipped() async throws {

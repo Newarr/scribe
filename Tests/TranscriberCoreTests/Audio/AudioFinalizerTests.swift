@@ -253,6 +253,29 @@ final class AudioFinalizerTests: XCTestCase {
     XCTAssertTrue(leftovers.isEmpty, "timeout should remove inflight temp files: \(leftovers)")
   }
 
+  func testForcedWriterAppendFailureAfterInflightCreationPreservesExistingOutput() async throws {
+    try await assertForcedWriterFailurePreservesExistingOutput(.append)
+  }
+
+  func testForcedWriterStatusFailureDuringReadinessPollingPreservesExistingOutput() async throws {
+    try await assertForcedWriterFailurePreservesExistingOutput(
+      .statusDuringReadinessPolling,
+      options: .init(
+        backpressureSleep: 0.01,
+        backpressureTimeout: 1.0,
+        forceWriterInputNotReady: true,
+        forcedWriterFailure: .statusDuringReadinessPolling))
+  }
+
+  func testForcedFinishWritingFailurePreservesExistingOutput() async throws {
+    try await assertForcedWriterFailurePreservesExistingOutput(.finishWriting)
+  }
+
+  func testPTSTimelineForcedWriterFailuresPreserveExistingOutput() async throws {
+    try await assertForcedWriterFailurePreservesExistingOutput(.append, usesPTSLog: true)
+    try await assertForcedWriterFailurePreservesExistingOutput(.finishWriting, usesPTSLog: true)
+  }
+
   func testStreamingHonorsCustomChunkFrames() async throws {
     // Codex P2: chunkFrames must be test-overridable so partial-EOF
     // boundary cases can be exercised without 30s+ fixtures. Force a
@@ -475,6 +498,65 @@ final class AudioFinalizerTests: XCTestCase {
   }
 
   // MARK: - fixtures
+
+  private func assertForcedWriterFailurePreservesExistingOutput(
+    _ failure: AudioFinalizer.ForcedWriterFailure,
+    usesPTSLog: Bool = false,
+    options explicitOptions: AudioFinalizer.Options? = nil,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    let suffix = "\(failure)-\(usesPTSLog ? "pts" : "stream")".replacingOccurrences(
+      of: ":", with: "-")
+    let micURL = tmp.appendingPathComponent("mic-\(suffix).m4a")
+    let sysURL = tmp.appendingPathComponent("system-\(suffix).m4a")
+    let ptsURL = tmp.appendingPathComponent("pts-\(suffix).jsonl")
+    let outURL = tmp.appendingPathComponent("audio-\(suffix).m4a")
+    let previous = Data("prior durable audio for \(suffix)".utf8)
+    try previous.write(to: outURL)
+    try writeAACPCM(to: micURL, sampleRate: 48000, duration: 0.2) { ptr, frames, _ in
+      for i in 0..<frames { ptr[i] = Float(0.35 * sin(2 * .pi * 440 * Double(i) / 48000.0)) }
+    }
+    try writeAACSilence(to: sysURL, durationSec: 0.2)
+    if usesPTSLog {
+      try writePTSLog(
+        to: ptsURL,
+        entries: [
+          PTSLogEntry(stream: "mic", ptsSeconds: 42.0, sampleCount: 4800, sampleRate: 48000),
+          PTSLogEntry(stream: "system", ptsSeconds: 42.0, sampleCount: 4800, sampleRate: 48000),
+        ])
+    }
+
+    let options = explicitOptions ?? AudioFinalizer.Options(forcedWriterFailure: failure)
+    do {
+      try await AudioFinalizer.finalize(
+        mic: micURL,
+        system: sysURL,
+        output: outURL,
+        sampleRate: 48000,
+        ptsLogURL: usesPTSLog ? ptsURL : nil,
+        options: options)
+      XCTFail("expected forced writer failure", file: file, line: line)
+    } catch AudioFinalizer.FinalizeError.writerFailed
+      where failure == .append || failure == .finishWriting
+    {
+      // expected
+    } catch AudioFinalizer.FinalizeError.writerStatusFailed
+      where failure == .statusDuringReadinessPolling
+    {
+      // expected
+    } catch {
+      XCTFail("unexpected forced writer failure error: \(error)", file: file, line: line)
+    }
+
+    XCTAssertEqual(try Data(contentsOf: outURL), previous, file: file, line: line)
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: tmp.path).filter {
+      $0.contains(".inflight-")
+    }
+    XCTAssertTrue(
+      leftovers.isEmpty, "forced writer failure should remove inflight temp files: \(leftovers)",
+      file: file, line: line)
+  }
 
   private func writePTSLog(to url: URL, entries: [PTSLogEntry]) throws {
     let encoder = JSONEncoder()

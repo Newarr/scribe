@@ -11,6 +11,9 @@ xcuserdata/
 DerivedData/
 TranscriberApp/.dd/
 TranscriberApp/.dd-release/
+**/Build/Intermediates.noindex/
+**/Build/Intermediates/
+**/DerivedSources/
 
 # macOS
 .DS_Store
@@ -18,6 +21,10 @@ TranscriberApp/.dd-release/
 
 # Build output
 build/
+
+# Clawpatch generated state (keep source-discovery config tracked)
+.clawpatch/*
+!.clawpatch/config.json
 
 # Design handoff and screenshots
 .design-handoff*/

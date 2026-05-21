@@ -13,6 +13,57 @@ final class MultichannelWAVBuilderTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmp)
     }
 
+    func testMidReadFailureThrowsAndPreservesExistingOutput() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+        try Data("prior".utf8).write(to: outURL)
+        let prior = try Data(contentsOf: outURL)
+
+        XCTAssertThrowsError(
+            try MultichannelWAVBuilder.build(
+                micReader: ContractAudioReader(name: "mic.m4a"),
+                systemReader: ContractAudioReader(name: "system.m4a", failBeforeEOF: true),
+                output: outURL,
+                sampleRate: 16_000
+            )
+        ) { error in
+            guard case MultichannelWAVBuilder.BuildError.readFailed = error else {
+                return XCTFail("Expected readFailed, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: outURL), prior)
+    }
+
+    func testMissingOrOneSidedInputIsRejected() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+
+        XCTAssertThrowsError(
+            try MultichannelWAVBuilder.build(
+                micReader: ContractAudioReader(name: "mic.m4a"),
+                systemReader: ContractAudioReader(name: "empty-system.m4a", empty: true),
+                output: outURL,
+                sampleRate: 16_000
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outURL.path))
+    }
+
+    func testReadErrorAtDeclaredEOFRemainsBenign() throws {
+        let outURL = tmp.appendingPathComponent("multichannel.wav")
+
+        try MultichannelWAVBuilder.build(
+            micReader: ContractAudioReader(name: "mic.m4a", throwAtEOF: true),
+            systemReader: ContractAudioReader(name: "system.m4a", throwAtEOF: true),
+            output: outURL,
+            sampleRate: 16_000
+        )
+
+        try assertRIFFWAVEHeader(at: outURL)
+        let file = try AVAudioFile(forReading: outURL)
+        XCTAssertEqual(file.fileFormat.sampleRate, 16_000)
+        XCTAssertEqual(file.fileFormat.channelCount, 2)
+        XCTAssertGreaterThan(file.length, 0)
+    }
+
     func testProducesTwoChannelWAV() async throws {
         let micURL = tmp.appendingPathComponent("mic.m4a")
         let sysURL = tmp.appendingPathComponent("system.m4a")
@@ -27,6 +78,7 @@ final class MultichannelWAVBuilderTests: XCTestCase {
             sampleRate: 16000
         )
 
+        try assertRIFFWAVEHeader(at: outURL)
         let file = try AVAudioFile(forReading: outURL)
         XCTAssertEqual(file.fileFormat.sampleRate, 16000)
         XCTAssertEqual(file.fileFormat.channelCount, 2, "must produce a 2-channel file")
@@ -42,6 +94,7 @@ final class MultichannelWAVBuilderTests: XCTestCase {
 
         try await MultichannelWAVBuilder.build(mic: micURL, system: sysURL, output: outURL, sampleRate: 16000)
 
+        try assertRIFFWAVEHeader(at: outURL)
         let file = try AVAudioFile(forReading: outURL)
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 2, interleaved: false)!
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length))!
@@ -56,6 +109,13 @@ final class MultichannelWAVBuilderTests: XCTestCase {
         rms1 = sqrt(rms1 / Float(buf.frameLength))
         XCTAssertGreaterThan(rms0, 0.05, "ch0 should carry the mic sine")
         XCTAssertGreaterThan(rms1, 0.05, "ch1 should carry the system sine")
+    }
+
+    private func assertRIFFWAVEHeader(at url: URL) throws {
+        let data = try Data(contentsOf: url)
+        XCTAssertGreaterThanOrEqual(data.count, 12, "WAV output must be non-empty and include a RIFF/WAVE header")
+        XCTAssertEqual(String(decoding: data.prefix(4), as: UTF8.self), "RIFF")
+        XCTAssertEqual(String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self), "WAVE")
     }
 
     private func writeSilent(to url: URL, durationSec: Double) throws {
