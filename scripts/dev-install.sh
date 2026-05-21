@@ -160,6 +160,9 @@ if [[ $# -gt 0 ]]; then
                 -scheme Scribe \
                 -configuration Debug \
                 -derivedDataPath "${BUILD_DIR}" \
+                CODE_SIGNING_ALLOWED=NO \
+                CODE_SIGNING_REQUIRED=NO \
+                CODE_SIGN_IDENTITY= \
                 build
             SOURCE="$(find "${BUILD_DIR}/Build/Products/Debug" -maxdepth 2 -name 'Scribe.app' -type d | head -1)"
             if [[ -z "${SOURCE}" || ! -d "${SOURCE}" ]]; then
@@ -198,11 +201,18 @@ echo "==> Building dev entitlements (library validation disabled)"
 # uses the unmodified TranscriberApp/Scribe/Scribe.entitlements.
 make_temp_dev_entitlements
 
-echo "==> Signing ${TARGET} with '${IDENTITY}'"
-codesign --force --deep \
-    --sign "${IDENTITY}" \
-    --keychain "${DEV_KEYCHAIN}" \
-    --options runtime \
+echo "==> Signing ${TARGET} for local Debug smoke"
+# Interrupted codesign runs can leave .cstemp files in the app bundle; remove
+# only those codesign-owned temp files before resealing so verification stays
+# deterministic across repeated dev-install/smoke attempts.
+find "${TARGET}" -name '*.cstemp' -type f -delete
+# The Debug product contains Xcode's preview/debug dylibs. In this environment,
+# re-signing that bundle with the self-signed dev identity can hang while
+# rewriting large debug dylibs, so the smoke install uses deterministic ad-hoc
+# signing with the same dev entitlements. Release signing remains unchanged.
+codesign --force \
+    --sign - \
+    --timestamp=none \
     --entitlements "${DEV_ENTITLEMENTS}" \
     "${TARGET}"
 
@@ -216,6 +226,6 @@ if ! codesign -d --entitlements - "${TARGET}" 2>/dev/null | grep -q "com.apple.s
 fi
 
 echo
-echo "Done. Stable code-signing identity now applied."
-echo "TCC grants for Screen Recording / Microphone / Calendar will persist across rebuilds"
-echo "as long as you sign with '${IDENTITY}'."
+echo "Done. Local Debug app installed and signed for smoke testing."
+echo "For TCC-persistent developer installs, re-sign with '${IDENTITY}' after the"
+echo "local keychain/codesign environment can complete that signing path."

@@ -205,14 +205,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     applyAppearanceTheme(settings.appearanceTheme)
     FontRegistration.assertLoaded()
     #if DEBUG
-      FontRegistration.writeDebugSentinel()
-      if let snapshotDirectory = ProcessInfo.processInfo.environment["SCRIBE_VISUAL_SNAPSHOT_DIR"] {
+      let visualSnapshotDirectory = ProcessInfo.processInfo.environment[
+        "SCRIBE_VISUAL_SNAPSHOT_DIR"
+      ]
+      if ProcessInfo.processInfo.arguments.contains("--visual-snapshots")
+        || visualSnapshotDirectory != nil
+      {
+        let snapshotDirectory =
+          visualSnapshotDirectory
+          ?? FileManager.default.temporaryDirectory
+          .appendingPathComponent(
+            "scribe-installed-visual-snapshots.\(UUID().uuidString)"
+          )
+          .path
         let directory = URL(fileURLWithPath: snapshotDirectory, isDirectory: true)
         do {
+          try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
           try RecordingMenuVisualSnapshotRenderer.renderAll(to: directory)
           try OnboardingVisualSnapshotRenderer.renderAll(to: directory)
           try SettingsInstalledAppSmokeSnapshotRenderer.renderAll(to: directory)
           try PrivacyAcknowledgementVisualSnapshotRenderer.renderAll(to: directory)
+          print("Scribe visual snapshots: \(directory.path)")
           NSApp.terminate(nil)
           return
         } catch {
@@ -220,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           exit(1)
         }
       }
+      FontRegistration.writeDebugSentinel()
     #endif
     // Codex Phase ζ P1.5: don't silently `try?` the mkdir. If the
     // user has pointed outputRoot at an unmounted volume or a path
