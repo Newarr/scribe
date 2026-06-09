@@ -82,13 +82,33 @@ public struct EcapaLanguageDetector: LanguageDetector {
             sampleCount: sampleCount,
             vadModelDirectoryURL: vadModelDirectoryURL
         )
-        let output = model.predict(waveform: window, topK: 3)
-        guard let code = Self.languageCode(fromLabel: output.language) else {
-            Log.engine.warning("EcapaLanguageDetector: unusable label \(output.language, privacy: .public)")
+        let output = model.predict(waveform: window, topK: 5)
+        guard let code = Self.bestSupportedCode(from: output.topLanguages) else {
+            Log.engine.info("EcapaLanguageDetector: no confident Cohere-supported language in top predictions (top: \(output.language, privacy: .public) @ \(String(format: "%.2f", output.confidence), privacy: .public)); falling back to engine auto-detect")
             return nil
         }
-        Log.engine.info("EcapaLanguageDetector: detected \(code, privacy: .public) (confidence \(String(format: "%.2f", output.confidence), privacy: .public))")
+        Log.engine.info("EcapaLanguageDetector: detected \(code, privacy: .public) (top label \(output.language, privacy: .public) @ \(String(format: "%.2f", output.confidence), privacy: .public))")
         return code
+    }
+
+    /// VoxLingua107 covers 107 languages but the Cohere tokenizer only 14,
+    /// and confusable neighbors land in the top slot for real calls (e.g.
+    /// "no: Norwegian" for accented English). Forcing a WRONG supported
+    /// token is the failure mode this whole feature exists to fix, so:
+    /// scan the top-K for the best prediction that Cohere can actually
+    /// honor, and require a modest confidence floor before forcing it.
+    /// Returning nil costs nothing — the engine's own fallback applies.
+    static let minimumConfidence: Float = 0.25
+
+    static func bestSupportedCode(from predictions: [LanguagePrediction]) -> String? {
+        for prediction in predictions {
+            guard let code = languageCode(fromLabel: prediction.language),
+                  CohereMLXBackend.supportedLanguageCodes.contains(code) else {
+                continue
+            }
+            return prediction.confidence >= minimumConfidence ? code : nil
+        }
+        return nil
     }
 
     /// VoxLingua107 labels are `"pl: Polish"`; the ISO code is the prefix.

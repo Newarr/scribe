@@ -253,7 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let status = await manager.status()
         if status.isReady { continue }
         let result = await manager.startDownload()
-        Log.engine.info("Aux local model \(manager.manifest.modelID, privacy: .public) staging finished: \(String(describing: result), privacy: .public)")
+        Log.engine.info("Aux local model staging finished: \(String(describing: result), privacy: .public)")
       }
     }
   }

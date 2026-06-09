@@ -1,6 +1,7 @@
 import XCTest
 import AVFoundation
 @testable import TranscriberCore
+import MLXAudioLID
 
 /// Phase ν: tests cover the detector PROTOCOL surface and the
 /// TranscriptionWorker wire-through. The production implementation is
@@ -36,6 +37,34 @@ final class LanguageDetectorTests: XCTestCase {
         let url = root.appendingPathComponent("mic.m4a")
         let result = await detector.detect(from: url)
         XCTAssertNil(result)
+    }
+
+    func testBestSupportedCodePicksFirstCohereSupportedPrediction() {
+        // Real-world case: accented English misdetected as Norwegian.
+        // "no" is not Cohere-supported, so the supported runner-up wins.
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.48),
+            LanguagePrediction(language: "en: English", confidence: 0.31),
+            LanguagePrediction(language: "sv: Swedish", confidence: 0.10),
+        ]
+        XCTAssertEqual(EcapaLanguageDetector.bestSupportedCode(from: predictions), "en")
+    }
+
+    func testBestSupportedCodeRejectsLowConfidence() {
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.50),
+            LanguagePrediction(language: "de: German", confidence: 0.05),
+        ]
+        XCTAssertNil(EcapaLanguageDetector.bestSupportedCode(from: predictions),
+                     "a barely-ranked supported language must not be forced onto the tokenizer")
+    }
+
+    func testBestSupportedCodeWithNoSupportedPredictionsReturnsNil() {
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.60),
+            LanguagePrediction(language: "sv: Swedish", confidence: 0.30),
+        ]
+        XCTAssertNil(EcapaLanguageDetector.bestSupportedCode(from: predictions))
     }
 
     func testVoxLinguaLabelParsing() {
