@@ -65,6 +65,11 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     public var launchAtLogin: Bool
     public var showInMenuBar: Bool
     public var startStopShortcut: KeyboardShortcutSetting
+    /// BCP-47 code forced on the local engine's tokenizer (e.g. "pl").
+    /// `nil` = Auto: the worker's language detector (or the engine's own
+    /// fallback) decides. Cloud (ElevenLabs) always auto-detects and
+    /// ignores this.
+    public var transcriptionLanguage: String?
 
     public init(
         outputRoot: URL,
@@ -75,7 +80,8 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         appearanceTheme: AppearanceTheme = .system,
         launchAtLogin: Bool = false,
         showInMenuBar: Bool = true,
-        startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
+        startStopShortcut: KeyboardShortcutSetting = .defaultStartStop,
+        transcriptionLanguage: String? = nil
     ) {
         self.outputRoot = outputRoot
         self.engineMode = engineMode
@@ -87,10 +93,11 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.launchAtLogin = launchAtLogin
         self.showInMenuBar = showInMenuBar
         self.startStopShortcut = startStopShortcut
+        self.transcriptionLanguage = transcriptionLanguage
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged, appearanceTheme, launchAtLogin, showInMenuBar, startStopShortcut
+        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged, appearanceTheme, launchAtLogin, showInMenuBar, startStopShortcut, transcriptionLanguage
     }
 
     /// Decoder permits older blob formats that omit `privacyAcknowledged`
@@ -107,6 +114,7 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         self.showInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showInMenuBar) ?? true
         self.startStopShortcut = try c.decodeIfPresent(KeyboardShortcutSetting.self, forKey: .startStopShortcut) ?? .defaultStartStop
+        self.transcriptionLanguage = try c.decodeIfPresent(String.self, forKey: .transcriptionLanguage)
     }
 }
 
@@ -188,6 +196,7 @@ public actor SettingsStore {
         public var launchAtLogin: Bool
         public var showInMenuBar: Bool
         public var startStopShortcut: KeyboardShortcutSetting
+        public var transcriptionLanguage: String?
 
         public init(
             outputRoot: URL,
@@ -198,7 +207,8 @@ public actor SettingsStore {
             appearanceTheme: AppearanceTheme = .system,
             launchAtLogin: Bool = false,
             showInMenuBar: Bool = true,
-            startStopShortcut: KeyboardShortcutSetting = .defaultStartStop
+            startStopShortcut: KeyboardShortcutSetting = .defaultStartStop,
+            transcriptionLanguage: String? = nil
         ) {
             self.outputRoot = outputRoot
             self.engineMode = engineMode
@@ -210,6 +220,7 @@ public actor SettingsStore {
             self.launchAtLogin = launchAtLogin
             self.showInMenuBar = showInMenuBar
             self.startStopShortcut = startStopShortcut
+            self.transcriptionLanguage = transcriptionLanguage
         }
     }
 
@@ -297,6 +308,12 @@ public actor SettingsStore {
         try? commit(current)
     }
 
+    public func setTranscriptionLanguage(_ code: String?) {
+        var current = snapshot()
+        current.transcriptionLanguage = code
+        try? commit(current)
+    }
+
     /// Atomic multi-key commit. Phase η Settings UI calls this after
     /// the user clicks Save so the resulting on-disk state never
     /// contains a partial mix of old + new fields.
@@ -338,7 +355,8 @@ private extension SettingsStore.Defaults {
             appearanceTheme: appearanceTheme,
             launchAtLogin: launchAtLogin,
             showInMenuBar: showInMenuBar,
-            startStopShortcut: startStopShortcut
+            startStopShortcut: startStopShortcut,
+            transcriptionLanguage: transcriptionLanguage
         )
     }
 }
@@ -369,7 +387,8 @@ public enum SettingsSnapshotReader {
             appearanceTheme: fallback.appearanceTheme,
             launchAtLogin: fallback.launchAtLogin,
             showInMenuBar: fallback.showInMenuBar,
-            startStopShortcut: fallback.startStopShortcut
+            startStopShortcut: fallback.startStopShortcut,
+            transcriptionLanguage: fallback.transcriptionLanguage
         )
     }
 }

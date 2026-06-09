@@ -1,7 +1,9 @@
 import Foundation
 import AVFoundation
+import MLX
 import MLXAudioCore
 import MLXAudioSTT
+import MLXAudioVAD
 
 public struct CohereMLXAdapterRequest: Sendable, Equatable {
     /// The durable, user-facing audio asset (`audio.m4a`). The native MLX
@@ -136,6 +138,20 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         defaultModelCacheRoot.appendingPathComponent(LocalModelManager.cacheDirectoryName(for: modelID), isDirectory: true)
     }
 
+    public static var vadModelDirectoryURL: URL {
+        defaultModelCacheRoot.appendingPathComponent(
+            LocalModelManager.cacheDirectoryName(for: LocalModelManifest.sileroVADPinned.modelID),
+            isDirectory: true
+        )
+    }
+
+    public static var languageIDModelDirectoryURL: URL {
+        defaultModelCacheRoot.appendingPathComponent(
+            LocalModelManager.cacheDirectoryName(for: LocalModelManifest.ecapaLanguageIDPinned.modelID),
+            isDirectory: true
+        )
+    }
+
     public static let inferenceSampleRate = 16_000
     public static let inferenceChannelCount = 1
 
@@ -187,7 +203,12 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
             throw CohereMLXBackendError.degenerateOutput(reason: reason)
         }
         let utterances: [EngineResponse.Utterance]
-        if output.segments.isEmpty {
+        if output.segments.isEmpty && output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // VAD found zero speech. Empty utterances routes the worker to
+            // its "no speech detected" failure path instead of writing an
+            // empty transcript.
+            utterances = []
+        } else if output.segments.isEmpty {
             utterances = [EngineResponse.Utterance(
                 speaker: "Speaker A",
                 startSeconds: 0,
@@ -244,7 +265,15 @@ public struct AVAssetAudioDurationReader: CohereMLXAudioDurationReading {
 }
 
 public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
-    public init() {}
+    /// Padding around each VAD speech span. Generous (vs the 30 ms model
+    /// default) so quiet word onsets/tails aren't clipped at chunk edges.
+    static let vadSpeechPadMs = 200
+
+    private let vadModelDirectoryURL: URL
+
+    public init(vadModelDirectoryURL: URL = CohereMLXBackend.vadModelDirectoryURL) {
+        self.vadModelDirectoryURL = vadModelDirectoryURL
+    }
 
     public func transcribe(_ request: CohereMLXAdapterRequest) async throws -> CohereMLXAdapterResponse {
         let (_, audio) = try loadAudioArray(from: request.audioURL, sampleRate: request.inputSampleRate)
@@ -253,12 +282,90 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
             modelDefaults: model.defaultGenerationParameters,
             languageCode: request.languageCode
         )
-        let output = model.generate(audio: audio, generationParameters: parameters)
-        return CohereMLXAdapterResponse(
-            text: output.text,
-            segments: Self.segments(from: output.segments),
-            detectedLanguage: output.language
+
+        // VAD gating: the model deterministically hallucinates filler text
+        // on silent input, so silence must never reach it. If the VAD model
+        // isn't on disk (first run before the aux download lands), fall back
+        // to whole-file generation rather than failing the session.
+        guard let vad = try? SileroVAD.fromModelDirectory(vadModelDirectoryURL) else {
+            Log.engine.warning("NativeCohereMLXAdapter: Silero VAD unavailable at \(self.vadModelDirectoryURL.path, privacy: .public); transcribing without silence gating")
+            let output = model.generate(audio: audio, generationParameters: parameters)
+            return CohereMLXAdapterResponse(
+                text: output.text,
+                segments: Self.segments(from: output.segments),
+                detectedLanguage: output.language
+            )
+        }
+
+        let sampleRate = request.inputSampleRate
+        let timestamps = try vad.getSpeechTimestamps(
+            audio,
+            sampleRate: sampleRate,
+            speechPadMs: Self.vadSpeechPadMs
         )
+        guard !timestamps.isEmpty else {
+            // Empty response; CohereMLXBackend maps it to zero utterances
+            // and the worker's "no speech detected" path takes over.
+            return CohereMLXAdapterResponse(text: "", segments: [], detectedLanguage: nil)
+        }
+
+        let sampleCount = audio.ndim == 1 ? audio.dim(0) : audio.dim(-1)
+        let chunks = SpeechChunkPlanner.plan(
+            spans: timestamps.map { SpeechSpan(start: $0.start, end: $0.end) },
+            sampleCount: sampleCount,
+            sampleRate: sampleRate,
+            maxChunkSeconds: Double(CohereMLXBackend.inferenceChunkDurationSeconds),
+            splitPoint: { Self.lowestEnergySplitPoint(in: audio, searchRange: $0, sampleRate: sampleRate) }
+        )
+
+        var texts: [String] = []
+        var segments: [CohereMLXSegment] = []
+        var detectedLanguage: String?
+        for chunk in chunks {
+            let slice = audio[chunk.startSample ..< chunk.endSample]
+            let output = model.generate(audio: slice, generationParameters: parameters)
+            let text = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            texts.append(text)
+            segments.append(CohereMLXSegment(
+                text: text,
+                startSeconds: chunk.startSeconds(sampleRate: sampleRate),
+                endSeconds: chunk.endSeconds(sampleRate: sampleRate)
+            ))
+            if detectedLanguage == nil { detectedLanguage = output.language }
+        }
+        return CohereMLXAdapterResponse(
+            text: texts.joined(separator: "\n"),
+            segments: segments,
+            detectedLanguage: detectedLanguage
+        )
+    }
+
+    /// Finds the quietest point inside `searchRange` using 100 ms RMS
+    /// windows, so oversized speech spans split mid-pause rather than
+    /// mid-word. Only called for spans exceeding the 30 s cap, so the
+    /// `asArray` materialization is bounded and rare.
+    static func lowestEnergySplitPoint(in audio: MLXArray, searchRange: Range<Int>, sampleRate: Int) -> Int {
+        let window = max(1, sampleRate / 10)
+        guard searchRange.count > window else {
+            return searchRange.lowerBound + searchRange.count / 2
+        }
+        let samples = audio[searchRange.lowerBound ..< searchRange.upperBound].asArray(Float.self)
+        var bestStart = 0
+        var bestEnergy = Float.greatestFiniteMagnitude
+        var index = 0
+        while index + window <= samples.count {
+            var sum: Float = 0
+            for i in index ..< (index + window) {
+                sum += samples[i] * samples[i]
+            }
+            if sum < bestEnergy {
+                bestEnergy = sum
+                bestStart = index
+            }
+            index += window
+        }
+        return searchRange.lowerBound + bestStart + window / 2
     }
 
     /// Builds the generation parameters used at inference time. Exposed as a

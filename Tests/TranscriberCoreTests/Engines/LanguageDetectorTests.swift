@@ -1,11 +1,13 @@
 import XCTest
 import AVFoundation
 @testable import TranscriberCore
+import MLXAudioLID
 
 /// Phase ν: tests cover the detector PROTOCOL surface and the
-/// TranscriptionWorker wire-through. The actual WhisperKit-backed
-/// implementation is deferred to a post-rc1 spike; until then,
-/// `WhisperKitLanguageDetector.detect` is a no-op that returns nil.
+/// TranscriptionWorker wire-through. The production implementation is
+/// `EcapaLanguageDetector` (MLXAudioLID VoxLingua107); model-dependent
+/// behavior is exercised offline only via its failure paths and pure
+/// label parsing.
 final class LanguageDetectorTests: XCTestCase {
     var root: URL!
 
@@ -25,14 +27,52 @@ final class LanguageDetectorTests: XCTestCase {
         XCTAssertNil(result, "Null detector must always return nil")
     }
 
-    func testWhisperKitPlaceholderReturnsNilUntilSpikeIntegrates() async {
-        // Documents the deferral: rc1 ships this as a placeholder.
-        // When the spike replaces the body of detect(from:), this test
-        // becomes a smoke check that english audio resolves to "en".
-        let detector = WhisperKitLanguageDetector()
+    func testEcapaDetectorReturnsNilWhenModelIsMissing() async {
+        // No LID model on disk → detection must degrade to nil (engine
+        // auto-detect), never throw or block.
+        let detector = EcapaLanguageDetector(
+            modelDirectoryURL: root.appendingPathComponent("missing-lid-model"),
+            vadModelDirectoryURL: root.appendingPathComponent("missing-vad-model")
+        )
         let url = root.appendingPathComponent("mic.m4a")
         let result = await detector.detect(from: url)
         XCTAssertNil(result)
+    }
+
+    func testBestSupportedCodePicksFirstCohereSupportedPrediction() {
+        // Real-world case: accented English misdetected as Norwegian.
+        // "no" is not Cohere-supported, so the supported runner-up wins.
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.48),
+            LanguagePrediction(language: "en: English", confidence: 0.31),
+            LanguagePrediction(language: "sv: Swedish", confidence: 0.10),
+        ]
+        XCTAssertEqual(EcapaLanguageDetector.bestSupportedCode(from: predictions), "en")
+    }
+
+    func testBestSupportedCodeRejectsLowConfidence() {
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.50),
+            LanguagePrediction(language: "de: German", confidence: 0.05),
+        ]
+        XCTAssertNil(EcapaLanguageDetector.bestSupportedCode(from: predictions),
+                     "a barely-ranked supported language must not be forced onto the tokenizer")
+    }
+
+    func testBestSupportedCodeWithNoSupportedPredictionsReturnsNil() {
+        let predictions = [
+            LanguagePrediction(language: "no: Norwegian", confidence: 0.60),
+            LanguagePrediction(language: "sv: Swedish", confidence: 0.30),
+        ]
+        XCTAssertNil(EcapaLanguageDetector.bestSupportedCode(from: predictions))
+    }
+
+    func testVoxLinguaLabelParsing() {
+        XCTAssertEqual(EcapaLanguageDetector.languageCode(fromLabel: "pl: Polish"), "pl")
+        XCTAssertEqual(EcapaLanguageDetector.languageCode(fromLabel: "en: English"), "en")
+        XCTAssertEqual(EcapaLanguageDetector.languageCode(fromLabel: "zh: Chinese"), "zh")
+        XCTAssertNil(EcapaLanguageDetector.languageCode(fromLabel: "unknown_42"), "fallback labels must not become language codes")
+        XCTAssertNil(EcapaLanguageDetector.languageCode(fromLabel: ""), "empty label must map to nil")
     }
 
     // MARK: - TranscriptionWorker integration (Phase ν wire-through)

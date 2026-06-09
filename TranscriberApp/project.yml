@@ -44,3 +44,7 @@ targets:
         product: MLXAudioSTT
       - package: mlx-audio-swift
         product: MLXAudioCore
+      - package: mlx-audio-swift
+        product: MLXAudioVAD
+      - package: mlx-audio-swift
+        product: MLXAudioLID

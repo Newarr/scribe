@@ -63,7 +63,15 @@ public enum FailedSessionRetryCoordinator {
             sleep: sleep,
             prepareAudio: { },
             keepRawStreams: keepRawStreams,
-            languageDetector: nil,
+            // Retry inherits the session's detected language via
+            // context.language. When the original attempt failed before
+            // detection ever ran (local sessions only), attach the
+            // detector so the retry doesn't fall back to the forced-"en"
+            // tokenizer default. The worker skips it harmlessly when
+            // mic.m4a is already cleaned up.
+            languageDetector: engineMode == .local && context.language == nil
+                ? EcapaLanguageDetector()
+                : nil,
             retryTerminalFailures: true
         )
     }

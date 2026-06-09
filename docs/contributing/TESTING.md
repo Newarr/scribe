@@ -92,6 +92,27 @@ Cloud mode + Polish call:
 
 If cloud-mode Polish fails AND local-mode Cohere isn't ready yet, this is the gating spike that delays `v1.0.0` until the local engine ships.
 
+### Local-engine pipeline check (`transcribe-cli`)
+
+Dev-only SwiftPM executable that runs the production local path (ECAPA
+language detect → Silero VAD chunk planning → per-chunk Cohere MLX
+generation) on any audio file, without installing the app:
+
+```
+swift build --product transcribe-cli
+# SwiftPM binaries need the MLX metallib bundle next to them; copy it
+# from any Xcode app build's products directory:
+cp -R <DerivedData>/Build/Products/Debug/mlx-swift_Cmlx.bundle .build/debug/
+.build/debug/transcribe-cli ~/Scribe/<session>/audio.m4a        # auto-detect
+.build/debug/transcribe-cli ~/Scribe/<session>/audio.m4a pl     # forced language
+```
+
+Requires the Cohere + silero-vad + ecapa-lid models present under
+`~/Library/Application Support/Scribe/Models/` (the app stages them
+during local-engine setup). Prints detected language, per-chunk
+utterances with real timestamps, and a words-per-minute density figure;
+healthy speech regions land well above 100 wpm.
+
 ## Spike B: AEC quality (`spike_aec_quality`)
 
 Two-speaker call WITHOUT headphones:

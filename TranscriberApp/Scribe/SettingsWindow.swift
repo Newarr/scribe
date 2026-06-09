@@ -236,6 +236,7 @@ final class SettingsFormModel: ObservableObject {
   @Published var launchAtLogin: Bool
   @Published var showInMenuBar: Bool
   @Published var startStopShortcut: KeyboardShortcutSetting
+  @Published var transcriptionLanguage: String?
   @Published var apiKey: String
   @Published var apiKeyEditedFromInitial: Bool = false
   @Published var isSavingCloudAPIKey: Bool = false
@@ -270,6 +271,7 @@ final class SettingsFormModel: ObservableObject {
     self.launchAtLogin = LaunchAtLoginController.isEnabled
     self.showInMenuBar = initial.showInMenuBar
     self.startStopShortcut = initial.startStopShortcut
+    self.transcriptionLanguage = initial.transcriptionLanguage
     self.keychainService = keychainService
     self.keychainAccount = keychainAccount
     self.engineReadiness = engineReadiness
@@ -301,7 +303,8 @@ final class SettingsFormModel: ObservableObject {
       appearanceTheme: appearanceTheme,
       launchAtLogin: launchAtLogin,
       showInMenuBar: showInMenuBar,
-      startStopShortcut: startStopShortcut
+      startStopShortcut: startStopShortcut,
+      transcriptionLanguage: transcriptionLanguage
     )
   }
 
@@ -1091,12 +1094,32 @@ private struct FidelityGeneralPanel: View {
   }
 }
 
+/// Display-name ↔ BCP-47 mapping for the transcription Language dropdown.
+/// Codes must stay within `CohereMLXBackend.supportedLanguageCodes`; the
+/// cloud engine always auto-detects and ignores this setting.
+enum TranscriptionLanguageOption {
+  static let autoLabel = "Auto (detect)"
+  static let named: [(label: String, code: String)] = [
+    ("Arabic", "ar"), ("Chinese", "zh"), ("Dutch", "nl"), ("English", "en"),
+    ("French", "fr"), ("German", "de"), ("Greek", "el"), ("Italian", "it"),
+    ("Japanese", "ja"), ("Korean", "ko"), ("Polish", "pl"), ("Portuguese", "pt"),
+    ("Spanish", "es"), ("Vietnamese", "vi"),
+  ]
+  static var labels: [String] { [autoLabel] + named.map(\.label) }
+  static func code(forLabel label: String) -> String? {
+    named.first { $0.label == label }?.code
+  }
+  static func label(forCode code: String?) -> String {
+    guard let code else { return autoLabel }
+    return named.first { $0.code == code }?.label ?? autoLabel
+  }
+}
+
 private struct FidelityAudioPanel: View {
   @ObservedObject var model: SettingsFormModel
   let onSettingsChange: @MainActor (SessionSettings) async -> Void
   let focusedEngineCard: EngineSettingsCardFocus?
   @State private var inputDevice = "MacBook Pro Microphone"
-  @State private var language = "English (auto-detect dialect)"
   @State private var speakerLabels = true
 
   var body: some View {
@@ -1179,14 +1202,22 @@ private struct FidelityAudioPanel: View {
         }
         FidelityRowDivider()
         FidelityRow(label: "Language") {
-          FidelitySelectLike(
-            selection: $language,
-            options: [
-              "English (auto-detect dialect)", "English — US", "English — UK", "Spanish", "French",
-              "German", "Japanese",
-            ],
-            minWidth: 240
-          )
+          HStack(spacing: 10) {
+            FidelitySelectLike(
+              selection: Binding(
+                get: { TranscriptionLanguageOption.label(forCode: model.transcriptionLanguage) },
+                set: { label in
+                  let code = TranscriptionLanguageOption.code(forLabel: label)
+                  guard model.transcriptionLanguage != code else { return }
+                  model.transcriptionLanguage = code
+                  persistSettings()
+                }
+              ),
+              options: TranscriptionLanguageOption.labels,
+              minWidth: 240
+            )
+            FidelityHelpText("Applies to Cohere (local). ElevenLabs always auto-detects.")
+          }
         }
         FidelityRowDivider()
         FidelityRow(label: "Speaker labels") {
