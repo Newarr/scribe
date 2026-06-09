@@ -1,12 +1,23 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Injectable seam for Cloud API key Keychain persistence.
 /// Tests supply a fake; production code uses `KeychainStore`.
 public protocol KeychainPersisting: Sendable {
     func write(_ value: String) throws
-    func read() throws -> String?
-    func delete() throws
+    func read(allowingUserInteraction: Bool) throws -> String?
+    func delete(allowingUserInteraction: Bool) throws
+}
+
+public extension KeychainPersisting {
+    func read() throws -> String? {
+        try read(allowingUserInteraction: true)
+    }
+
+    func delete() throws {
+        try delete(allowingUserInteraction: true)
+    }
 }
 
 public final class KeychainStore: Sendable, KeychainPersisting {
@@ -52,14 +63,19 @@ public final class KeychainStore: Sendable, KeychainPersisting {
         }
     }
 
-    public func read() throws -> String? {
-        let query: [String: Any] = [
+    public func read(allowingUserInteraction: Bool = true) throws -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        if allowingUserInteraction == false {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
@@ -73,12 +89,17 @@ public final class KeychainStore: Sendable, KeychainPersisting {
         }
     }
 
-    public func delete() throws {
-        let query: [String: Any] = [
+    public func delete(allowingUserInteraction: Bool = true) throws {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+        if allowingUserInteraction == false {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw KeychainError.osStatus(status)

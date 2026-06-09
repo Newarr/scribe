@@ -15,11 +15,12 @@ final class KeychainStoreTests: XCTestCase {
 
         try store.write("super-secret-value")
         XCTAssertEqual(try store.read(), "super-secret-value")
+        XCTAssertEqual(try store.read(allowingUserInteraction: false), "super-secret-value")
 
         try store.write("updated-value")
         XCTAssertEqual(try store.read(), "updated-value")
 
-        try store.delete()
+        try store.delete(allowingUserInteraction: false)
         XCTAssertNil(try store.read())
     }
 }

@@ -35,10 +35,9 @@ cask "scribe" do
   # Keychain wipe in PRIVACY.md / TROUBLESHOOTING.md instead, and use
   # zap's `trash:` for filesystem cleanup only.
   #
-  # Note on identifiers: the bundle ID is `com.szymonsypniewicz.scribe`
-  # (matches the rename), but the Keychain service intentionally keeps
-  # the legacy `com.szymonsypniewicz.transcriber` so a prior Transcriber
-  # build's stored API key survives the rename.
+  # Note on identifiers: the bundle ID and current Keychain service are
+  # `com.szymonsypniewicz.scribe`. Older Transcriber Keychain entries are
+  # migrated silently when macOS permits a noninteractive read.
   zap trash: [
     "~/Library/Logs/Scribe",
     "~/Library/Preferences/com.szymonsypniewicz.scribe.plist",
@@ -47,16 +46,16 @@ cask "scribe" do
 
   # Manual cleanup (not automatable from cask): remove Keychain entries.
   #   security delete-generic-password \\
-  #       -s com.szymonsypniewicz.transcriber \\
+  #       -s com.szymonsypniewicz.scribe \\
   #       -a elevenlabs-api-key
   #   security delete-generic-password \\
-  #       -s com.szymonsypniewicz.transcriber \\
+  #       -s com.szymonsypniewicz.scribe \\
   #       -a diagnostics-instance-id
   # docs/user/PRIVACY.md "How to wipe everything" tracks the full sequence.
   caveats <<~EOS
     Scribe stores two entries in your macOS Keychain (service
-    com.szymonsypniewicz.transcriber, kept stable across the product
-    rename): `elevenlabs-api-key` and `diagnostics-instance-id`.
+    com.szymonsypniewicz.scribe): `elevenlabs-api-key` and
+    `diagnostics-instance-id`.
     `brew uninstall --zap` removes the app's files but cannot delete
     Keychain entries. See docs/user/PRIVACY.md for the manual
     `security delete-generic-password` invocations.

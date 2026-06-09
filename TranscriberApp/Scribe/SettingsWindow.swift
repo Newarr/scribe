@@ -1634,6 +1634,9 @@ final class PermissionsPanelModel: ObservableObject {
   @Published var screenRecordingStatus: PermissionStatus = .notDetermined
   @Published var calendarStatus: PermissionStatus = .notDetermined
   @Published var notificationStatus: PermissionStatus = .notDetermined
+  @Published private(set) var requestingPermissionIDs: Set<String> = []
+  @Published private(set) var calendarRequiresSystemSettings = false
+  @Published private(set) var screenRecordingRestartRequired = false
 
   /// True when every "Required" permission is granted (Mic + Screen
   /// Recording). The onboarding window's Done button gates on this so
@@ -1647,12 +1650,15 @@ final class PermissionsPanelModel: ObservableObject {
   /// where TCC propagation requires a process restart. AppDelegate
   /// owns the relaunch alert; the model just surfaces the signal.
   var onScreenRecordingRestartRequired: (@MainActor () -> Void)?
+  var onPermissionFlowFinished: (@MainActor () -> Void)?
 
   private let permissions: PermissionsService
   private let autoPoll: Bool
   private let debugStatuses: DebugPermissionStatuses?
   private var refreshTimer: Timer?
   private var didBecomeActiveObserver: NSObjectProtocol?
+  private var awaitingExternalPermissionReturn = false
+  private var didOpenScreenRecordingSettings = false
 
   init(
     autoPoll: Bool,
@@ -1699,7 +1705,7 @@ final class PermissionsPanelModel: ObservableObject {
         queue: .main
       ) { [weak self] _ in
         Task { @MainActor [weak self] in
-          await self?.refreshStatuses()
+          await self?.handleApplicationBecameActive()
         }
       }
     }
@@ -1729,36 +1735,113 @@ final class PermissionsPanelModel: ObservableObject {
     async let notif = notificationPermissionStatus()
     microphoneStatus = await mic
     screenRecordingStatus = await screen
-    calendarStatus = await cal
+    applyCalendarStatus(await cal)
     notificationStatus = await notif
-  }
-
-  func requestMicrophone() async {
-    _ = await permissions.requestMicrophone()
-    await refreshStatuses()
-  }
-
-  func requestScreenRecording() async {
-    let granted = await permissions.requestScreenRecording()
-    await refreshStatuses()
-    if granted, screenRecordingStatus == .denied {
-      onScreenRecordingRestartRequired?()
+    if screenRecordingStatus == .granted {
+      screenRecordingRestartRequired = false
+      didOpenScreenRecordingSettings = false
     }
   }
 
+  func isRequesting(_ id: String) -> Bool {
+    requestingPermissionIDs.contains(id)
+  }
+
+  func requestMicrophone() async {
+    await withPermissionRequest("microphone") { [self] in
+      _ = await permissions.requestMicrophone()
+      await refreshStatuses()
+    }
+  }
+
+  func requestScreenRecording() async {
+    await withPermissionRequest("screenRecording") { [self] in
+      awaitingExternalPermissionReturn = true
+      let granted = await permissions.requestScreenRecording()
+      await refreshStatuses()
+      if granted, screenRecordingStatus == .denied {
+        screenRecordingRestartRequired = true
+        onScreenRecordingRestartRequired?()
+      }
+    }
+  }
+
+  func requestScreenRecordingRestart() {
+    onScreenRecordingRestartRequired?()
+  }
+
   func requestCalendar() async {
-    _ = await permissions.requestCalendar()
-    await refreshStatuses()
+    await withPermissionRequest("calendar") { [self] in
+      let before = calendarStatus
+      let status = await permissions.requestCalendar()
+      await refreshStatuses()
+      if before == .notDetermined, status != .granted, calendarStatus == .notDetermined {
+        calendarRequiresSystemSettings = true
+        calendarStatus = .denied
+      }
+    }
   }
 
   func requestNotifications() async {
-    do {
-      let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [
-        .alert, .sound,
-      ])
-      notificationStatus = granted ? .granted : .denied
-    } catch {
-      notificationStatus = .denied
+    await withPermissionRequest("notifications") { [self] in
+      do {
+        let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [
+          .alert, .sound,
+        ])
+        notificationStatus = granted ? .granted : .denied
+      } catch {
+        notificationStatus = .denied
+      }
+    }
+  }
+
+  func openSystemSettings(permissionID: String, pane: String) {
+    if permissionID == "screenRecording" {
+      _ = CGRequestScreenCaptureAccess()
+      didOpenScreenRecordingSettings = true
+      awaitingExternalPermissionReturn = true
+    }
+    if permissionID == "calendar" {
+      calendarRequiresSystemSettings = true
+      awaitingExternalPermissionReturn = true
+    }
+    Self.openSystemSettings(pane)
+  }
+
+  private func withPermissionRequest(_ id: String, operation: @escaping @MainActor () async -> Void) async {
+    requestingPermissionIDs.insert(id)
+    defer {
+      requestingPermissionIDs.remove(id)
+      onPermissionFlowFinished?()
+    }
+    await operation()
+  }
+
+  private func handleApplicationBecameActive() async {
+    let shouldRestore = awaitingExternalPermissionReturn
+    await refreshStatuses()
+    if didOpenScreenRecordingSettings, screenRecordingStatus == .denied {
+      screenRecordingRestartRequired = true
+    }
+    if shouldRestore {
+      awaitingExternalPermissionReturn = false
+      onPermissionFlowFinished?()
+    }
+  }
+
+  private func applyCalendarStatus(_ status: PermissionStatus) {
+    switch status {
+    case .granted, .denied:
+      calendarRequiresSystemSettings = false
+      calendarStatus = status
+    case .notDetermined:
+      calendarStatus = calendarRequiresSystemSettings ? .denied : .notDetermined
+    }
+  }
+
+  private static func openSystemSettings(_ pane: String) {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+      NSWorkspace.shared.open(url)
     }
   }
 
@@ -1795,6 +1878,7 @@ private struct FidelityPermissionsPanel: View {
     renderIntro: Bool = true,
     showsBypassExplainer: Bool = false,
     onScreenRecordingRestartRequired: (@MainActor () -> Void)? = nil,
+    onPermissionRequestFinished: @escaping @MainActor () -> Void = {},
     onRequiredStateChanged: ((Bool) -> Void)? = nil,
     debugStatuses: DebugPermissionStatuses? = nil
   ) {
@@ -1808,6 +1892,7 @@ private struct FidelityPermissionsPanel: View {
       debugStatuses: debugStatuses
     )
     panel.onScreenRecordingRestartRequired = onScreenRecordingRestartRequired
+    panel.onPermissionFlowFinished = onPermissionRequestFinished
     _model = StateObject(wrappedValue: panel)
   }
 
@@ -1832,8 +1917,8 @@ private struct FidelityPermissionsPanel: View {
       ),
       RowSpec(
         id: "screenRecording",
-        title: "Screen Recording",
-        help: "Captures everyone else. No video.",
+        title: "System Audio Recording",
+        help: "Captures audio from the meeting app. No video.",
         statusKey: \.screenRecordingStatus,
         request: { await model.requestScreenRecording() },
         systemPane: "Privacy_ScreenCapture"
@@ -1919,55 +2004,56 @@ private struct FidelityPermissionsPanel: View {
         if index > 0 {
           FidelityRowDivider()
         }
+        let status = model[keyPath: spec.statusKey]
         FidelityPermissionRow(
           title: spec.title,
-          status: model[keyPath: spec.statusKey],
-          help: spec.help,
-          action: rowAction(
-            for: model[keyPath: spec.statusKey],
-            request: spec.request,
-            systemPane: spec.systemPane
-          )
+          status: status,
+          help: rowHelp(for: spec, status: status),
+          action: rowAction(for: spec, status: status)
         )
       }
     }
   }
 
-  private func rowAction(
-    for status: PermissionStatus,
-    request: @escaping @MainActor () async -> Void,
-    systemPane: String
-  ) -> FidelityPermissionAction? {
+  private func rowAction(for spec: RowSpec, status: PermissionStatus) -> FidelityPermissionAction? {
+    if model.isRequesting(spec.id) {
+      return .secondary("Requesting…", isEnabled: false) {}
+    }
+    if spec.id == "screenRecording", model.screenRecordingRestartRequired {
+      return .secondary("Restart Scribe", isEnabled: true) {
+        model.requestScreenRecordingRestart()
+      }
+    }
     switch status {
     case .granted:
       return nil
     case .notDetermined:
-      return .secondary("Allow") {
-        Task { @MainActor in await request() }
+      return .secondary("Allow", isEnabled: true) {
+        Task { @MainActor in await spec.request() }
       }
     case .denied:
       return .systemSettings {
-        Self.openSystemSettings(systemPane)
+        model.openSystemSettings(permissionID: spec.id, pane: spec.systemPane)
       }
     }
   }
 
-  private static func openSystemSettings(_ pane: String) {
-    // Screen Recording quirk: macOS only lists an app in the
-    // "Screen & System Audio Recording" toggle list once it has
-    // called CGRequestScreenCaptureAccess at least once. On a fresh
-    // install or after `tccutil reset` Scribe is missing from the
-    // list entirely — the user opens Settings and there's no row to
-    // flip. Register first so the row exists when Settings opens.
-    // No-op if already granted; returns immediately without a prompt
-    // if previously denied.
-    if pane == "Privacy_ScreenCapture" {
-      _ = CGRequestScreenCaptureAccess()
+  private func rowHelp(for spec: RowSpec, status: PermissionStatus) -> String {
+    if model.isRequesting(spec.id) {
+      return "Waiting for the macOS permission flow to finish."
     }
-    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-      NSWorkspace.shared.open(url)
+    if spec.id == "screenRecording", model.screenRecordingRestartRequired {
+      return "If you turned this on in System Settings and Scribe still says Denied, macOS requires a Scribe restart."
     }
+    if spec.id == "calendar", model.calendarRequiresSystemSettings {
+      return "macOS did not start the Calendar prompt. Open System Settings and grant Scribe full calendar access."
+    }
+    if spec.id == "screenRecording", status == .denied {
+      return "Open Screen & System Audio Recording, turn Scribe on, then return here."
+    }
+    return spec.help
   }
+
 }
 
 private struct FidelityAboutPanel: View {
@@ -2311,14 +2397,23 @@ private struct FidelityStorageStat: View {
 
 private enum FidelityPermissionAction {
   case systemSettings(@MainActor () -> Void)
-  case secondary(String, @MainActor () -> Void)
+  case secondary(String, isEnabled: Bool = true, @MainActor () -> Void)
 
   var title: String {
     switch self {
     case .systemSettings:
       return "Open in System Settings"
-    case .secondary(let title, _):
+    case .secondary(let title, _, _):
       return title
+    }
+  }
+
+  var isEnabled: Bool {
+    switch self {
+    case .systemSettings:
+      return true
+    case .secondary(_, let isEnabled, _):
+      return isEnabled
     }
   }
 
@@ -2329,8 +2424,9 @@ private enum FidelityPermissionAction {
 
   @MainActor
   func callAsFunction() {
+    guard isEnabled else { return }
     switch self {
-    case .systemSettings(let action), .secondary(_, let action):
+    case .systemSettings(let action), .secondary(_, _, let action):
       action()
     }
   }
@@ -2424,6 +2520,8 @@ private struct FidelityPermissionButton: View {
       .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
     .buttonStyle(.plain)
+    .disabled(!action.isEnabled)
+    .opacity(action.isEnabled ? 1 : 0.62)
     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
   }
 

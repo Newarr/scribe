@@ -297,7 +297,7 @@ public enum OnboardingFlowPresenter {
         requiredCaptureReady: Bool
     ) -> OnboardingTestRecordingState {
         guard requiredCaptureReady else {
-            return .init(isEnabled: false, waitingCopy: "Grant Microphone and Screen Recording before the test recording.")
+            return .init(isEnabled: false, waitingCopy: "Grant Microphone and System Audio Recording before the test recording.")
         }
         switch selectedEngine {
         case .cloud:

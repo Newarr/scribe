@@ -311,11 +311,11 @@ private final class ThrowingKeychain: KeychainPersisting, @unchecked Sendable {
         try writeHandler?(value)
     }
 
-    func read() throws -> String? {
+    func read(allowingUserInteraction: Bool = true) throws -> String? {
         try readHandler?()
     }
 
-    func delete() throws {
+    func delete(allowingUserInteraction: Bool = true) throws {
         try deleteHandler?()
     }
 }

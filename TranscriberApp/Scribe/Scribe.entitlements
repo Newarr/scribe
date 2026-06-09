@@ -8,6 +8,12 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
+    <!-- EventKit calendar prompts on macOS require the Calendar personal
+         information entitlement. Without it, requestFullAccessToEvents()
+         returns without showing Scribe in Privacy & Security → Calendars. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+
     <!-- No JIT code generation. We're a Swift / SwiftUI app; no part of
          the runtime requires it. -->
     <key>com.apple.security.cs.allow-jit</key>

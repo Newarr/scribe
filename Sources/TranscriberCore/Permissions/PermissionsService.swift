@@ -41,12 +41,41 @@ public final class PermissionsService: Sendable {
         CGRequestScreenCaptureAccess()
     }
 
+    public func calendarStatus() -> PermissionStatus {
+        Self.currentCalendarStatus()
+    }
+
     public func requestCalendar() async -> PermissionStatus {
+        let before = Self.currentCalendarStatus()
         let store = EKEventStore()
-        return await withCheckedContinuation { continuation in
-            store.requestFullAccessToEvents { granted, _ in
-                continuation.resume(returning: granted ? .granted : .denied)
-            }
+        do {
+            let granted = try await store.requestFullAccessToEvents()
+            Log.permissions.info("Calendar full-access request returned granted=\(granted, privacy: .public)")
+        } catch {
+            Log.permissions.error("Calendar full-access request failed: \(String(describing: error), privacy: .public)")
+        }
+
+        let after = Self.currentCalendarStatus()
+        if before == .notDetermined, after == .notDetermined {
+            Log.permissions.error("Calendar full-access request finished without an authorization status transition")
+        }
+        return after
+    }
+
+    public static func currentCalendarStatus() -> PermissionStatus {
+        mapCalendarAuthorizationStatus(EKEventStore.authorizationStatus(for: .event))
+    }
+
+    public static func mapCalendarAuthorizationStatus(_ status: EKAuthorizationStatus) -> PermissionStatus {
+        switch status {
+        case .fullAccess, .authorized:
+            return .granted
+        case .denied, .restricted, .writeOnly:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        @unknown default:
+            return .notDetermined
         }
     }
 }

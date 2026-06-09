@@ -1,4 +1,3 @@
-import EventKit
 import Foundation
 import UserNotifications
 
@@ -87,10 +86,9 @@ public enum PreflightVerdict: Sendable, Equatable {
 public protocol PermissionStatusProbing: Sendable {
     func microphone() async -> PermissionStatus
     func screenRecording() async -> PermissionStatus
-    /// Returns granted only when the EventKit authorization is full-access.
-    /// Anything else (including legacy `.authorized`) counts as
-    /// `notDetermined` for the doctor; spec calls calendar optional and we
-    /// don't second-guess EventKit's privacy split.
+    /// Returns granted only when EventKit allows Scribe to read events.
+    /// Full access and the legacy `.authorized` value are granted;
+    /// denied, restricted, and write-only are actionable denied states.
     func calendar() async -> PermissionStatus
     func notifications() async -> PermissionStatus
 }
@@ -106,19 +104,7 @@ public struct DefaultPermissionStatusProbe: PermissionStatusProbing {
     public func microphone() async -> PermissionStatus { permissions.microphoneStatus() }
     public func screenRecording() async -> PermissionStatus { await permissions.screenRecordingStatus() }
     public func calendar() async -> PermissionStatus {
-        switch EKEventStore.authorizationStatus(for: .event) {
-        // `.authorized` is the legacy pre-macOS-14 full-access value.
-        // Treat it as granted so users who approved calendar before
-        // upgrading don't see the audit re-prompt them on a permission
-        // they've already granted. `.writeOnly` stays not-granted —
-        // Scribe needs to read events to extract keyterms.
-        case .fullAccess, .authorized: return .granted
-        case .denied, .restricted: return .denied
-        case .notDetermined, .writeOnly:
-            return .notDetermined
-        @unknown default:
-            return .notDetermined
-        }
+        permissions.calendarStatus()
     }
 
     public func notifications() async -> PermissionStatus {
@@ -187,7 +173,7 @@ public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
     }
 
     public func cloudKeyAvailable() async -> Bool {
-        guard let value = (try? keychain.read()) ?? nil else { return false }
+        guard let value = (try? keychain.read(allowingUserInteraction: false)) ?? nil else { return false }
         return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

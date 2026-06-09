@@ -24,3 +24,67 @@ Validation:
 - `xcodebuild -quiet -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Debug -destination 'platform=macOS' build` passed.
 - `swift test --filter 'EndGuardTests|DetectionEngineTests'` passed after the simplify cleanup: 36 tests, 0 failures.
 - `git diff --check` passed.
+
+---
+
+Date: 2026-05-18
+
+Fixed the recording popover clipping shown in the user screenshot.
+
+Summary:
+
+- The SwiftUI popover no longer uses the per-state surface height as an exact height.
+- Existing per-state values now act as minimum heights, so longer recording copy, privacy rows, or footer controls can grow naturally instead of being clipped by the rounded container.
+- Confirmed the light recording snapshot now shows the full `Stop now` button inside the popover.
+
+Validation:
+
+- `xcodebuild -quiet -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Debug -destination 'platform=macOS' build` passed with existing warnings.
+- `SCRIBE_VISUAL_SNAPSHOT_DIR=/tmp/scribe-menu-snapshots .../Scribe.app/Contents/MacOS/Scribe` generated visual snapshots.
+- `git diff --check` passed.
+- Committed only the isolated popover sizing hunk as `c871212 Fix recording popover clipping`; parallel user edits remain uncommitted.
+- `scripts/dev-install.sh --build` initially hit a transient SourcePackages cache error, then succeeded after removing `build/dev`.
+- Replaced `/Applications/Scribe.app`, signed it with `Scribe Dev Signer 2`, verified entitlements, and relaunched Scribe.
+
+---
+
+Date: 2026-05-18
+
+Implemented recoverable permission setup and removed an unexpected Keychain prompt from Settings.
+
+Summary:
+
+- Calendar now uses the real EventKit full-access request path and maps EventKit authorization states through shared permission status logic.
+- Settings and onboarding now restore Scribe after macOS permission prompts and System Settings handoffs.
+- System audio permission copy now uses System Audio Recording language, with restart guidance when macOS requires a relaunch.
+- The dev install signing path now carries the Calendar entitlement and verifies both audio-input and calendars.
+- Settings no longer asks Keychain to show an authorization prompt just to check cloud key readiness.
+
+Validation:
+
+- `swift test` passed earlier for the permission-flow changes.
+- `swift test --filter KeychainStoreTests` passed after the noninteractive Keychain read change.
+- `xcodebuild -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Debug -derivedDataPath ../build/dev build` passed.
+- `git diff --check` passed.
+- Replaced `/Applications/Scribe.app`, signed it with `Scribe Dev Signer 2`, verified entitlements, and relaunched Scribe.
+
+---
+
+Date: 2026-05-18
+
+Migrated Scribe away from the legacy Transcriber Keychain service.
+
+Summary:
+
+- Current API key and diagnostics Keychain entries now use `com.szymonsypniewicz.scribe`.
+- Launch performs a silent best-effort migration from `com.szymonsypniewicz.transcriber` for readable legacy items, then silently deletes the old item when possible.
+- Keychain readiness checks and migration use noninteractive reads/deletes, so opening Settings should not trigger the legacy Keychain password prompt.
+- User docs, cask cleanup notes, and changelog now describe the Scribe Keychain service.
+
+Validation:
+
+- `swift test --filter KeychainStoreTests` passed.
+- `swift test` passed: 454 tests, 1 skipped, 0 failures.
+- `xcodebuild -project TranscriberApp/Scribe.xcodeproj -scheme Scribe -configuration Debug -derivedDataPath ../build/dev build` passed.
+- `git diff --check` passed.
+- Replaced `/Applications/Scribe.app`, signed it with `Scribe Dev Signer 2`, and relaunched Scribe.

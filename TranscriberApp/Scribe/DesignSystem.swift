@@ -703,6 +703,34 @@ enum WindowChromeSharing {
     }
 }
 
+// MARK: - Permission-flow window focus
+
+@MainActor
+enum WindowFrontRestorer {
+    static func bringFront(_ window: NSWindow) {
+        window.level = .floating
+        window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        Task { @MainActor [weak window] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let window, window.isVisible else { return }
+            window.level = .normal
+        }
+    }
+
+    static func restoreAfterPermissionPrompt(_ window: NSWindow?) {
+        guard let window else { return }
+        bringFront(window)
+        Task { @MainActor [weak window] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let window, window.isVisible else { return }
+            bringFront(window)
+        }
+    }
+}
+
 // MARK: - Liquid Glass window chrome
 
 /// Wraps an `NSWindow`'s contents in an `NSVisualEffectView` so the

@@ -136,7 +136,7 @@ Two-speaker call WITHOUT headphones:
 
 - [ ] Run `scripts/release.sh` to substitute `Casks/scribe.rb.template` and publish to your tap.
 - [ ] On a clean Mac, `brew install --cask scribe` succeeds.
-- [ ] `brew uninstall --cask scribe --zap` removes app + Logs + Preferences. Verify Keychain entries (`elevenlabs-api-key`, `diagnostics-instance-id` under service `com.szymonsypniewicz.transcriber`) are NOT removed automatically. Homebrew Cask's zap stanza only deletes filesystem paths. The user wipes Keychain manually via `security delete-generic-password` per `docs/user/PRIVACY.md`.
+- [ ] `brew uninstall --cask scribe --zap` removes app + Logs + Preferences. Verify Keychain entries (`elevenlabs-api-key`, `diagnostics-instance-id` under service `com.szymonsypniewicz.scribe`) are NOT removed automatically. Homebrew Cask's zap stanza only deletes filesystem paths. The user wipes Keychain manually via `security delete-generic-password` per `docs/user/PRIVACY.md`.
 
 ## Final tag
 

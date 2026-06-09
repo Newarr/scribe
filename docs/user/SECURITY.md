@@ -17,12 +17,12 @@ The threat model does NOT include:
 
 ## Keychain policy
 
-Two Keychain entries (service `com.szymonsypniewicz.transcriber`):
+Two Keychain entries (service `com.szymonsypniewicz.scribe`):
 
-- `elevenlabs-api-key` — the cloud-mode API key, written when the user pastes it into Settings → Engine. Read on session start (preflight engine readiness probe) and on every transcription request. Deleted when the user clears the field in Settings.
+- `elevenlabs-api-key` — the cloud-mode API key, written when the user pastes it into Settings → Engine. Checked noninteractively by readiness probes and read on every transcription request. Deleted when the user clears the field in Settings.
 - `diagnostics-instance-id` — a 256-bit random secret (hex-encoded). Generated lazily on first diagnostics export. Used as the HMAC-SHA256 key for `outputRootHash` so two users sharing the same path string get different hashes. Never deleted by the app; users who want to re-randomize must delete via Keychain Access.
 
-Both entries use `KeychainStore` (`Sources/TranscriberCore/Storage/KeychainStore.swift`) which wraps `SecItemAdd / SecItemCopyMatching / SecItemDelete` with a constant `kSecAttrAccessibleAfterFirstUnlock` policy. The entries are not bound to a specific bundle signing identity, so reinstalling the app does not regenerate them.
+Both entries use `KeychainStore` (`Sources/TranscriberCore/Storage/KeychainStore.swift`) which wraps `SecItemAdd / SecItemCopyMatching / SecItemDelete` with a constant `kSecAttrAccessibleAfterFirstUnlock` policy. Legacy Transcriber entries under `com.szymonsypniewicz.transcriber` are migrated silently when macOS permits a noninteractive read. The entries are not bound to a specific bundle signing identity, so reinstalling the app does not regenerate them.
 
 ## Log policy
 

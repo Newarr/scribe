@@ -219,9 +219,14 @@ codesign --force \
 echo "==> Verifying signature"
 codesign --verify --verbose=2 "${TARGET}"
 
-echo "==> Verifying entitlements include audio-input"
-if ! codesign -d --entitlements - "${TARGET}" 2>/dev/null | grep -q "com.apple.security.device.audio-input"; then
+echo "==> Verifying entitlements include audio-input and calendars"
+SIGNED_ENTITLEMENTS="$(codesign -d --entitlements - "${TARGET}" 2>/dev/null)"
+if ! grep -q "com.apple.security.device.audio-input" <<<"${SIGNED_ENTITLEMENTS}"; then
     echo "WARNING: audio-input entitlement missing from signed app." >&2
+    exit 1
+fi
+if ! grep -q "com.apple.security.personal-information.calendars" <<<"${SIGNED_ENTITLEMENTS}"; then
+    echo "WARNING: calendars entitlement missing from signed app." >&2
     exit 1
 fi
 

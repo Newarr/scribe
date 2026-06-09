@@ -50,6 +50,7 @@
 		21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptCoordinator.swift; sourceTree = "<group>"; };
 		223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Geist-OFL.txt"; sourceTree = "<group>"; };
 		24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
+		30394EB942C19977C42FEF94 /* scribe */ = {isa = PBXFileReference; lastKnownFileType = folder; name = scribe; path = ..; sourceTree = SOURCE_ROOT; };
 		3711DECCD9B3CE4D5706D0B9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		45C6B78097708D59228C8C65 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScribeApp.swift; sourceTree = "<group>"; };
@@ -62,7 +63,6 @@
 		AC557FEA1022E74AC7FB2AAB /* JetBrainsMono-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "JetBrainsMono-OFL.txt"; sourceTree = "<group>"; };
 		B90FF9FC3E0075A06756D8E9 /* PermissionRecoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionRecoveryView.swift; sourceTree = "<group>"; };
 		B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedNotificationWindow.swift; sourceTree = "<group>"; };
-		BE4BDF73C0F8C47403E36E4C /* scribe-mission-dc740869 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "scribe-mission-dc740869"; path = ..; sourceTree = SOURCE_ROOT; };
 		D288AA87854E67BA12387175 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		D529955956249F0700BFFD73 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		D8B6D8B78285F246A1264A86 /* GeistMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
@@ -114,7 +114,7 @@
 		999D2C993C91058EBF95E246 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				BE4BDF73C0F8C47403E36E4C /* scribe-mission-dc740869 */,
+				30394EB942C19977C42FEF94 /* scribe */,
 			);
 			name = Packages;
 			sourceTree = "<group>";

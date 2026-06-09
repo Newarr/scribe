@@ -70,7 +70,7 @@ The transcript is the source of truth. Markdown opens in any editor.
 - **No silent fallback.** Local never silently switches to Cloud, and Cloud never silently switches to Local. Engine changes are explicit user actions; failures preserve `audio.m4a` and write a failed transcript.
 - **Local model cache is repairable.** Downloads use `.partial` files, verify pinned artifacts before Local becomes selectable, expose Retry on failure/low disk/corrupt cache, and Remove only deletes model cache files, not sessions.
 - **No telemetry.** The app doesn't phone home. Diagnostics export is local-only and PII-redacted (transcripts, attendees, API keys, full paths all stripped).
-- **Wipe everything**: delete `~/Scribe/`, run `security delete-generic-password -s com.szymonsypniewicz.transcriber -a elevenlabs-api-key`, drag the app to Trash.
+- **Wipe everything**: delete `~/Scribe/`, remove the `elevenlabs-api-key` and `diagnostics-instance-id` Keychain entries under `com.szymonsypniewicz.scribe`, drag the app to Trash.
 
 Full details in [`docs/user/PRIVACY.md`](docs/user/PRIVACY.md).
 

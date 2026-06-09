@@ -9,8 +9,8 @@ Scribe records meeting audio on your Mac and turns it into a Markdown transcript
 - **Transcript** — `transcript.md` per session, with frontmatter (status, engine, language, calendar event title and attendees if granted) and a Markdown body of utterances.
 - **Metadata** — `metadata.json` per session, mirror of the frontmatter for JSON consumers.
 - **Settings** — engine choice, output folder, keep-raw-streams, AEC enable, privacy acknowledgement. Stored in macOS UserDefaults under `transcriber.settings.v1` (key kept stable across the product rename).
-- **Diagnostics instance ID** — a 256-bit random secret used to HMAC-hash your output folder path in diagnostics exports. Stored in macOS Keychain (service `com.szymonsypniewicz.transcriber`, account `diagnostics-instance-id`). Generated once per install; never sent to any external service.
-- **API keys** — if you've configured a cloud-mode API key, it lives in your macOS Keychain (account `elevenlabs-api-key`). Never written to disk in plaintext.
+- **Diagnostics instance ID** — a 256-bit random secret used to HMAC-hash your output folder path in diagnostics exports. Stored in macOS Keychain (service `com.szymonsypniewicz.scribe`, account `diagnostics-instance-id`). Generated once per install; never sent to any external service.
+- **API keys** — if you've configured a cloud-mode API key, it lives in your macOS Keychain (service `com.szymonsypniewicz.scribe`, account `elevenlabs-api-key`). Legacy Transcriber entries are copied to this service only when macOS permits a noninteractive read. Never written to disk in plaintext.
 - **Logs** — `~/Library/Logs/Scribe/` contains lifecycle and engine logs. Per Apple's `os_log` privacy contract, file paths are marked `.private` and never appear in shared logs.
 
 ## What leaves your Mac
@@ -56,7 +56,7 @@ To remove all Scribe data:
 
 1. Quit the app.
 2. Delete `~/Scribe/` (or whichever folder you configured as output).
-3. Open Keychain Access and delete the entries under service `com.szymonsypniewicz.transcriber`. There are two accounts: `elevenlabs-api-key` (your API key, if any) and `diagnostics-instance-id` (the per-install HMAC secret).
+3. Open Keychain Access and delete the entries under service `com.szymonsypniewicz.scribe`. There are two accounts: `elevenlabs-api-key` (your API key, if any) and `diagnostics-instance-id` (the per-install HMAC secret). If you upgraded from a Transcriber-era build, also remove any leftover entries under `com.szymonsypniewicz.transcriber`.
 4. Delete `~/Library/Preferences/com.szymonsypniewicz.scribe.plist`.
 5. Delete `~/Library/Logs/Scribe/`.
 6. Drag the app to the Trash.

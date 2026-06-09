@@ -284,7 +284,7 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: failedLocal, requiredCaptureReady: true).waitingCopy, "Cohere download failed. Retry Local setup before the test recording.")
         XCTAssertEqual(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: unsupportedLocal, requiredCaptureReady: true).waitingCopy, "Cohere local transcription is not supported on this Mac.")
         XCTAssertEqual(OnboardingFlowPresenter.testRecordingState(selectedEngine: .cloud, cloudKeyAvailable: false, localModelStatus: readyLocal, requiredCaptureReady: true).waitingCopy, "Enter an ElevenLabs API key or choose Cohere (local) before the test recording.")
-        XCTAssertEqual(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: readyLocal, requiredCaptureReady: false).waitingCopy, "Grant Microphone and Screen Recording before the test recording.")
+        XCTAssertEqual(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: readyLocal, requiredCaptureReady: false).waitingCopy, "Grant Microphone and System Audio Recording before the test recording.")
 
         XCTAssertTrue(OnboardingFlowPresenter.testRecordingState(selectedEngine: .local, cloudKeyAvailable: false, localModelStatus: readyLocal, requiredCaptureReady: true).isEnabled)
         XCTAssertTrue(OnboardingFlowPresenter.testRecordingState(selectedEngine: .cloud, cloudKeyAvailable: true, localModelStatus: pendingLocal, requiredCaptureReady: true).isEnabled)

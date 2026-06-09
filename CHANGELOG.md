@@ -8,13 +8,14 @@
   (`~/Library/Logs/TranscriberApp/` → `~/Library/Logs/Scribe/`), bundle
   ID (`com.szymonsypniewicz.transcriber` → `com.szymonsypniewicz.scribe`),
   and the brand wordmark SVG all flip to Scribe. The Swift package
-  `TranscriberCore`, the macOS Keychain service id
-  `com.szymonsypniewicz.transcriber`, the `transcriber/v1` schema
-  identifier, and the `transcriber.settings.v1` UserDefaults key stay
-  as-is so existing dev installs don't lose stored API keys or
-  diagnostics instance IDs. Bundle ID change is one-way for any
+  `TranscriberCore`, the `transcriber/v1` schema identifier, and the
+  `transcriber.settings.v1` UserDefaults key stay as-is. Keychain
+  entries now use `com.szymonsypniewicz.scribe`; readable legacy
+  `com.szymonsypniewicz.transcriber` entries are migrated silently so
+  existing API keys and diagnostics instance IDs survive when macOS
+  permits a noninteractive read. Bundle ID change is one-way for any
   installed dev build (UserDefaults plist filename changes; Keychain
-  entries survive).
+  entries migrate when accessible).
 
 ## 1.0.0-rc4 - 2026-04-30
 

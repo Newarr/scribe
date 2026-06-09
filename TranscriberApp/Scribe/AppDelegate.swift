@@ -5,6 +5,30 @@ import ServiceManagement
 import TranscriberCore
 import UserNotifications
 
+@MainActor
+enum ScreenRecordingRelaunchAssist {
+  private static let defaultsKey = "ScreenRecordingPermissionFlowRelaunchAssistArmedAt"
+  private static let maxAge: TimeInterval = 10 * 60
+
+  static func arm(now: Date = Date()) {
+    UserDefaults.standard.set(now.timeIntervalSinceReferenceDate, forKey: defaultsKey)
+  }
+
+  static func disarm() {
+    UserDefaults.standard.removeObject(forKey: defaultsKey)
+  }
+
+  static func isArmed(now: Date = Date()) -> Bool {
+    let armedAt = UserDefaults.standard.double(forKey: defaultsKey)
+    guard armedAt > 0 else { return false }
+    if now.timeIntervalSinceReferenceDate - armedAt <= maxAge {
+      return true
+    }
+    disarm()
+    return false
+  }
+}
+
 /// Codex rc2-audit STATE-2: was @unchecked Sendable + ad-hoc
 /// @MainActor on individual methods, a broader claim than the code
 /// proves. Annotating the WHOLE class with @MainActor makes the
@@ -107,12 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // nonisolated to allow access from `nonisolated static func makeWorker`
   // even with the class @MainActor-annotated.
   //
-  // Rename note (Transcriber → Scribe): the keychain service string
-  // intentionally keeps the original `com.szymonsypniewicz.transcriber`
-  // identifier so existing dev builds don't lose their stored
-  // ElevenLabs API key. Migration would require a fallback-read
-  // pattern, which we're deferring until there's a user-visible win.
-  nonisolated(unsafe) private static let keychainService = "com.szymonsypniewicz.transcriber"
+  // Scribe owns the current Keychain service. Older Transcriber builds
+  // used `com.szymonsypniewicz.transcriber`; launch-time migration copies
+  // readable legacy items here without showing Keychain prompts.
+  nonisolated(unsafe) private static let keychainService = "com.szymonsypniewicz.scribe"
+  nonisolated(unsafe) private static let legacyKeychainService = "com.szymonsypniewicz.transcriber"
   nonisolated(unsafe) private static let keychainAccount = "elevenlabs-api-key"
 
   // Phase η: SwiftUI surfaces for first-run privacy ack, Settings,
@@ -129,10 +152,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let savedNotification = SavedNotificationWindowController()
   private let endCountdownController = EndCountdownWindowController()
 
-  // Rename note (Transcriber to Scribe): kept as `transcriber` so the
-  // diagnostics instance ID stays stable across the rename; see the
-  // keychainService comment above.
-  private static let diagnosticsInstanceService = "com.szymonsypniewicz.transcriber"
+  // Current diagnostics service. Legacy Transcriber values are migrated
+  // silently on launch when macOS allows a noninteractive read.
+  private static let diagnosticsInstanceService = "com.szymonsypniewicz.scribe"
+  private static let legacyDiagnosticsInstanceService = "com.szymonsypniewicz.transcriber"
   private static let diagnosticsInstanceAccount = "diagnostics-instance-id"
   private let diagnosticsInstanceID = DiagnosticsInstanceID(
     service: AppDelegate.diagnosticsInstanceService,
@@ -190,6 +213,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var outputRoot: URL { settings.outputRoot }
   private static let minimumFreeDiskBytes: Int64 = 1_000_000_000
 
+  private static func migrateLegacyKeychainItemsIfNeeded() {
+    migrateLegacyKeychainItem(
+      account: keychainAccount,
+      currentService: keychainService,
+      legacyService: legacyKeychainService,
+      label: "ElevenLabs API key"
+    )
+    migrateLegacyKeychainItem(
+      account: diagnosticsInstanceAccount,
+      currentService: diagnosticsInstanceService,
+      legacyService: legacyDiagnosticsInstanceService,
+      label: "diagnostics instance ID"
+    )
+  }
+
+  private static func migrateLegacyKeychainItem(
+    account: String,
+    currentService: String,
+    legacyService: String,
+    label: String
+  ) {
+    guard currentService != legacyService else { return }
+    let current = KeychainStore(service: currentService, account: account)
+    let legacy = KeychainStore(service: legacyService, account: account)
+
+    do {
+      if let value = try current.read(allowingUserInteraction: false),
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      {
+        return
+      }
+    } catch {
+      Log.lifecycle.info("Skipping \(label, privacy: .public) Keychain migration because the Scribe item is not silently readable")
+      return
+    }
+
+    let legacyValue: String
+    do {
+      guard let value = try legacy.read(allowingUserInteraction: false),
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+      else {
+        return
+      }
+      legacyValue = value
+    } catch {
+      Log.lifecycle.info("Legacy \(label, privacy: .public) Keychain item is not silently readable; leaving it untouched")
+      return
+    }
+
+    do {
+      try current.write(legacyValue)
+      Log.lifecycle.info("Migrated \(label, privacy: .public) Keychain item to the Scribe service")
+      do {
+        try legacy.delete(allowingUserInteraction: false)
+      } catch {
+        Log.lifecycle.info("Migrated \(label, privacy: .public), but could not silently delete the legacy Keychain item")
+      }
+    } catch {
+      Log.lifecycle.error("Failed to migrate \(label, privacy: .public) Keychain item to the Scribe service: \(String(describing: error), privacy: .public)")
+    }
+  }
+
   /// Phase α preflight. Engine mode is read from settings; Local readiness
   /// comes from the app-owned LocalModelManager so removed/failed/unsupported
   /// caches block production recording instead of using placeholder readiness.
@@ -202,6 +287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
+    ScreenRecordingRelaunchAssist.disarm()
+    Self.migrateLegacyKeychainItemsIfNeeded()
     applyAppearanceTheme(settings.appearanceTheme)
     FontRegistration.assertLoaded()
     #if DEBUG
@@ -482,8 +569,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           return OnboardingScreenRecordingRequestResult(
             requestGranted: false, status: .notDetermined)
         }
+        ScreenRecordingRelaunchAssist.arm()
         let requestGranted = await self.permissions.requestScreenRecording()
         let status = await self.permissions.screenRecordingStatus()
+        // Grant visible in-process means no relaunch is needed; leaving
+        // the assist armed would self-relaunch on a Cmd-Q within 10 min.
+        if status == .granted {
+          ScreenRecordingRelaunchAssist.disarm()
+        }
         return OnboardingScreenRecordingRequestResult(
           requestGranted: requestGranted, status: status)
       },
@@ -643,12 +736,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Task { await self.calendarWatcher.stop() }
     let inflight = Array(inflightTasks.values)
     let hasLiveCapture = (session != nil)
+    let relaunchAfterTermination = ScreenRecordingRelaunchAssist.isArmed()
 
     // Codex extensive-review P1.1 fix: a live CaptureSession isn't tracked
     // in inflightTasks, so a Quit during recording previously exited
     // immediately with the SCStream + AVAssetWriter still live, leaving
     // .partial files and no transcript. Finalize the capture first.
-    if !hasLiveCapture && inflight.isEmpty { return .terminateNow }
+    if !hasLiveCapture && inflight.isEmpty {
+      if relaunchAfterTermination {
+        ScreenRecordingRelaunchAssist.disarm()
+        Self.spawnDelayedRelaunch()
+      }
+      return .terminateNow
+    }
 
     // Codex PM-review UX-20: confirm before quitting during
     // recording. The user might have hit Cmd-Q by accident, or
@@ -665,6 +765,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let choice = alert.runModal()
       if choice == .alertSecondButtonReturn {
         Log.lifecycle.info("Quit cancelled by user; recording continues")
+        if relaunchAfterTermination {
+          ScreenRecordingRelaunchAssist.disarm()
+        }
         return .terminateCancel
       }
     }
@@ -697,6 +800,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           await group.next()
           group.cancelAll()
         }
+      }
+      if relaunchAfterTermination {
+        ScreenRecordingRelaunchAssist.disarm()
+        Self.spawnDelayedRelaunch()
       }
       NSApp.reply(toApplicationShouldTerminate: true)
     }
@@ -1147,8 +1254,14 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
           // may still see denied until relaunch. When that
           // happens, polling is futile — surface a restart
           // alert instead of reopening the popover forever.
+          ScreenRecordingRelaunchAssist.arm()
           let requestGrant = await self.permissions.requestScreenRecording()
           let status = await self.permissions.screenRecordingStatus()
+          // Grant visible in-process means no relaunch is needed; leaving
+          // the assist armed would self-relaunch on a Cmd-Q within 10 min.
+          if status == .granted {
+            ScreenRecordingRelaunchAssist.disarm()
+          }
           if requestGrant, status == .denied {
             self.presentScreenRecordingRestartRequiredAlert()
             return
@@ -1194,7 +1307,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
 
     let alert = NSAlert()
     alert.alertStyle = .warning
-    alert.messageText = "Restart Scribe to finish enabling Screen Recording"
+    alert.messageText = "Restart Scribe to finish enabling System Audio Recording"
     alert.informativeText =
       "macOS has approved Screen & System Audio Recording in System Settings, but the running Scribe process can't see the new grant until it relaunches."
     alert.addButton(withTitle: "Quit & Reopen Scribe")
@@ -1216,6 +1329,35 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
   /// need an external spawn so the user doesn't have to manually
   /// reopen Scribe after granting Screen Recording.
   nonisolated static func relaunchAndTerminate() {
+    spawnRelaunchProcess()
+    DispatchQueue.main.async {
+      NSApp.terminate(nil)
+    }
+  }
+
+  /// Spawned on the quit path when the relaunch assist is armed. A GCD
+  /// asyncAfter delay would die with the terminating process before it
+  /// fires, so the delay must live in a detached child: `sh` sleeps,
+  /// then `open`s the bundle after the parent has fully exited. No `-n`
+  /// here — by the time `open` runs the old instance is gone, and if
+  /// macOS's own "Quit & Reopen" TCC flow (or the user) already
+  /// relaunched Scribe, plain `open` activates that instance instead of
+  /// spawning a duplicate.
+  nonisolated static func spawnDelayedRelaunch() {
+    let task = Process()
+    task.launchPath = "/bin/sh"
+    // Bundle path rides in as $0 so paths with spaces/quotes survive.
+    task.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+    do {
+      try task.run()
+    } catch {
+      Log.lifecycle.error(
+        "Delayed relaunch spawn failed: \(String(describing: error), privacy: .public). Quitting without relaunch; user must reopen manually."
+      )
+    }
+  }
+
+  nonisolated private static func spawnRelaunchProcess() {
     let task = Process()
     task.launchPath = "/usr/bin/open"
     task.arguments = ["-n", Bundle.main.bundlePath]
@@ -1225,9 +1367,6 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
       Log.lifecycle.error(
         "Relaunch spawn failed: \(String(describing: error), privacy: .public). Quitting without relaunch; user must reopen manually."
       )
-    }
-    DispatchQueue.main.async {
-      NSApp.terminate(nil)
     }
   }
 
@@ -2359,11 +2498,12 @@ extension AppDelegate {
   /// configured / missing / unreadable distinctly. KeychainStore.read
   /// throws KeychainError.notFound for the missing case and other
   /// errors for locked / denied / transient I/O.
-  nonisolated static func probeCloudKey(keychain: KeychainStore)
-    -> DiagnosticsCollector.CloudKeyState
-  {
+  nonisolated static func probeCloudKey(
+    keychain: KeychainStore,
+    allowingUserInteraction: Bool = false
+  ) -> DiagnosticsCollector.CloudKeyState {
     do {
-      let value = try keychain.read()
+      let value = try keychain.read(allowingUserInteraction: allowingUserInteraction)
       if let value, !value.isEmpty { return .configured }
       return .missing
     } catch {

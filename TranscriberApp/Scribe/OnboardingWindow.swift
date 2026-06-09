@@ -53,9 +53,7 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
 
     override func bringFront() {
         guard let window else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        WindowFrontRestorer.bringFront(window)
     }
 
     override func present() {
@@ -88,6 +86,9 @@ final class OnboardingWindowController: PrivacyAcknowledgementController {
         host.center()
         host.isReleasedWhenClosed = false
         host.sharingType = WindowChromeSharing.confidential
+        viewModel.restoreFrontAfterPermissionPrompt = { [weak host] in
+            WindowFrontRestorer.restoreAfterPermissionPrompt(host)
+        }
         host.contentView = NSHostingView(rootView: OnboardingWindowView(model: viewModel))
         WindowChrome.installGlass(on: host, material: .hudWindow)
         host.makeKeyAndOrderFront(nil)
@@ -120,6 +121,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
     private let saveOutputFolder: @MainActor (URL) async -> Void
     private let runTestRecording: @MainActor () async -> Bool
     private let onFinished: @MainActor () -> Void
+    var restoreFrontAfterPermissionPrompt: (@MainActor () -> Void)?
 
     init(
         flowController: OnboardingFlowController,
@@ -227,6 +229,7 @@ private final class OnboardingWindowViewModel: ObservableObject {
             let result = await requestScreenRecording()
             permissionResult = result.status
             screenRecordingDeferredGrant = result.isDeferredGrantRequiringRelaunch
+            restoreFrontAfterPermissionPrompt?()
             if result.isDeferredGrantRequiringRelaunch == false {
                 holdThenAdvanceIfGranted(result.status)
             }

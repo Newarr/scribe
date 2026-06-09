@@ -536,14 +536,37 @@ private struct RecordingPopoverContent: View {
           .frame(maxWidth: .infinity, alignment: .leading)
         Text(
           model.setupNeedsAttention
-            ? "Open setup to grant missing permissions."
+            ? "Open setup to finish permissions. The setup window will reopen even if you closed it."
             : "Scribe will prompt for meetings, or you can start now."
         )
         .font(DS.Font.bodySmall)
         .foregroundStyle(palette.secondaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
-      if model.recents.isEmpty {
+      if model.setupNeedsAttention {
+        HStack(spacing: 8) {
+          LucideIcon(glyph: .alertTriangle)
+            .frame(width: 13, height: 13)
+            .foregroundStyle(palette.warning)
+          Text("Microphone, System Audio Recording, Calendar, or Notifications may need attention.")
+            .font(DS.Font.monoSmall)
+            .foregroundStyle(palette.metaText)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(palette.controlFill)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(palette.controlStroke, lineWidth: 1)
+        )
+      } else if model.recents.isEmpty {
         EmptyView()
       } else {
         VStack(spacing: 1) {
@@ -570,14 +593,19 @@ private struct RecordingPopoverContent: View {
       }
       HStack(spacing: 8) {
         settingsGear(palette: palette)
-        if model.setupNeedsAttention {
-          Button("Check setup") { onAction(.openSetupRequired) }
-            .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-        }
         Spacer()
-        Button("Record now") { onAction(.record) }
-          .keyboardShortcut("r", modifiers: [.command])
-          .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+        if model.setupNeedsAttention {
+          Button("Record now") { onAction(.record) }
+            .keyboardShortcut("r", modifiers: [.command])
+            .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
+          Button("Open setup") { onAction(.openSetupRequired) }
+            .keyboardShortcut("s", modifiers: [.command])
+            .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+        } else {
+          Button("Record now") { onAction(.record) }
+            .keyboardShortcut("r", modifiers: [.command])
+            .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+        }
       }
     }
     .padding(.horizontal, 16)
