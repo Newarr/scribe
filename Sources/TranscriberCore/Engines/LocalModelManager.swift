@@ -31,6 +31,17 @@ public struct LocalModelManifest: Sendable, Equatable {
         self.requiredFreeBytes = requiredFreeBytes ?? (artifactBytes * 2 + 512 * 1024 * 1024)
     }
 
+    /// Every manifest this app is allowed to download. The downloader and
+    /// manager refuse any modelID outside this set, so a compromised
+    /// settings blob can't redirect downloads to an arbitrary repo.
+    public static var allPinned: [LocalModelManifest] {
+        [cohereTranscribePinned, sileroVADPinned, ecapaLanguageIDPinned]
+    }
+
+    public static func pinned(modelID: String) -> LocalModelManifest? {
+        allPinned.first { $0.modelID == modelID }
+    }
+
     public static let cohereTranscribePinned = LocalModelManifest(
         modelID: CohereMLXBackend.modelID,
         artifacts: [
@@ -73,6 +84,46 @@ public struct LocalModelManifest: Sendable, Equatable {
                 relativePath: "tokenizer_config.json",
                 byteCount: 48_141,
                 sha256Hex: "0dfeb3eeba07bccaa1b4bf78f3135ad3059acf8d18f681675832b285ac0035b0"
+            )
+        ]
+    )
+
+    /// Silero VAD weights for wrapper-side speech gating in the local
+    /// engine (silent stretches are never sent to the Cohere model).
+    /// Loaded via `SileroVAD.fromModelDirectory(_:)`.
+    public static let sileroVADPinned = LocalModelManifest(
+        modelID: "mlx-community/silero-vad",
+        artifacts: [
+            LocalModelArtifact(
+                relativePath: "config.json",
+                byteCount: 549,
+                sha256Hex: "f411ebae77d635372a636645fca4a4bb574b2da73e49b21bfef9685ae90e31bc"
+            ),
+            LocalModelArtifact(
+                relativePath: "model.safetensors",
+                byteCount: 2_179_454,
+                sha256Hex: "185e0bc3ee2c48ce425a37209fe917a1aca22ab6b85799430dd1b4894087a8b8"
+            )
+        ],
+        // Tiny model: skip the (artifacts*2 + 512MB) default headroom rule
+        // so a nearly-full disk doesn't block a 2 MB download.
+        requiredFreeBytes: 64 * 1024 * 1024
+    )
+
+    /// ECAPA-TDNN VoxLingua107 language-identification weights for the
+    /// auto-detect pre-pass. Loaded via `EcapaTdnn.fromModelDirectory(_:)`.
+    public static let ecapaLanguageIDPinned = LocalModelManifest(
+        modelID: "beshkenadze/lang-id-voxlingua107-ecapa-mlx",
+        artifacts: [
+            LocalModelArtifact(
+                relativePath: "config.json",
+                byteCount: 3_024,
+                sha256Hex: "ca968b86e19541847dc7b1e7ca53e2aa5084818edf7def82ac9e407e596fb71f"
+            ),
+            LocalModelArtifact(
+                relativePath: "ecapa_tdnn_lid107.safetensors",
+                byteCount: 85_172_012,
+                sha256Hex: "bae5627c78e942e6ca15af87cbfd582915ead6ae2d8f839ad225504c946ddbc8"
             )
         ]
     )
@@ -160,11 +211,11 @@ public struct HuggingFaceLocalModelDownloader: LocalModelDownloading {
         to partialURL: URL,
         progress: @Sendable @escaping (Int64, Int64?) async -> Void
     ) async throws {
-        guard modelID == CohereMLXBackend.modelID else {
+        guard let manifest = LocalModelManifest.pinned(modelID: modelID) else {
             throw LocalModelManagerError.unpinnedModel(modelID)
         }
-        guard LocalModelManifest.cohereTranscribePinned.artifacts.contains(where: { $0.relativePath == artifact.relativePath }) else {
-            throw LocalModelManagerError.downloadFailed("Unexpected Cohere model artifact requested.")
+        guard manifest.artifacts.contains(where: { $0.relativePath == artifact.relativePath }) else {
+            throw LocalModelManagerError.downloadFailed("Unexpected model artifact requested.")
         }
         let escapedPath = artifact.relativePath.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }.joined(separator: "/")
         let url = baseURL
@@ -272,8 +323,8 @@ public actor LocalModelManager {
         if inFlightDownload != nil {
             return currentStatus
         }
-        guard manifest.modelID == CohereMLXBackend.modelID else {
-            let reason = LocalModelFailure(code: .verificationFailed, message: "Unpinned Cohere model identity is not allowed.")
+        guard LocalModelManifest.pinned(modelID: manifest.modelID) != nil else {
+            let reason = LocalModelFailure(code: .verificationFailed, message: "Unpinned model identity is not allowed.")
             currentStatus = .failed(modelID: manifest.modelID, reason: reason, retryAvailable: false)
             return currentStatus
         }
@@ -456,7 +507,7 @@ private struct LocalModelDownloadWorker {
 
     func run() async -> LocalModelCacheStatus {
         do {
-            guard manifest.modelID == CohereMLXBackend.modelID else {
+            guard LocalModelManifest.pinned(modelID: manifest.modelID) != nil else {
                 throw LocalModelManagerError.unpinnedModel(manifest.modelID)
             }
             guard await runtime.isRuntimeAvailable() else {

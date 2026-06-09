@@ -7,7 +7,8 @@ final class OnboardingFlowTests: XCTestCase {
         let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
         let onboardingWindow = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
 
-        XCTAssertTrue(appDelegate.contains("OnboardingFlowController(downloadStarter: localModelManager)"), "production first-run path must use the app-owned LocalModelManager-backed onboarding controller")
+        XCTAssertTrue(appDelegate.contains("primary: localModelManager"), "production first-run path must use the app-owned LocalModelManager-backed onboarding controller")
+        XCTAssertTrue(appDelegate.contains("CompositeLocalModelDownloadStarter("), "onboarding download seam must also stage the auxiliary VAD/LID models")
         XCTAssertTrue(appDelegate.contains("OnboardingWindowController("), "AppDelegate must present the ordered onboarding window, not only the legacy privacy acknowledgement sheet")
         XCTAssertTrue(appDelegate.contains("makeOnboardingResumeSnapshot"), "production onboarding must resume from real permission/engine/output readiness")
         XCTAssertTrue(onboardingWindow.contains("OnboardingFlowPresenter.resumeStep"), "visible onboarding must use the shared presenter for ordered resume behavior")

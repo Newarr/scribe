@@ -1,4 +1,8 @@
 import Foundation
+import MLX
+import MLXAudioCore
+import MLXAudioLID
+import MLXAudioVAD
 
 /// Spec line 129: Whisper-tiny pre-pass for language identification
 /// before the engine call. Phase ν ships the protocol surface and the
@@ -28,23 +32,83 @@ public struct NullLanguageDetector: LanguageDetector {
     public func detect(from audioURL: URL) async -> String? { nil }
 }
 
-/// Placeholder for the future WhisperKit-backed detector. Currently
-/// returns `nil` (engine auto-detects); replacing this with a real
-/// implementation is a post-rc1 spike (Polish quality validation,
-/// `spike_polish_quality` line 138).
+/// ECAPA-TDNN VoxLingua107 language identification (MLXAudioLID, same
+/// pinned `mlx-audio-swift` package as the Cohere engine). Chosen over
+/// the originally planned WhisperKit detector: no extra dependency, the
+/// 81 MB model rides the existing pinned-SHA `LocalModelManager` download
+/// path, and inference is ~15 ms.
 ///
-/// To wire WhisperKit:
-///   1. Add `WhisperKit` as a Swift Package dependency in Package.swift.
-///   2. Bundle Whisper-tiny (~39 MB) into the app's resources, with a
-///      pinned SHA-256 verified at build time.
-///   3. Replace the body of `detect(from:)` with WhisperKit's
-///      `detectLanguage(audioPath:)` call, taking the first 60 s.
-///   4. Map WhisperKit's BCP-47 output through to the return value.
-public struct WhisperKitLanguageDetector: LanguageDetector {
-    public init() {}
+/// Detection runs on the first ~60 s of SPEECH, not the first 60 s of
+/// file — meetings routinely open with a silent minute, and silence (or
+/// hold music) would dominate a naive window. The Silero VAD locates the
+/// speech onset; when the VAD model isn't on disk the window degrades to
+/// the start of the file.
+///
+/// Every failure path returns `nil`, which the worker treats as "fall
+/// through to engine auto-detect" — detection is an optimization, never
+/// a gate.
+public struct EcapaLanguageDetector: LanguageDetector {
+    static let detectionWindowSeconds = 60
+    static let sampleRate = 16_000
+
+    private let modelDirectoryURL: URL
+    private let vadModelDirectoryURL: URL
+
+    public init(
+        modelDirectoryURL: URL = CohereMLXBackend.languageIDModelDirectoryURL,
+        vadModelDirectoryURL: URL = CohereMLXBackend.vadModelDirectoryURL
+    ) {
+        self.modelDirectoryURL = modelDirectoryURL
+        self.vadModelDirectoryURL = vadModelDirectoryURL
+    }
+
     public func detect(from audioURL: URL) async -> String? {
-        // TODO Phase ν.next: integrate WhisperKit here.
-        Log.engine.info("WhisperKitLanguageDetector: deferred to spike — returning nil for engine auto-detect")
-        return nil
+        guard let model = try? EcapaTdnn.fromModelDirectory(modelDirectoryURL) else {
+            Log.engine.warning("EcapaLanguageDetector: LID model unavailable at \(self.modelDirectoryURL.path, privacy: .public); falling back to engine auto-detect")
+            return nil
+        }
+        guard let (_, audio) = try? loadAudioArray(from: audioURL, sampleRate: Self.sampleRate) else {
+            Log.engine.warning("EcapaLanguageDetector: could not load \(audioURL.lastPathComponent, privacy: .public)")
+            return nil
+        }
+        let sampleCount = audio.ndim == 1 ? audio.dim(0) : audio.dim(-1)
+        guard sampleCount >= Self.sampleRate else {
+            // Under a second of audio — too little signal to outperform
+            // the engine's own fallback.
+            return nil
+        }
+        let window = Self.detectionWindow(
+            audio: audio,
+            sampleCount: sampleCount,
+            vadModelDirectoryURL: vadModelDirectoryURL
+        )
+        let output = model.predict(waveform: window, topK: 3)
+        guard let code = Self.languageCode(fromLabel: output.language) else {
+            Log.engine.warning("EcapaLanguageDetector: unusable label \(output.language, privacy: .public)")
+            return nil
+        }
+        Log.engine.info("EcapaLanguageDetector: detected \(code, privacy: .public) (confidence \(String(format: "%.2f", output.confidence), privacy: .public))")
+        return code
+    }
+
+    /// VoxLingua107 labels are `"pl: Polish"`; the ISO code is the prefix.
+    /// Fallback labels (`"unknown_42"`) contain non-letters and map to nil.
+    static func languageCode(fromLabel label: String) -> String? {
+        guard let raw = label.split(separator: ":").first else { return nil }
+        let code = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !code.isEmpty, code.allSatisfy({ $0.isLetter || $0 == "-" }) else { return nil }
+        return code
+    }
+
+    static func detectionWindow(audio: MLXArray, sampleCount: Int, vadModelDirectoryURL: URL) -> MLXArray {
+        var start = 0
+        if let vad = try? SileroVAD.fromModelDirectory(vadModelDirectoryURL),
+           let firstSpeech = try? vad.getSpeechTimestamps(audio, sampleRate: sampleRate).first {
+            // Keep at least a second of audio after the chosen start so a
+            // speech onset near EOF can't produce an empty window.
+            start = min(firstSpeech.start, max(0, sampleCount - sampleRate))
+        }
+        let end = min(sampleCount, start + detectionWindowSeconds * sampleRate)
+        return audio[start ..< end]
     }
 }

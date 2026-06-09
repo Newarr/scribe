@@ -15,6 +15,7 @@
 		1C89DA0657DF0F920EB76FEE /* SavedNotificationWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */; };
 		2309E1022B0975FCBE460DC9 /* Geist-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = 223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */; };
 		3BCF9C0AD183E210838D5AB7 /* JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = AC557FEA1022E74AC7FB2AAB /* JetBrainsMono-OFL.txt */; };
+		45327FC491943C693F6912E3 /* MLXAudioLID in Frameworks */ = {isa = PBXBuildFile; productRef = 80F163514B45441030EAA488 /* MLXAudioLID */; };
 		4BB9DA8E077059AE6C5E753C /* PromptModalWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0235020A1CE15B8AC39BB991 /* PromptModalWindow.swift */; };
 		4BFDDA76C0E73479FA385BC5 /* JetBrainsMonoVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */; };
 		4EF168E02CA5FD65843B8E55 /* GeistVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A24F32984A71E09395513545 /* GeistVariable.ttf */; };
@@ -23,6 +24,7 @@
 		7BCCA0F4C6CB7120F33561C9 /* OnboardingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */; };
 		8877FAD6AC64AD127C558876 /* InterVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 58A882D385FAA4B8E18A3F86 /* InterVariable.ttf */; };
 		9CD0F558E5365D845331221D /* AppearanceTheme+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */; };
+		A1D740A1FA748F2727660A1A /* MLXAudioVAD in Frameworks */ = {isa = PBXBuildFile; productRef = B3C4C7BA7C9EFEF65BF5C049 /* MLXAudioVAD */; };
 		AC05914D15CD5ED7E54877EB /* InterVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */; };
 		AEAA426E81A7A6BBCAA85455 /* RecordingMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 030D0A67E77F17BEE72A9129 /* RecordingMenu.swift */; };
 		AFE235F52485B1F5D7F52259 /* EndCountdownWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57A418554CCA692B873FA2E4 /* EndCountdownWindow.swift */; };
@@ -79,6 +81,8 @@
 				B223389DD6B7D6F3AF1292C6 /* TranscriberCore in Frameworks */,
 				EAE5D4E4120F7F855B7ADB6D /* MLXAudioSTT in Frameworks */,
 				EB0FA60A0BD3F50F9FACC252 /* MLXAudioCore in Frameworks */,
+				A1D740A1FA748F2727660A1A /* MLXAudioVAD in Frameworks */,
+				45327FC491943C693F6912E3 /* MLXAudioLID in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -172,6 +176,8 @@
 				2EDDA034869C7657525F12C7 /* TranscriberCore */,
 				2F343A2DF12DC4D575CEA724 /* MLXAudioSTT */,
 				BF1DD1FF53036826C2308046 /* MLXAudioCore */,
+				B3C4C7BA7C9EFEF65BF5C049 /* MLXAudioVAD */,
+				80F163514B45441030EAA488 /* MLXAudioLID */,
 			);
 			productName = Scribe;
 			productReference = 11345C81116DC36BA7419B25 /* Scribe.app */;
@@ -475,6 +481,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
 			productName = MLXAudioSTT;
+		};
+		80F163514B45441030EAA488 /* MLXAudioLID */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioLID;
+		};
+		B3C4C7BA7C9EFEF65BF5C049 /* MLXAudioVAD */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A79E7498DC22BE4916B2781B /* XCRemoteSwiftPackageReference "mlx-audio-swift" */;
+			productName = MLXAudioVAD;
 		};
 		BF1DD1FF53036826C2308046 /* MLXAudioCore */ = {
 			isa = XCSwiftPackageProductDependency;

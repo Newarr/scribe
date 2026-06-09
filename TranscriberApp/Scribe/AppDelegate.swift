@@ -37,6 +37,37 @@ enum ScreenRecordingRelaunchAssist {
 /// concurrency enforces that. NSApplicationDelegate callbacks fire
 /// on the main thread by AppKit's contract, so this is also runtime-
 /// correct.
+/// Onboarding's download seam reports the PRIMARY (Cohere) status — that's
+/// what gates local readiness. The aux models (VAD/LID) are staged as a
+/// side effect and degrade gracefully when missing, so their status never
+/// blocks the flow.
+struct CompositeLocalModelDownloadStarter: LocalModelDownloadStarting {
+  let primary: LocalModelManager
+  let auxiliaries: [LocalModelManager]
+
+  @discardableResult
+  func startDownload() async -> LocalModelCacheStatus {
+    stageAuxiliaries()
+    return await primary.startDownload()
+  }
+
+  @discardableResult
+  func retryDownload() async -> LocalModelCacheStatus {
+    stageAuxiliaries()
+    return await primary.retryDownload()
+  }
+
+  private func stageAuxiliaries() {
+    let managers = auxiliaries
+    Task.detached(priority: .utility) {
+      for manager in managers {
+        if await manager.status().isReady { continue }
+        _ = await manager.startDownload()
+      }
+    }
+  }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   private struct QueuedDetectionCandidate {
@@ -195,6 +226,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     downloader: HuggingFaceLocalModelDownloader()
   )
 
+  /// Auxiliary local-engine models: Silero VAD (~2 MB, silence gating) and
+  /// ECAPA VoxLingua107 (~81 MB, language auto-detect). Staged alongside
+  /// the Cohere download; missing aux models degrade gracefully (no VAD
+  /// gating / no detection) instead of blocking local readiness.
+  private lazy var sileroVADModelManager = LocalModelManager(
+    cacheRoot: CohereMLXBackend.defaultModelCacheRoot,
+    manifest: .sileroVADPinned,
+    downloader: HuggingFaceLocalModelDownloader()
+  )
+
+  private lazy var languageIDModelManager = LocalModelManager(
+    cacheRoot: CohereMLXBackend.defaultModelCacheRoot,
+    manifest: .ecapaLanguageIDPinned,
+    downloader: HuggingFaceLocalModelDownloader()
+  )
+
+  /// Fire-and-forget staging of the aux models wherever the Cohere
+  /// download is kicked. Verified models are skipped, so this is cheap to
+  /// call repeatedly; it also backfills users who set up the local engine
+  /// before the aux models existed.
+  private func stageAuxiliaryLocalModels() {
+    let managers = [sileroVADModelManager, languageIDModelManager]
+    Task.detached(priority: .utility) {
+      for manager in managers {
+        let status = await manager.status()
+        if status.isReady { continue }
+        let result = await manager.startDownload()
+        Log.engine.info("Aux local model \(manager.manifest.modelID, privacy: .public) staging finished: \(String(describing: result), privacy: .public)")
+      }
+    }
+  }
+
   private func engineReadinessProbe() -> EngineReadinessProbing {
     let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
     return LocalModelEngineReadinessProbe(
@@ -290,6 +353,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ScreenRecordingRelaunchAssist.disarm()
     Self.migrateLegacyKeychainItemsIfNeeded()
     applyAppearanceTheme(settings.appearanceTheme)
+    // Backfill VAD/LID models for users who completed local-engine setup
+    // before aux models existed. No-op unless local mode is selected.
+    if settings.engineMode == .local {
+      stageAuxiliaryLocalModels()
+    }
     FontRegistration.assertLoaded()
     #if DEBUG
       let visualSnapshotDirectory = ProcessInfo.processInfo.environment[
@@ -467,6 +535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       engineReadiness: engineReadinessProbe(),
       onRetryLocalModel: { [weak self] in
         guard let self else { return .notDownloaded(modelID: CohereMLXBackend.modelID) }
+        self.stageAuxiliaryLocalModels()
         return await self.localModelManager.retryDownload()
       },
       onClearLocalModelCache: { [weak self] in
@@ -518,7 +587,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   @MainActor
   private func presentPrivacyAcknowledgementIfNeeded() {
     guard !settings.privacyAcknowledged else { return }
-    let flowController = OnboardingFlowController(downloadStarter: localModelManager)
+    let flowController = OnboardingFlowController(
+      downloadStarter: CompositeLocalModelDownloadStarter(
+        primary: localModelManager,
+        auxiliaries: [sileroVADModelManager, languageIDModelManager]
+      ))
     self.onboardingFlowController = flowController
     let controller = OnboardingWindowController(
       flowController: flowController,
@@ -2674,10 +2747,12 @@ extension AppDelegate {
     // additional pre-upload preparation.
     let prepareAudio: @Sendable () async throws -> Void = { /* no-op */  }
 
-    // Phase ν: WhisperKitLanguageDetector is a placeholder until the
-    // spike integrates the model. It returns nil today (engine
-    // auto-detects); the architectural seam is here so swapping in
-    // the real WhisperKit-backed detector is a one-line change.
+    // Phase ν landed as ECAPA VoxLingua107 (MLXAudioLID) instead of the
+    // originally planned WhisperKit. Local engine only: the Cohere
+    // tokenizer needs an explicit language token (its nil-fallback to
+    // "en" is the gibberish bug), while ElevenLabs auto-detects best
+    // when left alone. An explicit Settings language short-circuits the
+    // detector inside the worker.
     return TranscriptionWorker(
       directory: dir,
       context: context,
@@ -2687,7 +2762,7 @@ extension AppDelegate {
       policy: .cloud,
       prepareAudio: prepareAudio,
       keepRawStreams: keepRawStreams,
-      languageDetector: WhisperKitLanguageDetector()
+      languageDetector: engineMode == .local ? EcapaLanguageDetector() : nil
     )
   }
 
