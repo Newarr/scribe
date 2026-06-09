@@ -655,12 +655,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let outputRoot = snap.outputRoot
     let keepRaw = snap.keepRawStreams
     let mode = snap.engineMode
+    let language = snap.transcriptionLanguage
     let resumeId = UUID()
     let resumeTask = Task { [weak self] in
       let result = await Self.runSupervisor(
         under: outputRoot,
         keepRawStreams: keepRaw,
         engineMode: mode,
+        transcriptionLanguage: language,
         localModelStatus: { [weak self] in
           guard let manager = await MainActor.run(body: { self?.localModelManager }) else {
             return .notDownloaded(modelID: CohereMLXBackend.modelID)
@@ -2190,7 +2192,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
 
     let worker = Self.makeWorker(
       dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams,
-      engineMode: sessionEngineMode)
+      engineMode: sessionEngineMode, transcriptionLanguage: settings.transcriptionLanguage)
     // Source-order guard: reevaluateQueuedDetectionCandidateAfterStop() runs after worker creation below.
     let id = UUID()
     let durationSeconds = Int(endedAt.timeIntervalSince(started))
@@ -2617,6 +2619,7 @@ extension AppDelegate {
     event: CalendarEvent?,
     keepRawStreams: Bool = false,
     engineMode: EngineMode = .cloud,
+    transcriptionLanguage: String? = nil,
     engineOverride: TranscriptionEngine? = nil
   ) -> TranscriptionWorker {
     // Pre-AEC default: single-channel diarized (slice 2 path).
@@ -2648,10 +2651,14 @@ extension AppDelegate {
         cloudAPIKey: { (try? keychain.read()) ?? "" }
       )
     let keyterms = event?.keyterms ?? []
+    // The Settings language governs the LOCAL engine only: a non-nil
+    // languageCode short-circuits the worker's language detector and is
+    // forced onto the Cohere tokenizer. ElevenLabs auto-detects, so the
+    // cloud path always passes nil regardless of the setting.
     let request = EngineRequest(
       audioURL: canonicalAudioURL,
       mode: .singleChannelDiarized(numSpeakers: 2),
-      languageCode: nil,
+      languageCode: engineMode == .local ? transcriptionLanguage : nil,
       keyterms: keyterms,
       modelID: engineMode == .local ? CohereMLXBackend.modelID : "scribe_v2"
     )
@@ -2689,6 +2696,7 @@ extension AppDelegate {
     under root: URL,
     keepRawStreams: Bool = false,
     engineMode: EngineMode = .cloud,
+    transcriptionLanguage: String? = nil,
     workerFactory overrideWorkerFactory: SessionSupervisor.WorkerFactory? = nil,
     engineFactory: (@Sendable (EngineMode) -> TranscriptionEngine)? = nil,
     localModelStatus: (@Sendable () async -> LocalModelCacheStatus)? = nil
@@ -2751,6 +2759,7 @@ extension AppDelegate {
           event: nil,
           keepRawStreams: keepRawStreams,
           engineMode: persistedEngineMode,
+          transcriptionLanguage: transcriptionLanguage,
           engineOverride: engineFactory?(persistedEngineMode)
         )
       }

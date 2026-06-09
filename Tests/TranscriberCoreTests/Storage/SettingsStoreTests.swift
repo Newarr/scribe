@@ -46,6 +46,26 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.launchAtLogin, false)
         XCTAssertEqual(snap.showInMenuBar, true)
         XCTAssertEqual(snap.startStopShortcut, .defaultStartStop)
+        XCTAssertNil(snap.transcriptionLanguage, "default language is Auto (nil)")
+    }
+
+    func testTranscriptionLanguageIsRoundTrippedAndClearable() async throws {
+        let suite = try makeSuite()
+        let root = tempDir()
+        let store = SettingsStore(
+            defaults: suite.box,
+            fallback: .init(outputRoot: root)
+        )
+
+        await store.setTranscriptionLanguage("pl")
+        let forced = await store.snapshot()
+        XCTAssertEqual(forced.transcriptionLanguage, "pl")
+
+        // Back to Auto: nil must overwrite the stored code, not be
+        // dropped by the encoder.
+        await store.setTranscriptionLanguage(nil)
+        let auto = await store.snapshot()
+        XCTAssertNil(auto.transcriptionLanguage)
     }
 
     func testPrivacyAckIsRoundTripped() async throws {
@@ -119,6 +139,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.launchAtLogin, false, "older blobs missing launchAtLogin should not opt users in")
         XCTAssertEqual(snap.showInMenuBar, true, "older blobs missing showInMenuBar should keep the app accessible")
         XCTAssertEqual(snap.startStopShortcut, .defaultStartStop)
+        XCTAssertNil(snap.transcriptionLanguage, "older blobs missing transcriptionLanguage should stay on Auto")
         XCTAssertEqual(snap.engineMode, .cloud, "non-missing fields must still decode normally")
     }
 
