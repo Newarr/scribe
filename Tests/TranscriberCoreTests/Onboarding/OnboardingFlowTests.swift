@@ -4,8 +4,8 @@ import XCTest
 final class OnboardingFlowTests: XCTestCase {
 
     func testProductionFirstRunPathInstantiatesOnboardingFlowControllerAndPresenter() throws {
-        let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        let onboardingWindow = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
+        let onboardingWindow = try CombinedAppSources.appSource("OnboardingWindow.swift")
 
         XCTAssertTrue(appDelegate.contains("primary: localModelManager"), "production first-run path must use the app-owned LocalModelManager-backed onboarding controller")
         XCTAssertTrue(appDelegate.contains("CompositeLocalModelDownloadStarter("), "onboarding download seam must also stage the auxiliary VAD/LID models")
@@ -21,7 +21,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testAppDelegateOnboardingTestRecordingUsesScopedPrivacyBypassAndNormalRecordNowKeepsGuard() throws {
-        let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let testRange = appDelegate.range(of: "private func runOnboardingTestRecording() async -> Bool") else {
             return XCTFail("AppDelegate must expose the actual onboarding Test Recording closure target")
@@ -32,7 +32,7 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(testBody.contains("await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)"), "ready onboarding Test Recording must use the consented onboarding seam before final privacyAcknowledged is written")
         XCTAssertFalse(testBody.contains("await self.startRecording()"), "onboarding Test Recording must not call normal privacy-gated Record Now and return before capture")
 
-        guard let startRange = appDelegate.range(of: "private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
+        guard let startRange = appDelegate.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
             return XCTFail("AppDelegate must keep a scoped startRecording privacy parameter defaulted to normal Record Now behavior")
         }
         let startBody = String(appDelegate[startRange.lowerBound..<appDelegate.index(startRange.lowerBound, offsetBy: min(1600, appDelegate.distance(from: startRange.lowerBound, to: appDelegate.endIndex)))])
@@ -400,7 +400,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testOnboardingWindowSourceHasSecureFieldForElevenLabsKey() throws {
-        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("OnboardingWindow.swift")
         XCTAssertTrue(
             source.contains("SecureField"),
             "OnboardingWindow must use a SecureField for ElevenLabs key entry"
@@ -420,7 +420,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testOnboardingWindowSkipRoutesToLocalEngine() throws {
-        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("OnboardingWindow.swift")
         // Skip must route to local engine selection, not just advance blindly.
         XCTAssertTrue(
             source.contains("selectEngine(.local)"),
@@ -429,7 +429,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testOnboardingWindowSaveKeyPathDoesNotAdvanceOnFailure() throws {
-        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("OnboardingWindow.swift")
         XCTAssertTrue(
             source.contains("apiKeySaveError ="),
             "OnboardingWindow must set apiKeySaveError and not advance when Keychain save fails"
@@ -437,7 +437,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testAppDelegateWiresSaveCloudAPIKeyClosureToKeychain() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
         XCTAssertTrue(
             source.contains("saveCloudAPIKey:"),
             "AppDelegate must wire saveCloudAPIKey to OnboardingWindowController init"
@@ -572,7 +572,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testOnboardingWindowSourceSurfacesAccessibleDeferredScreenRecordingGuidance() throws {
-        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("OnboardingWindow.swift")
         XCTAssertTrue(source.contains("screenRecordingDeferredGrant"), "Onboarding must retain a deferred Screen Recording grant state")
         XCTAssertTrue(source.contains("OnboardingScreenRecordingRequestResult"), "Onboarding request seam must preserve requestGranted plus post-request status")
         XCTAssertTrue(source.contains("deferredScreenRecordingGuidance"), "Onboarding must render explicit deferred relaunch guidance")
@@ -583,7 +583,7 @@ final class OnboardingFlowTests: XCTestCase {
     }
 
     func testOnboardingWindowSourcePreservesRecordOnlyCopyBoundaries() throws {
-        let source = try String(contentsOfFile: appSourcePath("OnboardingWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("OnboardingWindow.swift")
         XCTAssertTrue(source.contains("records mic + system audio"))
         XCTAssertTrue(source.contains("durable Markdown transcripts next to saved audio"))
 
@@ -607,77 +607,11 @@ final class OnboardingFlowTests: XCTestCase {
 
 
     func testInstalledVisualSnapshotsCoverKeyEntryAndSkipToLocalPath() throws {
-        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SettingsWindow.swift")
         XCTAssertTrue(source.contains("onboarding-elevenlabs-key-entry-light"), "visual snapshot set must include the ElevenLabs key-entry step")
         XCTAssertTrue(source.contains("onboarding-skip-to-local-readiness-light"), "visual snapshot set must include the Skip-to-Local path")
         XCTAssertTrue(source.contains("Paste ElevenLabs API key…"), "key-entry snapshot must show the secure empty key field placeholder")
         XCTAssertTrue(source.contains("Continue with Local"), "skip path snapshot must expose the Local continuation")
-    }
-
-    private func appSourcePath(_ file: String) -> String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
-            .deletingLastPathComponent() // Onboarding
-            .deletingLastPathComponent() // TranscriberCoreTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // repo root
-        let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
-        if file == "AppDelegate.swift",
-           let combined = Self.combinedAppDelegateSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        if file == "SettingsWindow.swift",
-           let combined = Self.combinedSettingsWindowSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        return scribeDir.appendingPathComponent(file).path
-    }
-
-    /// AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
-    /// extension files. Source guards treat them as one logical source, so the
-    /// split files are concatenated into a temp file read like the original
-    /// single file.
-    private static func combinedAppDelegateSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: scribeDir.path) else { return nil }
-        let parts = ["AppDelegate.swift"]
-            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-appdelegate-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
-
-    /// SettingsWindow is split across files under Settings/. Source guards treat
-    /// them as one logical source, so the split files are concatenated in the
-    /// original file's layout order (declarations before their call sites) into
-    /// a temp file read like the original single file.
-    private static func combinedSettingsWindowSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        let settingsDir = scribeDir.appendingPathComponent("Settings")
-        guard let names = try? fm.contentsOfDirectory(atPath: settingsDir.path) else { return nil }
-        let layoutOrder = [
-            "SettingsWindowController.swift", "SettingsFormModel.swift", "SettingsForm.swift",
-            "FidelityChrome.swift", "ShortcutCapture.swift", "GeneralPanel.swift",
-            "AudioPanel.swift", "ShortcutsPanel.swift", "VaultPanel.swift",
-            "PrivacyPanel.swift", "PermissionsPanel.swift", "AboutPanel.swift",
-            "FidelityComponents.swift", "PermissionsOnboardingWindow.swift",
-            "InstalledAppSmokeSettingsFrame.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-settingswindow-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
     }
 
 }

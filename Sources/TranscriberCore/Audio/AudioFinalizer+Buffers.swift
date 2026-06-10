@@ -2,63 +2,6 @@ import AVFoundation
 import Foundation
 
 extension AudioFinalizer {
-  static func aacMonoSettings(sampleRate: Double) -> [String: Any] {
-    var settings: [String: Any] = [:]
-    settings[AVFormatIDKey] = kAudioFormatMPEG4AAC
-    settings[AVNumberOfChannelsKey] = 1
-    settings[AVSampleRateKey] = sampleRate
-    settings[AVEncoderBitRateKey] = 64_000
-    return settings
-  }
-
-  private static func readAllSamples(
-    from url: URL, target: AVAudioFormat, chunkFrames: AVAudioFrameCount
-  ) throws -> [Float] {
-    let file = try AVAudioFile(forReading: url)
-    let reader = try StreamReader(file: file, target: target, chunkFrames: chunkFrames)
-    let chunk = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: chunkFrames)!
-    var samples: [Float] = []
-    while !reader.isExhausted {
-      let frames = try reader.produce(into: chunk, target: chunkFrames)
-      if frames == 0 { break }
-      let ptr = chunk.floatChannelData![0]
-      samples.append(contentsOf: UnsafeBufferPointer(start: ptr, count: Int(frames)))
-    }
-    return samples
-  }
-
-  private static func mix(
-    samples: [Float], segments: [TimelineSegment], into out: UnsafeMutablePointer<Float>,
-    activeCounts: inout [UInt8], peakLimit: Float
-  ) {
-    var cursor = 0
-    let invSqrt2 = Float(1.0 / 2.0.squareRoot())
-    for segment in segments {
-      let take = min(segment.frameCount, max(0, samples.count - cursor))
-      guard take > 0 else { break }
-      for i in 0..<take {
-        let target = segment.startFrame + i
-        guard target >= 0 && target < activeCounts.count else { continue }
-        let value = samples[cursor + i]
-        if activeCounts[target] == 0 {
-          out[target] = value
-        } else {
-          out[target] = (out[target] + value) * invSqrt2
-        }
-        activeCounts[target] = min(activeCounts[target] + 1, 2)
-        out[target] = max(-peakLimit, min(peakLimit, out[target]))
-      }
-      cursor += take
-    }
-  }
-
-  private static func writeBuffer(_ buffer: AVAudioPCMBuffer, to url: URL, settings: [String: Any])
-    throws
-  {
-    let file = try AVAudioFile(forWriting: url, settings: settings)
-    try file.write(from: buffer)
-  }
-
   /// The PCM format never changes within a finalize pass; build the
   /// CoreMedia description once per pass instead of once per chunk
   /// (~36k creations per hour of audio at 100 ms chunks).

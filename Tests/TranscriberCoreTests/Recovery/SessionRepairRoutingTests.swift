@@ -147,7 +147,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
 
     func testVisiblePreflightDenialUsesExactReportForSetupFocusBeforeShowingPopover() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("showSetupRequiredPopover(report: report, sessionRepairPayload: nil)"), "direct preflight denial must pass the exact denial report to the shared setup popover presenter")
         XCTAssertTrue(source.contains("setupRequiredEngineFocus(report: report, sessionRepairPayload:"), "shared presenter must derive setup focus from the current report/payload")
@@ -164,7 +164,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testVisibleMeetingPromptStartSharesManualPreflightFocusRouting() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let promptRange = source.range(of: "private func presentStartPrompt") else {
             return XCTFail("meeting detection prompt handler must exist")
@@ -172,7 +172,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(promptBody.contains("await startRecording()"), "meeting prompt Start Recording must enter the same startRecording preflight denial path as manual Record Now")
 
-        guard let startRange = source.range(of: "private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
+        guard let startRange = source.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
             return XCTFail("startRecording must exist")
         }
         let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(5200, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
@@ -195,7 +195,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testVisibleAppDelegateSetupPopoverPrioritizesSessionRepairPayloadBeforeCurrentSettingsAudit() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let range = source.range(of: "func presentSetupRequiredPopover() async") else {
             return XCTFail("presentSetupRequiredPopover must exist")
@@ -216,7 +216,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testVisibleRecordingMenuRepairActionDispatchesThroughAppRouteInsteadOfFinder() throws {
-        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("RecordingMenu.swift")
 
         XCTAssertTrue(source.contains("case repairRecentFailedSession(URL)"), "RecordingMenu must expose a visible repair action routed to AppDelegate")
         XCTAssertTrue(source.contains("onRepair"), "MenuRow must receive a repair dispatcher instead of handling repair locally")
@@ -236,7 +236,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
 
     func testRecordingMenuActiveLocalPrivacyBlockAndSnapshotStableEngineCopy() throws {
-        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("RecordingMenu.swift")
 
         XCTAssertTrue(source.contains("Audio: local"), "active privacy block must name local audio storage")
         XCTAssertTrue(source.contains("Captured: mic + system audio · no video, no screenshots"), "active privacy block must state captured sources and exclusions")
@@ -259,21 +259,21 @@ final class SessionRepairRoutingTests: XCTestCase {
 
 
     func testPromptStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
         XCTAssertTrue(source.contains("var pendingPromptCalendarEventForStart: CalendarEvent?"))
         XCTAssertTrue(source.contains("pendingPromptCalendarEventForStart = event"))
         XCTAssertTrue(source.contains("let promptedEvent = pendingPromptCalendarEventForStart"), "prompt Start Recording must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
     }
 
     func testPendingPromptRecoveryUsesLateJoinCopyAndAppleCalendarSource() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
         XCTAssertTrue(source.contains("Self.promptRecoveryTitle(for: app, event: event)"))
         XCTAssertTrue(source.contains("Recording will capture from now onward."))
         XCTAssertTrue(source.contains("From Apple Calendar · \\(app.displayName)."))
     }
 
     func testAppDelegatePassesSessionEngineSnapshotToMenuAndSavedNotification() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("currentSessionEngineMode"), "AppDelegate must snapshot session engine at start")
         XCTAssertTrue(source.contains("menu?.sessionEngineMode = sessionEngineMode"), "active menu must be labelled from session snapshot")
@@ -283,8 +283,8 @@ final class SessionRepairRoutingTests: XCTestCase {
 
 
     func testSavedNotificationTitleSuffixAndVisiblePanelRefreshWiring() throws {
-        let appSource = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        let notificationSource = try String(contentsOfFile: appSourcePath("SavedNotificationWindow.swift"), encoding: .utf8)
+        let appSource = try CombinedAppSources.appSource("AppDelegate.swift")
+        let notificationSource = try CombinedAppSources.appSource("SavedNotificationWindow.swift")
 
         XCTAssertTrue(appSource.contains(#"title: "\(title) · transcript saved""#), "saved notification payload title must include transcript saved suffix")
         XCTAssertTrue(appSource.contains("let engineLabel = sessionEngineMode.displayName"), "Local saved notification body must use the canonical engine display name")
@@ -294,7 +294,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testRetrySuccessResetsAppAndMenuToIdle() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let retryRange = source.range(of: "func retryFailedSession(at sessionURL: URL) async") else {
             return XCTFail("AppDelegate must keep failed-session retry routed through a visible state transition")
@@ -307,7 +307,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testSavedNotificationUsesCanonicalAudioAndExistingArtifacts() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("FileManager.default.fileExists(atPath: dir.transcript.path)"), "Saved notification must be suppressed until durable transcript exists.")
         XCTAssertTrue(source.contains("audioByteSize(at: dir.audioFinal)"), "Saved notification size must prefer canonical audio.m4a.")
@@ -323,7 +323,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testSavedNotificationActionsAreKeyboardAndVoiceOverReachable() throws {
-        let source = try String(contentsOfFile: appSourcePath("SavedNotificationWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SavedNotificationWindow.swift")
 
         XCTAssertTrue(source.contains("accessibilityLabel(\"Open saved recording folder\")"), "Open Folder action must have a meaningful VoiceOver label.")
         XCTAssertTrue(source.contains("accessibilityLabel(\"Open saved transcript\")"), "Open Transcript action must have a meaningful VoiceOver label.")
@@ -336,7 +336,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let files = ["RecordingMenu.swift", "AppDelegate.swift", "PermissionRecoveryView.swift", "SettingsWindow.swift", "DiagnosticsView.swift", "SavedNotificationWindow.swift"]
         let forbidden = ["local binary", "rust binary", "missing local binary", "Whisper-tiny", "cohere_transcribe_rs"]
         for file in files {
-            let source = try String(contentsOfFile: appSourcePath(file), encoding: .utf8)
+            let source = try CombinedAppSources.appSource(file)
             for term in forbidden {
                 XCTAssertFalse(source.localizedCaseInsensitiveContains(term), "stale Local setup copy '\(term)' leaked into \(file)")
             }
@@ -347,7 +347,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let files = ["RecordingMenu.swift", "AppDelegate.swift", "SettingsWindow.swift", "SavedNotificationWindow.swift"]
         let forbidden = ["Import audio", "Live transcript", "Transcript history", "Summarize", "Summaries", "Chat with", "Vector database", "Search transcripts", "Polish transcript"]
         for file in files {
-            let source = try String(contentsOfFile: appSourcePath(file), encoding: .utf8)
+            let source = try CombinedAppSources.appSource(file)
             for term in forbidden {
                 XCTAssertFalse(source.localizedCaseInsensitiveContains(term), "prohibited product surface '\(term)' appeared in \(file)")
             }
@@ -364,13 +364,13 @@ final class SessionRepairRoutingTests: XCTestCase {
             ("SettingsWindow.swift", "WindowChromeSharing.confidential")
         ]
         for (file, marker) in expected {
-            let source = try String(contentsOfFile: appSourcePath(file), encoding: .utf8)
+            let source = try CombinedAppSources.appSource(file)
             XCTAssertTrue(source.contains(marker), "\(file) must keep Scribe-owned windows confidential")
         }
     }
 
     func testEndedCallsInvalidatePendingPromptBeforeStaleActionsCanStartRecording() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
@@ -398,7 +398,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testEndedCurrentRecordingRoutesToEndGuardStopPrompt() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
         XCTAssertTrue(source.contains("var endGuard: EndGuard?"), "AppDelegate must own the recording end guard")
         XCTAssertTrue(source.contains("let endCountdownController = EndCountdownWindowController()"), "AppDelegate must own the stop-prompt HUD")
         XCTAssertTrue(source.contains("await endGuard?.suspectCallEnded(at: Date())"), "ended-call recognition during recording must enter the stop-prompt flow")
@@ -409,14 +409,14 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testMenuEndPromptActionsCarryGeneration() throws {
-        let menuSource = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+        let menuSource = try CombinedAppSources.appSource("RecordingMenu.swift")
         XCTAssertTrue(menuSource.contains("let generation: Int"), "menu prompt model must retain the prompt generation")
         XCTAssertTrue(menuSource.contains("case endPromptKeepRecording(generation: Int)"), "Keep Recording menu actions must be prompt-scoped")
         XCTAssertTrue(menuSource.contains("case endPromptStopNow(generation: Int)"), "Stop Now menu actions must be prompt-scoped")
         XCTAssertTrue(menuSource.contains("onAction(.endPromptKeepRecording(generation: endPrompt.generation))"), "menu Keep Recording must send the captured generation")
         XCTAssertTrue(menuSource.contains("onAction(.endPromptStopNow(generation: endPrompt.generation))"), "menu Stop Now must send the captured generation")
 
-        let appSource = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let appSource = try CombinedAppSources.appSource("AppDelegate.swift")
         guard let keepRange = appSource.range(of: "case .endPromptKeepRecording(let generation):"),
               let stopRange = appSource.range(of: "case .endPromptStopNow(let generation):") else {
             return XCTFail("AppDelegate must route prompt-scoped menu actions")
@@ -426,7 +426,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testPromptStartClearsRecoveryAndUsesExactlyOneManualStartRoute() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let promptRange = source.range(of: "private func presentStartPrompt") else {
             return XCTFail("prompt Start Recording handler must be factored for source-inspection")
@@ -438,7 +438,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(promptBody.contains("detectionPromptActive = false"), "explicit prompt resolution must clear Meeting detected trust state before recording starts")
         XCTAssertTrue(promptBody.contains("menu?.pendingPrompt = nil"), "explicit prompt resolution must clear stale menu recovery actions")
 
-        guard let startRange = source.range(of: "private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
+        guard let startRange = source.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
             return XCTFail("normal startRecording route must exist")
         }
         let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(7600, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
@@ -448,7 +448,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testActiveRecordingQueuesCandidateAndReevaluatesAfterStop() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("private struct QueuedDetectionCandidate"), "AppDelegate must store queued candidates while recording.")
         XCTAssertTrue(source.contains("private var queuedDetectionCandidate"), "AppDelegate must retain exactly one active-recording queued candidate.")
@@ -468,7 +468,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testPromptStopPathWritesPendingTranscriptBeforeQueueReevaluation() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
         guard let stopRange = source.range(of: "func stopRecording() async") else {
             return XCTFail("stopRecording route must exist")
         }
@@ -485,7 +485,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     func testAppDelegateMakeContextPropagatesCalendarOccurrenceIdentity() throws {
-        let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         guard let contextRange = source.range(of: "nonisolated static func makeContext") else {
             return XCTFail("AppDelegate.makeContext must exist")
@@ -501,108 +501,10 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertTrue(source.contains("occurrenceStartDate: ek.occurrenceDate ?? ek.startDate"), "CalendarLookup must preserve recurring occurrence identity")
     }
 
-    private func appSourcePath(_ file: String) -> String {
-        let scribeDir = repoRoot().appendingPathComponent("TranscriberApp/Scribe")
-        if file == "AppDelegate.swift",
-           let combined = Self.combinedAppDelegateSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        if file == "SettingsWindow.swift",
-           let combined = Self.combinedSettingsWindowSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        if file == "RecordingMenu.swift",
-           let combined = Self.combinedRecordingMenuSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        return scribeDir.appendingPathComponent(file).path
-    }
-
-    /// AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
-    /// extension files. Source guards treat them as one logical source, so the
-    /// split files are concatenated into a temp file read like the original
-    /// single file.
-    private static func combinedAppDelegateSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: scribeDir.path) else { return nil }
-        let parts = ["AppDelegate.swift"]
-            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-appdelegate-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
-
-    /// SettingsWindow is split across files under Settings/. Source guards treat
-    /// them as one logical source, so the split files are concatenated in the
-    /// original file's layout order (declarations before their call sites) into
-    /// a temp file read like the original single file.
-    private static func combinedSettingsWindowSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        let settingsDir = scribeDir.appendingPathComponent("Settings")
-        guard let names = try? fm.contentsOfDirectory(atPath: settingsDir.path) else { return nil }
-        let layoutOrder = [
-            "SettingsWindowController.swift", "SettingsFormModel.swift", "SettingsForm.swift",
-            "FidelityChrome.swift", "ShortcutCapture.swift", "GeneralPanel.swift",
-            "AudioPanel.swift", "ShortcutsPanel.swift", "VaultPanel.swift",
-            "PrivacyPanel.swift", "PermissionsPanel.swift", "AboutPanel.swift",
-            "FidelityComponents.swift", "PermissionsOnboardingWindow.swift",
-            "InstalledAppSmokeSettingsFrame.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-settingswindow-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
-
-    /// RecordingMenu is split across files under RecordingMenu/. Source guards
-    /// treat them as one logical source, so the split files are concatenated in
-    /// the original file's layout order (declarations before their call sites)
-    /// into a temp file read like the original single file.
-    private static func combinedRecordingMenuSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        let menuDir = scribeDir.appendingPathComponent("RecordingMenu")
-        guard let names = try? fm.contentsOfDirectory(atPath: menuDir.path) else { return nil }
-        let layoutOrder = [
-            "RecordingMenu.swift", "RecordingMenuModel.swift",
-            "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: menuDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-recordingmenu-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
-
     private func coreSourcePath(_ file: String) -> String {
-        repoRoot()
+        CombinedAppSources.repoRoot()
             .appendingPathComponent("Sources/TranscriberCore")
             .appendingPathComponent(file)
             .path
     }
-
-    private func repoRoot() -> URL {
-        let testFile = URL(fileURLWithPath: #filePath)
-        return testFile
-            .deletingLastPathComponent() // Recovery
-            .deletingLastPathComponent() // TranscriberCoreTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // repo root
-    }
-
 }

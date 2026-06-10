@@ -55,24 +55,7 @@ final class StartPromptSourceTests: XCTestCase {
     }
 
     func testMenuRecoveryStillExposesSuppressionBehindDisclosure() throws {
-        let menuDir = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("TranscriberApp/Scribe/RecordingMenu")
-        // RecordingMenu is split across files under RecordingMenu/. Source guards
-        // treat them as one logical source.
-        let names = try FileManager.default.contentsOfDirectory(atPath: menuDir.path)
-        let layoutOrder = [
-            "RecordingMenu.swift", "RecordingMenuModel.swift",
-            "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let source = try parts.map {
-            try String(contentsOf: menuDir.appendingPathComponent($0), encoding: .utf8)
-        }.joined(separator: "\n")
+        let source = try CombinedAppSources.recordingMenu()
         XCTAssertTrue(source.contains("DisclosureGroup(\"More options ▾\")"))
         XCTAssertTrue(source.contains("Stop detecting \\(prompt?.appDisplayName ?? \"this app\") for 30 minutes"))
     }
@@ -243,20 +226,7 @@ final class StartPromptSourceTests: XCTestCase {
 final class PromptPreflightRecoverySourceTests: XCTestCase {
     private var appDelegateSource: String {
         get throws {
-            let scribeDir = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("TranscriberApp/Scribe")
-            // AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
-            // extension files. Source guards treat them as one logical source.
-            let names = try FileManager.default.contentsOfDirectory(atPath: scribeDir.path)
-            let parts = ["AppDelegate.swift"]
-                + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
-            return try parts.map {
-                try String(contentsOf: scribeDir.appendingPathComponent($0), encoding: .utf8)
-            }.joined(separator: "\n")
+            try CombinedAppSources.appDelegate()
         }
     }
 

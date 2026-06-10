@@ -166,7 +166,10 @@ enum DS {
             SwiftUI.Color(red: r, green: g, blue: b)
         }
 
-        private static func adaptive(light: NSColor, dark: NSColor) -> SwiftUI.Color {
+        /// Shared dynamic-NSColor builder. Internal (not private) so
+        /// `FidelitySettings` routes its token table through the same
+        /// appearance-matching logic.
+        static func adaptive(light: NSColor, dark: NSColor) -> SwiftUI.Color {
             SwiftUI.Color(nsColor: NSColor(name: nil) { appearance in
                 let isDark = appearance.bestMatch(from: [.darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastVibrantDark]) != nil
                 return isDark ? dark : light

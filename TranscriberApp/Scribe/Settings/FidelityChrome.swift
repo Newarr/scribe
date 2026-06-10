@@ -133,11 +133,10 @@ enum FidelitySettings {
   static let controlFont = SwiftUI.Font.custom(font, size: 12.5).weight(.medium)
   static let keyFont = SwiftUI.Font.custom(font, size: 12).weight(.medium)
 
+  /// Label-order adapter over the shared dynamic-color helper in
+  /// `DS.Color`; this token table reads dark-first.
   private static func adaptive(dark: NSColor, light: NSColor) -> SwiftUI.Color {
-    SwiftUI.Color(
-      nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua ? light : dark
-      })
+    DS.Color.adaptive(light: light, dark: dark)
   }
 }
 

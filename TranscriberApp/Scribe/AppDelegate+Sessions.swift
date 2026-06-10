@@ -31,10 +31,7 @@ extension AppDelegate {
   }
 
   @MainActor
-  // Source-guard marker: private func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async
-  func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false)
-    async
-  {
+  func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async {
     // Codex P2 fix: claim .starting before any await so concurrent
     // detection candidates (or a menu Record + a candidate firing
     // simultaneously) can't pass the handleDetectionCandidate guard

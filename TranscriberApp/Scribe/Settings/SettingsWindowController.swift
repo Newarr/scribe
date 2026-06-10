@@ -144,7 +144,7 @@ final class SettingsWindowController {
     // Codex Phase η P1.3: a title-bar close should behave like
     // Cancel (drop the in-flight model + clear the window pointer
     // so the next open re-reads the on-disk snapshot fresh).
-    let delegate = SettingsWindowDelegate(
+    let delegate = CloseCallbackWindowDelegate(
       shouldClose: {
         model.canCloseOrSurfaceUnsavedCloudKeyWarning()
       },
@@ -157,7 +157,7 @@ final class SettingsWindowController {
       host, &settingsWindowDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
     WindowChrome.installGlass(on: host, material: .hudWindow)
-    SettingsWindowChrome.makeCornersTransparent(on: host)
+    WindowChrome.makeCornersTransparent(on: host)
 
     self.window = host
     host.makeKeyAndOrderFront(nil)
@@ -170,49 +170,7 @@ final class SettingsWindowController {
   }
 }
 
-/// Codex Phase η P1.3: NSWindowDelegate that fires when the title-bar
-/// close button is hit. The closure resets the controller's window
-/// pointer so a fresh `show()` re-loads the on-disk snapshot rather
-/// than re-presenting the stale form.
-private final class SettingsWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
-  private let shouldClose: @MainActor () -> Bool
-  private let onClose: @MainActor () -> Void
-
-  init(
-    shouldClose: @escaping @MainActor () -> Bool = { true },
-    onClose: @escaping @MainActor () -> Void
-  ) {
-    self.shouldClose = shouldClose
-    self.onClose = onClose
-  }
-
-  func windowShouldClose(_ sender: NSWindow) -> Bool {
-    shouldClose()
-  }
-
-  func windowWillClose(_ notification: Notification) {
-    Task { @MainActor in onClose() }
-  }
-}
-
-/// Associated-object key for retaining the SettingsWindowDelegate
+/// Associated-object key for retaining the CloseCallbackWindowDelegate
 /// alongside the host window without adding a stored property to
 /// SettingsWindowController (which is constructed lazily).
 nonisolated(unsafe) private var settingsWindowDelegateKey: UInt8 = 0
-
-@MainActor
-private enum SettingsWindowChrome {
-  static let cornerRadius: CGFloat = 14
-
-  static func makeCornersTransparent(on window: NSWindow) {
-    window.isOpaque = false
-    window.backgroundColor = .clear
-
-    guard let contentView = window.contentView else { return }
-    contentView.wantsLayer = true
-    contentView.layer?.backgroundColor = NSColor.clear.cgColor
-    contentView.layer?.cornerRadius = cornerRadius
-    contentView.layer?.cornerCurve = .continuous
-    contentView.layer?.masksToBounds = true
-  }
-}

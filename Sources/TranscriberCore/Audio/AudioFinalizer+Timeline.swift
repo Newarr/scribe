@@ -221,43 +221,4 @@ extension AudioFinalizer {
       return result
     }
   }
-
-  /// Codex rc2-audit CAP-2: parses the per-buffer PTS log to find
-  /// the first PTS of each stream, then returns a frame-count
-  /// offset for whichever stream started later. The mix loop
-  /// prepends that many silence frames to the on-time stream so
-  /// both align at session start.
-  private static func readFirstPTSAlignment(at url: URL, sampleRate: Double) throws -> (
-    micPrependFrames: Int, systemPrependFrames: Int
-  ) {
-    let content = try String(contentsOf: url, encoding: .utf8)
-    let decoder = JSONDecoder()
-    var micFirst: Double?
-    var sysFirst: Double?
-    for line in content.split(separator: "\n", omittingEmptySubsequences: true) {
-      guard let entry = try? decoder.decode(PTSLogEntry.self, from: Data(line.utf8)) else {
-        continue
-      }
-      switch entry.stream {
-      case "mic":
-        if micFirst == nil { micFirst = entry.ptsSeconds }
-      case "system":
-        if sysFirst == nil { sysFirst = entry.ptsSeconds }
-      default: break
-      }
-      if micFirst != nil && sysFirst != nil { break }
-    }
-    guard let micFirst, let sysFirst else { return (0, 0) }
-    // The stream with the EARLIER first-PTS is the reference.
-    // The other stream needs (delta) silence prepended so its
-    // first audible frame lines up at the same output time.
-    let delta = abs(micFirst - sysFirst)
-    let prependFrames = Int((delta * sampleRate).rounded())
-    if micFirst <= sysFirst {
-      // mic started first; system needs prepended silence.
-      return (0, prependFrames)
-    } else {
-      return (prependFrames, 0)
-    }
-  }
 }

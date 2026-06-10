@@ -16,7 +16,7 @@ import TranscriberCore
 @MainActor
 final class PermissionsOnboardingWindowController {
   private var window: NSWindow?
-  private var windowDelegate: WindowDelegate?
+  private var windowDelegate: CloseCallbackWindowDelegate?
   private let onScreenRecordingRestartRequired: @MainActor () -> Void
 
   init(onScreenRecordingRestartRequired: @escaping @MainActor () -> Void) {
@@ -66,18 +66,12 @@ final class PermissionsOnboardingWindowController {
         }
       ))
     WindowChrome.installGlass(on: host, material: .hudWindow)
-    if let contentView = host.contentView {
-      contentView.wantsLayer = true
-      contentView.layer?.backgroundColor = NSColor.clear.cgColor
-      contentView.layer?.cornerRadius = 14
-      contentView.layer?.cornerCurve = .continuous
-      contentView.layer?.masksToBounds = true
-    }
+    WindowChrome.makeCornersTransparent(on: host)
 
-    let delegate = WindowDelegate { [weak self] in
+    let delegate = CloseCallbackWindowDelegate(onClose: { [weak self] in
       self?.window = nil
       self?.windowDelegate = nil
-    }
+    })
     host.delegate = delegate
 
     host.makeKeyAndOrderFront(nil)
@@ -91,14 +85,6 @@ final class PermissionsOnboardingWindowController {
     window?.close()
     window = nil
     windowDelegate = nil
-  }
-
-  private final class WindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
-    let onClose: @MainActor () -> Void
-    init(onClose: @escaping @MainActor () -> Void) { self.onClose = onClose }
-    func windowWillClose(_ notification: Notification) {
-      Task { @MainActor in onClose() }
-    }
   }
 }
 

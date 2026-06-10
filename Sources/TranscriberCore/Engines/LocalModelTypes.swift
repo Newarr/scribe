@@ -10,10 +10,6 @@ public struct LocalModelArtifact: Sendable, Equatable, Hashable {
         self.byteCount = byteCount
         self.sha256Hex = sha256Hex.lowercased()
     }
-
-    var partialRelativePath: String {
-        relativePath + ".partial"
-    }
 }
 
 public struct LocalModelDownloadProgress: Sendable, Equatable {

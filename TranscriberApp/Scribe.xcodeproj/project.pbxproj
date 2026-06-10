@@ -25,6 +25,7 @@
 		45327FC491943C693F6912E3 /* MLXAudioLID in Frameworks */ = {isa = PBXBuildFile; productRef = 80F163514B45441030EAA488 /* MLXAudioLID */; };
 		47A1BCF874C40E03A9157CE4 /* PermissionsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A2BA2C76AA08D2C85827432 /* PermissionsPanel.swift */; };
 		48F838161692F910B33138E5 /* ShortcutsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EFAF8825B90F5FEE0E5E55 /* ShortcutsPanel.swift */; };
+		4AA2F8FB830EDBD834AFC10D /* CloseCallbackWindowDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 864957A8DB22BA3E340C55F2 /* CloseCallbackWindowDelegate.swift */; };
 		4B5B4019C6E5AAEB6F3B10FF /* AppDelegate+StatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E217341B9BED190D1FABE925 /* AppDelegate+StatusItem.swift */; };
 		4BB9DA8E077059AE6C5E753C /* PromptModalWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0235020A1CE15B8AC39BB991 /* PromptModalWindow.swift */; };
 		4BFDDA76C0E73479FA385BC5 /* JetBrainsMonoVariable-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */; };
@@ -118,6 +119,7 @@
 		71044992EBA5AF0C0CFA48D2 /* JetBrainsMonoVariable.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMonoVariable.ttf; sourceTree = "<group>"; };
 		787B3FF78982C293A3655FDE /* RecordingPopoverComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPopoverComponents.swift; sourceTree = "<group>"; };
 		80FB7A38F4B8720F82AC6C50 /* AboutPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutPanel.swift; sourceTree = "<group>"; };
+		864957A8DB22BA3E340C55F2 /* CloseCallbackWindowDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloseCallbackWindowDelegate.swift; sourceTree = "<group>"; };
 		921F3920195ECE2DF38CDF87 /* AppDelegate+Detection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppDelegate+Detection.swift"; sourceTree = "<group>"; };
 		9844A27CC50566294150BC26 /* AppDelegate+Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppDelegate+Onboarding.swift"; sourceTree = "<group>"; };
 		9FF1169DE13EDF8BFBC377C2 /* AppearanceTheme+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppearanceTheme+App.swift"; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 			children = (
 				80FB7A38F4B8720F82AC6C50 /* AboutPanel.swift */,
 				AD65220AD99D828C71E3A6A0 /* AudioPanel.swift */,
+				864957A8DB22BA3E340C55F2 /* CloseCallbackWindowDelegate.swift */,
 				5509EE2DF1EE4A453950EC9D /* FidelityChrome.swift */,
 				FB5FB43C292C9853C42B1797 /* FidelityComponents.swift */,
 				D5C795F753B561341FDDD89D /* GeneralPanel.swift */,
@@ -401,6 +404,7 @@
 				EA3807D7A4FEAFB9C8FA0A28 /* AppearanceApplier.swift in Sources */,
 				9CD0F558E5365D845331221D /* AppearanceTheme+App.swift in Sources */,
 				4F974F8874B536164FF34796 /* AudioPanel.swift in Sources */,
+				4AA2F8FB830EDBD834AFC10D /* CloseCallbackWindowDelegate.swift in Sources */,
 				5324A44FC4D2A22FD590AC7F /* CompositeLocalModelDownloadStarter.swift in Sources */,
 				35690324794E4F86DFE87911 /* DSButtonStyles.swift in Sources */,
 				C77F36DC8336DD0B1E8C4E42 /* DSComponents.swift in Sources */,

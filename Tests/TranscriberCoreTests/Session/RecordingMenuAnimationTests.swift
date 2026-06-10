@@ -2,7 +2,7 @@ import XCTest
 
 final class RecordingMenuAnimationTests: XCTestCase {
   func testActiveRecordingWaveformAnimationIsGatedByBothCaptureLevels() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
 
     guard let layoutRange = source.range(of: "private func recordingLayout") else {
       return XCTFail("Recording menu must keep a dedicated active recording layout")
@@ -60,7 +60,7 @@ final class RecordingMenuAnimationTests: XCTestCase {
   }
 
   func testActiveRecordingSurfacesQueuedNextMeetingNonIntrusively() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
 
     XCTAssertTrue(
       source.contains("struct RecordingMenuQueuedMeeting"),
@@ -91,13 +91,13 @@ final class RecordingMenuAnimationTests: XCTestCase {
   }
 
   func testActiveRecordingRendersAccessibleCompactMicAndSystemActivity() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
 
     XCTAssertFalse(
-      source.contains("private struct LiveAudioMeters"),
+      source.contains("struct LiveAudioMeters"),
       "Recording popover must remove the old horizontal MIC/SYS bar component.")
     XCTAssertFalse(
-      source.contains("private struct ChannelAudioMeter"),
+      source.contains("struct ChannelAudioMeter"),
       "Recording popover must not render horizontal channel bars.")
     XCTAssertTrue(
       source.contains("struct CompactAudioActivity"),
@@ -123,7 +123,7 @@ final class RecordingMenuAnimationTests: XCTestCase {
   }
 
   func testTranscribingStatusIsSingleConciseFileTargetLine() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
 
     XCTAssertTrue(
       source.contains(#"Transcribing into \(outputTargetName)"#),
@@ -145,7 +145,7 @@ final class RecordingMenuAnimationTests: XCTestCase {
   }
 
   func testRecentsRemainBoundedFiveItemShortcut() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
 
     XCTAssertTrue(
       source.contains("static let recentsLimit = 5"),
@@ -160,7 +160,7 @@ final class RecordingMenuAnimationTests: XCTestCase {
   }
 
   func testVisualSnapshotRecordingFixtureUsesObviousNonzeroMeterLevels() throws {
-    let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+    let source = try CombinedAppSources.recordingMenu()
     XCTAssertTrue(
       source.contains("model.micLevel = 0.72"),
       "recording visual fixture must show an obvious nonzero MIC meter")
@@ -175,44 +175,4 @@ final class RecordingMenuAnimationTests: XCTestCase {
       "debug recording menu fixture should also force visible SYS activity")
   }
 
-  private func appSourcePath(_ file: String) -> String {
-    let testFile = URL(fileURLWithPath: #filePath)
-    let repoRoot =
-      testFile
-      .deletingLastPathComponent()  // Session
-      .deletingLastPathComponent()  // TranscriberCoreTests
-      .deletingLastPathComponent()  // Tests
-      .deletingLastPathComponent()  // repo root
-    let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
-    guard file == "RecordingMenu.swift",
-      let combined = Self.combinedRecordingMenuSourcePath(scribeDir: scribeDir)
-    else {
-      return scribeDir.appendingPathComponent(file).path
-    }
-    return combined
-  }
-
-  /// RecordingMenu is split across files under RecordingMenu/. Source guards
-  /// treat them as one logical source, so the split files are concatenated in
-  /// the original file's layout order (declarations before their call sites)
-  /// into a temp file read like the original single file.
-  private static func combinedRecordingMenuSourcePath(scribeDir: URL) -> String? {
-    let fm = FileManager.default
-    let menuDir = scribeDir.appendingPathComponent("RecordingMenu")
-    guard let names = try? fm.contentsOfDirectory(atPath: menuDir.path) else { return nil }
-    let layoutOrder = [
-      "RecordingMenu.swift", "RecordingMenuModel.swift",
-      "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
-    ]
-    let parts = layoutOrder.filter { names.contains($0) }
-      + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-    let combined = parts.compactMap {
-      try? String(contentsOfFile: menuDir.appendingPathComponent($0).path, encoding: .utf8)
-    }.joined(separator: "\n")
-    guard combined.isEmpty == false else { return nil }
-    let url = fm.temporaryDirectory.appendingPathComponent(
-      "scribe-recordingmenu-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-    guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-    return url.path
-  }
 }

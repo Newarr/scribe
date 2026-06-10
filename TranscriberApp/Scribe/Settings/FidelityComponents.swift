@@ -1,8 +1,10 @@
 import SwiftUI
+import TranscriberCore
 
 struct FidelityPanelIntro: View {
   let title: String
   let subtitle: String
+  var maxWidth: CGFloat = 560
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -16,8 +18,21 @@ struct FidelityPanelIntro: View {
         .foregroundStyle(FidelitySettings.ink2)
         .lineSpacing(4)
         .tracking(-0.08)
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(maxWidth: maxWidth, alignment: .leading)
         .padding(.bottom, 24)
+    }
+  }
+}
+
+struct FidelityKeyboardShortcutDisplay: View {
+  let shortcut: KeyboardShortcutSetting
+
+  var body: some View {
+    HStack(spacing: 3) {
+      ForEach(Array(shortcut.displayString.map(String.init).enumerated()), id: \.offset) {
+        _, part in
+        FidelityKey(part)
+      }
     }
   }
 }
@@ -35,33 +50,6 @@ struct FidelityHelpText: View {
       .foregroundStyle(FidelitySettings.ink3)
       .lineSpacing(2)
       .fixedSize(horizontal: false, vertical: true)
-  }
-}
-
-private struct FidelityCodeBlock<Actions: View>: View {
-  let text: String
-  @ViewBuilder var actions: () -> Actions
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Text(text)
-        .font(FidelitySettings.keyFont)
-        .foregroundStyle(SwiftUI.Color(red: 1.0, green: 0.55, blue: 0.46))
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      actions()
-    }
-    .padding(.horizontal, 12)
-    .frame(height: 40)
-    .background(
-      RoundedRectangle(cornerRadius: 7, style: .continuous)
-        .fill(FidelitySettings.codeFill)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 7, style: .continuous)
-        .stroke(FidelitySettings.line, lineWidth: 1)
-    )
   }
 }
 

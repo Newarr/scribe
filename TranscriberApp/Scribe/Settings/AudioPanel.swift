@@ -6,7 +6,7 @@ import TranscriberCore
 /// picker can't drift from what the tokenizer accepts; this table only
 /// supplies stable display names. The cloud engine always auto-detects and
 /// ignores this setting.
-enum TranscriptionLanguageOption {
+private enum TranscriptionLanguageOption {
   static let autoLabel = "Auto (detect)"
   private static let displayNames: [String: String] = [
     "ar": "Arabic", "zh": "Chinese", "nl": "Dutch", "en": "English",
@@ -332,11 +332,7 @@ private struct FidelityEngineCard: View {
               .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11).weight(.medium))
               .foregroundStyle(enabled ? FidelitySettings.green : FidelitySettings.amber)
           }
-          Text(detail)
-            .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
-            .foregroundStyle(FidelitySettings.ink3)
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
+          FidelityHelpText(detail)
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)

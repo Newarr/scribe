@@ -565,7 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func applyAppearanceTheme(_ theme: AppearanceTheme) {
-    NSApp.appearance = theme.nsAppearance
+    AppearanceApplier.apply(theme)
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

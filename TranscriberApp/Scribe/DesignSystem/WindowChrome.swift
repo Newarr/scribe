@@ -100,6 +100,22 @@ enum WindowChrome {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
     }
+
+    /// Rounds the window's content corners (14pt continuous) and clears
+    /// the window backing so a borderless SwiftUI surface can draw its
+    /// own rounded chrome edge-to-edge. Call after `installGlass` so the
+    /// layer treatment lands on the vibrancy wrapper.
+    static func makeCornersTransparent(on window: NSWindow) {
+        window.isOpaque = false
+        window.backgroundColor = .clear
+
+        guard let contentView = window.contentView else { return }
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.clear.cgColor
+        contentView.layer?.cornerRadius = 14
+        contentView.layer?.cornerCurve = .continuous
+        contentView.layer?.masksToBounds = true
+    }
 }
 
 @MainActor
@@ -136,7 +152,7 @@ extension WindowChrome {
 /// SwiftUI surface presented in a glass window. The gradient is
 /// `white.opacity(0.08) → clear` confined to a 1pt-tall hairline,
 /// matching the design preview's `.surface::before` pseudo-element.
-struct GlassSpecularHighlight: View {
+private struct GlassSpecularHighlight: View {
     var body: some View {
         VStack(spacing: 0) {
             LinearGradient(

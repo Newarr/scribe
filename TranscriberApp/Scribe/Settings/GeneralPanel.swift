@@ -11,20 +11,12 @@ struct FidelityGeneralPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("General")
-        .font(FidelitySettings.titleFont)
-        .foregroundStyle(FidelitySettings.ink)
-        .tracking(-0.55)
-        .padding(.bottom, 6)
-      Text(
-        "Scribe records audio locally and saves transcripts to your Mac. Local (Cohere) transcription keeps everything on-device. Cloud (ElevenLabs) uploads audio to ElevenLabs for transcription."
+      FidelityPanelIntro(
+        title: "General",
+        subtitle:
+          "Scribe records audio locally and saves transcripts to your Mac. Local (Cohere) transcription keeps everything on-device. Cloud (ElevenLabs) uploads audio to ElevenLabs for transcription.",
+        maxWidth: 520
       )
-      .font(FidelitySettings.subtitleFont)
-      .foregroundStyle(FidelitySettings.ink2)
-      .lineSpacing(4)
-      .tracking(-0.08)
-      .frame(maxWidth: 520, alignment: .leading)
-      .padding(.bottom, 24)
 
       FidelitySection(title: "Appearance") {
         FidelityRow(label: "Theme") {
@@ -45,14 +37,7 @@ struct FidelityGeneralPanel: View {
       FidelitySection(title: "Shortcut") {
         FidelityRow(label: "Start / stop recording") {
           HStack(spacing: 8) {
-            HStack(spacing: 3) {
-              ForEach(
-                Array(model.startStopShortcut.displayString.map(String.init).enumerated()),
-                id: \.offset
-              ) { _, part in
-                FidelityKey(part)
-              }
-            }
+            FidelityKeyboardShortcutDisplay(shortcut: model.startStopShortcut)
             FidelityGhostButton("Change…") {
               ShortcutCapturePanel.present(current: model.startStopShortcut) { shortcut in
                 model.startStopShortcut = shortcut

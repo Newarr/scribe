@@ -69,20 +69,6 @@ struct Indicator: View {
 
 // MARK: - Brand views
 
-/// The 5-bar wave mark, monochrome, sized to the supplied edge length.
-/// Loaded from the asset catalog's BrandMark imageset (template SVG).
-struct BrandMark: View {
-    let size: CGFloat
-    init(size: CGFloat = 32) { self.size = size }
-    var body: some View {
-        Image("BrandMark")
-            .resizable()
-            .renderingMode(.template)
-            .aspectRatio(contentMode: .fit)
-            .frame(width: size, height: size)
-    }
-}
-
 /// The mark + "scribe" wordmark, scaled to the supplied height.
 struct BrandWordmark: View {
     let height: CGFloat
@@ -97,37 +83,6 @@ struct BrandWordmark: View {
 }
 
 // MARK: - Section header helper
-
-/// Legacy: mono uppercase eyebrow above a sentence-case section name.
-/// The current reference dropped this pattern in favor of plain
-/// `sec h3` + optional `sec-help` (see `DSSection`). Kept available
-/// for the welcome window's distinct `WELCOME` eyebrow + wordmark
-/// pairing, but new section surfaces should not use it.
-struct SectionEyebrow: View {
-    let eyebrow: String
-    let title: String
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            DSEyebrow(text: eyebrow)
-            Text(title)
-                .font(DS.Font.heading)
-                .foregroundStyle(DS.Color.foreground)
-        }
-    }
-}
-
-/// Standalone mono uppercase eyebrow. Same primitive as the eyebrow
-/// portion of `SectionEyebrow`, factored out so list / popover surfaces
-/// can drop it without forcing a paired heading.
-struct DSEyebrow: View {
-    let text: String
-    var body: some View {
-        Text(text.uppercased())
-            .font(DS.Font.eyebrow)
-            .tracking(0.8)
-            .foregroundStyle(DS.Color.foregroundTertiary)
-    }
-}
 
 /// `.sec` from index.html. A 13/600 sentence-case heading, an optional
 /// 12.5/400 ink-3 help line (capped at ~520pt for legibility), then a
@@ -204,29 +159,6 @@ struct DSStatusRow<Trailing: View>: View {
     }
 }
 
-extension DSStatusRow where Trailing == DSMonoValue {
-    /// Convenience that renders a mono-text value on the right.
-    /// Matches the canonical "System audio · 48 kHz" pattern.
-    init(_ label: String, value: String) {
-        self.label = label
-        self.trailing = { DSMonoValue(value) }
-    }
-}
-
-/// Right-side mono value for `DSStatusRow`. Use a `·` separator for
-/// compound values: `"on · 48 kHz"`, `"3 attempts · exponential backoff"`,
-/// `"since launch · 2 clients connected"`. Mono 12pt ink-3 per the
-/// reference's `.sub-meta` recipe.
-struct DSMonoValue: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text)
-            .font(DS.Font.monoBody)
-            .foregroundStyle(DS.Color.foregroundTertiary)
-    }
-}
-
 /// `.code-block` from index.html: a dark transparent pocket holding
 /// mono rust-2 text and a trailing ghost button slot. Used for URLs
 /// like `scribe://localhost:7421` that the user might want to copy.
@@ -264,48 +196,6 @@ extension DSCodeBlock where Trailing == EmptyView {
     init(_ text: String) {
         self.text = text
         self.trailing = { EmptyView() }
-    }
-}
-
-/// scribe-design-system waveform. Decorative live indicator that sits
-/// under the source label in the recording surface. Animated bars with
-/// staggered heights and opacities. Not a true audio meter; for that,
-/// use `LevelBar` (in `RecordingMenu.swift`).
-struct DSWaveform: View {
-    /// Number of bars. The reference design fits ~24 in the card.
-    var bars: Int = 24
-    /// Color of the bars. Defaults to the design's recording rust.
-    var color: SwiftUI.Color = DS.Color.recording
-    /// Track height. The bars scale within this.
-    var height: CGFloat = 36
-
-    @State private var phase: Double = 0
-
-    var body: some View {
-        TimelineView(.animation) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: 3) {
-                ForEach(0..<bars, id: \.self) { i in
-                    bar(index: i, time: t)
-                }
-            }
-            .frame(height: height)
-        }
-    }
-
-    private func bar(index: Int, time: Double) -> some View {
-        // Pseudo-random phase per bar so the waveform doesn't read as
-        // a uniform sine. The combination of two cosines at different
-        // frequencies gives a plausible "audio energy" look.
-        let p = Double(index) * 0.37
-        let h1 = (cos(time * 2.4 + p) + 1) / 2          // 0…1
-        let h2 = (cos(time * 6.1 + p * 1.7) + 1) / 2    // 0…1
-        let blended = (h1 * 0.65 + h2 * 0.35)
-        let amplitude = 0.25 + blended * 0.75           // 0.25…1
-        let alpha = 0.35 + blended * 0.65               // 0.35…1
-        return Capsule()
-            .fill(color.opacity(alpha))
-            .frame(width: 3, height: height * CGFloat(amplitude))
     }
 }
 

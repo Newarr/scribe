@@ -277,6 +277,15 @@ public enum AudioFinalizer {
 
   // MARK: - private
 
+  private static func aacMonoSettings(sampleRate: Double) -> [String: Any] {
+    var settings: [String: Any] = [:]
+    settings[AVFormatIDKey] = kAudioFormatMPEG4AAC
+    settings[AVNumberOfChannelsKey] = 1
+    settings[AVSampleRateKey] = sampleRate
+    settings[AVEncoderBitRateKey] = 64_000
+    return settings
+  }
+
   /// Per-source streaming reader that owns its file, optional resampling
   /// converter, scratch read buffer, and EOF state. Each `produce` call
   /// drains the converter (or copies passthrough frames) until either

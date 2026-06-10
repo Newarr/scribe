@@ -36,7 +36,7 @@ struct DebugPermissionStatuses {
 }
 
 @MainActor
-final class PermissionsPanelModel: ObservableObject {
+private final class PermissionsPanelModel: ObservableObject {
   @Published var microphoneStatus: PermissionStatus = .notDetermined
   @Published var screenRecordingStatus: PermissionStatus = .notDetermined
   @Published var calendarStatus: PermissionStatus = .notDetermined
@@ -372,13 +372,9 @@ struct FidelityPermissionsPanel: View {
             .font(.system(size: 11, weight: .regular))
             .foregroundStyle(FidelitySettings.ink3)
             .padding(.top, 2)
-          Text(
+          FidelityHelpText(
             "macOS may occasionally ask Scribe to bypass the system private window picker — say Allow. It's how Scribe captures system audio without picking a window each time."
           )
-          .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
-          .foregroundStyle(FidelitySettings.ink3)
-          .lineSpacing(2)
-          .fixedSize(horizontal: false, vertical: true)
           Spacer(minLength: 0)
         }
         .padding(.horizontal, 4)
@@ -525,11 +521,7 @@ private struct FidelityPermissionRow: View {
             .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5).weight(.medium))
             .foregroundStyle(status.fidelityColor)
         }
-        Text(help)
-          .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
-          .foregroundStyle(FidelitySettings.ink3)
-          .lineSpacing(2)
-          .fixedSize(horizontal: false, vertical: true)
+        FidelityHelpText(help)
       }
       Spacer(minLength: 12)
       if let action {

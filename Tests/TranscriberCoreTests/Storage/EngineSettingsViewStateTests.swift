@@ -119,7 +119,7 @@ final class EngineSettingsViewStateTests: XCTestCase {
 
 
     func testSettingsCloudKeyEditorHasSecureExplicitCommitClearAndSafeClose() throws {
-        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SettingsWindow.swift")
 
         XCTAssertTrue(source.contains("FidelityCloudAPIKeyEditor"), "Settings Engine must expose a Cloud key editor")
         XCTAssertTrue(source.contains("SecureField("), "Cloud key entry must use secure text entry")
@@ -134,7 +134,7 @@ final class EngineSettingsViewStateTests: XCTestCase {
     }
 
     func testSettingsSavePersistsKeychainBeforeSettingsCommitAndReadinessRefresh() throws {
-        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SettingsWindow.swift")
 
         guard let saveRange = source.range(of: "onSave: { [weak self, weak host] settings in") else {
             return XCTFail("Settings save handler not found")
@@ -157,7 +157,7 @@ final class EngineSettingsViewStateTests: XCTestCase {
     }
 
     func testSaveKeyAndClearKeyCommitNonSecretSettingsViaOnCommitSettings() throws {
-        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SettingsWindow.swift")
 
         // Save key button: Keychain persist must happen before onCommitSettings
         guard let saveKeyRange = source.range(of: "\"Save key\"") else {
@@ -200,8 +200,8 @@ final class EngineSettingsViewStateTests: XCTestCase {
     }
 
     func testProductionSettingsRetryAndRemoveButtonsCallAppOwnedLocalModelManagerActions() throws {
-        let source = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
-        let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
+        let source = try CombinedAppSources.appSource("SettingsWindow.swift")
+        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(appDelegate.contains("onRetryLocalModel"), "AppDelegate must inject a production retry side-effect into Settings")
         XCTAssertTrue(appDelegate.contains("localModelManager.retryDownload()"), "visible Settings Retry must call the app-owned LocalModelManager.retryDownload()")
@@ -223,8 +223,8 @@ final class EngineSettingsViewStateTests: XCTestCase {
     }
 
     func testProductionSetupRequiredActionsOpenFocusedEngineCards() throws {
-        let appDelegate = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        let settings = try String(contentsOfFile: appSourcePath("SettingsWindow.swift"), encoding: .utf8)
+        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
+        let settings = try CombinedAppSources.appSource("SettingsWindow.swift")
 
         XCTAssertTrue(appDelegate.contains("settingsWindowController?.show(focus: self.setupEngineFocus)"), "Setup Required Settings action must pass a card focus instead of opening generic Settings")
         XCTAssertTrue(appDelegate.contains("SessionRepairRouting.engineSettingsFocus"), "Session-specific Local repairs must focus the Local Engine card")
@@ -233,71 +233,6 @@ final class EngineSettingsViewStateTests: XCTestCase {
         XCTAssertTrue(settings.contains("settingsEngineFocusRequested"), "Already-open Settings must accept focused Engine deep links")
     }
 
-    private func appSourcePath(_ file: String) -> String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
-            .deletingLastPathComponent() // Storage
-            .deletingLastPathComponent() // TranscriberCoreTests
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // repo root
-        let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
-        if file == "AppDelegate.swift",
-           let combined = Self.combinedAppDelegateSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        if file == "SettingsWindow.swift",
-           let combined = Self.combinedSettingsWindowSourcePath(scribeDir: scribeDir) {
-            return combined
-        }
-        return scribeDir.appendingPathComponent(file).path
-    }
-
-    /// AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
-    /// extension files. Source guards treat them as one logical source, so the
-    /// split files are concatenated into a temp file read like the original
-    /// single file.
-    private static func combinedAppDelegateSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: scribeDir.path) else { return nil }
-        let parts = ["AppDelegate.swift"]
-            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-appdelegate-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
-
-    /// SettingsWindow is split across files under Settings/. Source guards treat
-    /// them as one logical source, so the split files are concatenated in the
-    /// original file's layout order (declarations before their call sites) into
-    /// a temp file read like the original single file.
-    private static func combinedSettingsWindowSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        let settingsDir = scribeDir.appendingPathComponent("Settings")
-        guard let names = try? fm.contentsOfDirectory(atPath: settingsDir.path) else { return nil }
-        let layoutOrder = [
-            "SettingsWindowController.swift", "SettingsFormModel.swift", "SettingsForm.swift",
-            "FidelityChrome.swift", "ShortcutCapture.swift", "GeneralPanel.swift",
-            "AudioPanel.swift", "ShortcutsPanel.swift", "VaultPanel.swift",
-            "PrivacyPanel.swift", "PermissionsPanel.swift", "AboutPanel.swift",
-            "FidelityComponents.swift", "PermissionsOnboardingWindow.swift",
-            "InstalledAppSmokeSettingsFrame.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-settingswindow-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
 }
 
 private struct StubEngineReadiness: EngineReadinessProbing {

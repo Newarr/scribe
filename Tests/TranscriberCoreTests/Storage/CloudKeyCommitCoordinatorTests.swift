@@ -157,10 +157,7 @@ final class CloudKeyCommitCoordinatorTests: XCTestCase {
     // MARK: - Source guard: Save key / Clear key call onCommitSettings
 
     func testSettingsWindowSaveKeyClearKeyInvokeOnCommitSettingsAfterKeychainSuccess() throws {
-        let source = try String(
-            contentsOfFile: settingsWindowSourcePath,
-            encoding: .utf8
-        )
+        let source = try CombinedAppSources.settingsWindow()
 
         // Save key button must call onCommitSettings after successful Keychain persist
         guard let saveKeyRange = source.range(of: "\"Save key\"") else {
@@ -215,10 +212,7 @@ final class CloudKeyCommitCoordinatorTests: XCTestCase {
     }
 
     func testSettingsWindowOnCommitSettingsIsPassedToCloudAPIKeyEditor() throws {
-        let source = try String(
-            contentsOfFile: settingsWindowSourcePath,
-            encoding: .utf8
-        )
+        let source = try CombinedAppSources.settingsWindow()
 
         // FidelityCloudAPIKeyEditor init site must pass onCommitSettings (or onSettingsChange)
         guard let editorRange = source.range(of: "FidelityCloudAPIKeyEditor(") else {
@@ -260,47 +254,6 @@ final class CloudKeyCommitCoordinatorTests: XCTestCase {
         )
     }
 
-    private var settingsWindowSourcePath: String {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let repoRoot = testFile
-            .deletingLastPathComponent()  // Storage
-            .deletingLastPathComponent()  // TranscriberCoreTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // repo root
-        let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
-        guard let combined = Self.combinedSettingsWindowSourcePath(scribeDir: scribeDir) else {
-            return scribeDir.appendingPathComponent("SettingsWindow.swift").path
-        }
-        return combined
-    }
-
-    /// SettingsWindow is split across files under Settings/. Source guards treat
-    /// them as one logical source, so the split files are concatenated in the
-    /// original file's layout order (declarations before their call sites) into
-    /// a temp file read like the original single file.
-    private static func combinedSettingsWindowSourcePath(scribeDir: URL) -> String? {
-        let fm = FileManager.default
-        let settingsDir = scribeDir.appendingPathComponent("Settings")
-        guard let names = try? fm.contentsOfDirectory(atPath: settingsDir.path) else { return nil }
-        let layoutOrder = [
-            "SettingsWindowController.swift", "SettingsFormModel.swift", "SettingsForm.swift",
-            "FidelityChrome.swift", "ShortcutCapture.swift", "GeneralPanel.swift",
-            "AudioPanel.swift", "ShortcutsPanel.swift", "VaultPanel.swift",
-            "PrivacyPanel.swift", "PermissionsPanel.swift", "AboutPanel.swift",
-            "FidelityComponents.swift", "PermissionsOnboardingWindow.swift",
-            "InstalledAppSmokeSettingsFrame.swift",
-        ]
-        let parts = layoutOrder.filter { names.contains($0) }
-            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
-        let combined = parts.compactMap {
-            try? String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
-        guard combined.isEmpty == false else { return nil }
-        let url = fm.temporaryDirectory.appendingPathComponent(
-            "scribe-settingswindow-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
-        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
-        return url.path
-    }
 }
 
 // MARK: - Helpers

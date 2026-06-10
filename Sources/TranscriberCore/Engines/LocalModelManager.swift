@@ -1,6 +1,64 @@
 import CryptoKit
 import Foundation
 
+/// Shared path/file math for the on-disk Cohere model cache. The actor
+/// and `LocalModelDownloadWorker` operate on the same layout; routing
+/// both through this struct keeps the helpers from drifting (the two
+/// copies of `verify` had already diverged on the hash fast-path).
+private struct LocalModelCacheLayout {
+    let cacheRoot: URL
+    let manifest: LocalModelManifest
+    let fileManager: FileManager
+
+    func modelCacheURL() -> URL {
+        cacheRoot.appendingPathComponent(LocalModelManager.cacheDirectoryName(for: manifest.modelID), isDirectory: true)
+    }
+
+    func artifactURL(_ artifact: LocalModelArtifact) -> URL {
+        modelCacheURL().appendingPathComponent(artifact.relativePath, isDirectory: false)
+    }
+
+    func partialURL(_ artifact: LocalModelArtifact) -> URL {
+        artifactURL(artifact).appendingPathExtension("partial")
+    }
+
+    func removePartialArtifacts() throws {
+        for artifact in manifest.artifacts {
+            let partial = partialURL(artifact)
+            if fileManager.fileExists(atPath: partial.path) {
+                try fileManager.removeItem(at: partial)
+            }
+        }
+    }
+
+    /// Byte-size revalidation always runs; `fullHash` additionally
+    /// streams a SHA-256 of the artifact (the slow path the actor
+    /// skips after a successful first verification).
+    func verify(artifact: LocalModelArtifact, at url: URL, fullHash: Bool = true) throws {
+        let attrs = try fileManager.attributesOfItem(atPath: url.path)
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
+        guard size == artifact.byteCount else {
+            throw LocalModelManagerError.verificationFailed("Expected \(artifact.relativePath) to be \(artifact.byteCount) bytes, got \(size).")
+        }
+        guard fullHash else { return }
+        let digest = try LocalModelManager.sha256Hex(of: url)
+        guard digest == artifact.sha256Hex else {
+            throw LocalModelManagerError.verificationFailed("Checksum mismatch for \(artifact.relativePath).")
+        }
+    }
+
+    func diskUsage(of url: URL) throws -> Int64 {
+        guard fileManager.fileExists(atPath: url.path) else { return 0 }
+        var total: Int64 = 0
+        if let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+            for case let fileURL as URL in enumerator {
+                total += Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            }
+        }
+        return total
+    }
+}
+
 public actor LocalModelManager {
     public let manifest: LocalModelManifest
 
@@ -9,6 +67,7 @@ public actor LocalModelManager {
     private let diskSpace: any LocalModelDiskSpaceProbing
     private let runtime: any LocalModelRuntimeProbing
     private let fileManager: FileManager
+    private let layout: LocalModelCacheLayout
 
     private var currentStatus: LocalModelCacheStatus
     private var inFlightDownload: Task<LocalModelCacheStatus, Never>?
@@ -27,6 +86,7 @@ public actor LocalModelManager {
         self.diskSpace = diskSpace
         self.runtime = runtime
         self.fileManager = fileManager
+        self.layout = LocalModelCacheLayout(cacheRoot: cacheRoot, manifest: manifest, fileManager: fileManager)
         self.currentStatus = .notDownloaded(modelID: manifest.modelID)
     }
 
@@ -103,7 +163,7 @@ public actor LocalModelManager {
         if let inFlightDownload {
             return await inFlightDownload.value
         }
-        try? removePartialArtifacts()
+        try? layout.removePartialArtifacts()
         return await startDownload()
     }
 
@@ -119,7 +179,7 @@ public actor LocalModelManager {
     }
 
     func modelCacheURL() -> URL {
-        cacheRoot.appendingPathComponent(Self.cacheDirectoryName(for: manifest.modelID), isDirectory: true)
+        layout.modelCacheURL()
     }
 
     static func cacheDirectoryName(for modelID: String) -> String {
@@ -130,62 +190,21 @@ public actor LocalModelManager {
         currentStatus = status
     }
 
-    private func artifactURL(_ artifact: LocalModelArtifact) -> URL {
-        modelCacheURL().appendingPathComponent(artifact.relativePath, isDirectory: false)
-    }
-
-    private func partialURL(_ artifact: LocalModelArtifact) -> URL {
-        artifactURL(artifact).appendingPathExtension("partial")
-    }
-
     private func hasPartialArtifacts() -> Bool {
-        manifest.artifacts.contains { fileManager.fileExists(atPath: partialURL($0).path) }
-    }
-
-    private func removePartialArtifacts() throws {
-        for artifact in manifest.artifacts {
-            let partial = partialURL(artifact)
-            if fileManager.fileExists(atPath: partial.path) {
-                try fileManager.removeItem(at: partial)
-            }
-        }
+        manifest.artifacts.contains { fileManager.fileExists(atPath: layout.partialURL($0).path) }
     }
 
     private func verifyCachedArtifacts(fullHash: Bool = true) throws -> Bool {
         for artifact in manifest.artifacts {
-            let url = artifactURL(artifact)
+            let url = layout.artifactURL(artifact)
             guard fileManager.fileExists(atPath: url.path) else { return false }
-            try verify(artifact: artifact, at: url, fullHash: fullHash)
+            try layout.verify(artifact: artifact, at: url, fullHash: fullHash)
         }
         return true
     }
 
-    private func verify(artifact: LocalModelArtifact, at url: URL, fullHash: Bool = true) throws {
-        let attrs = try fileManager.attributesOfItem(atPath: url.path)
-        let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
-        guard size == artifact.byteCount else {
-            throw LocalModelManagerError.verificationFailed("Expected \(artifact.relativePath) to be \(artifact.byteCount) bytes, got \(size).")
-        }
-        guard fullHash else { return }
-        let digest = try Self.sha256Hex(of: url)
-        guard digest == artifact.sha256Hex else {
-            throw LocalModelManagerError.verificationFailed("Checksum mismatch for \(artifact.relativePath).")
-        }
-    }
-
     private func cacheInfo() throws -> LocalModelCacheInfo {
-        LocalModelCacheInfo(modelID: manifest.modelID, cacheURL: modelCacheURL(), diskUsageBytes: try diskUsage(of: modelCacheURL()))
-    }
-
-    private func diskUsage(of url: URL) throws -> Int64 {
-        guard fileManager.fileExists(atPath: url.path) else { return 0 }
-        var total: Int64 = 0
-        if let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
-            for case let fileURL as URL in enumerator {
-                total += Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            }
-        }
-        return total
+        LocalModelCacheInfo(modelID: manifest.modelID, cacheURL: modelCacheURL(), diskUsageBytes: try layout.diskUsage(of: modelCacheURL()))
     }
 
     static func sha256Hex(of url: URL, chunkSize: Int = 1024 * 1024) throws -> String {
@@ -225,6 +244,10 @@ private struct LocalModelDownloadWorker {
     let fileManager: FileManager
     let statusSink: @Sendable (LocalModelCacheStatus) async -> Void
 
+    private var layout: LocalModelCacheLayout {
+        LocalModelCacheLayout(cacheRoot: cacheRoot, manifest: manifest, fileManager: fileManager)
+    }
+
     func run() async -> LocalModelCacheStatus {
         do {
             guard LocalModelManifest.pinned(modelID: manifest.modelID) != nil else {
@@ -240,14 +263,14 @@ private struct LocalModelDownloadWorker {
             if available < manifest.requiredFreeBytes {
                 throw LocalModelManagerError.insufficientDiskSpace(required: manifest.requiredFreeBytes, available: available)
             }
-            try fileManager.createDirectory(at: modelCacheURL(), withIntermediateDirectories: true)
-            try removePartialArtifacts()
+            try fileManager.createDirectory(at: layout.modelCacheURL(), withIntermediateDirectories: true)
+            try layout.removePartialArtifacts()
 
             var completedBeforeCurrent: Int64 = 0
             let totalBytes = manifest.artifacts.reduce(Int64(0)) { $0 + $1.byteCount }
             for artifact in manifest.artifacts {
-                let final = artifactURL(artifact)
-                let partial = partialURL(artifact)
+                let final = layout.artifactURL(artifact)
+                let partial = layout.partialURL(artifact)
                 try fileManager.createDirectory(at: final.deletingLastPathComponent(), withIntermediateDirectories: true)
                 await statusSink(.downloading(
                     modelID: manifest.modelID,
@@ -263,14 +286,14 @@ private struct LocalModelDownloadWorker {
                     ))
                 }
                 await statusSink(.verifying(modelID: manifest.modelID))
-                try verify(artifact: artifact, at: partial)
+                try layout.verify(artifact: artifact, at: partial)
                 if fileManager.fileExists(atPath: final.path) {
                     try fileManager.removeItem(at: final)
                 }
                 try fileManager.moveItem(at: partial, to: final)
                 completedBeforeCurrent += artifact.byteCount
             }
-            let info = LocalModelCacheInfo(modelID: manifest.modelID, cacheURL: modelCacheURL(), diskUsageBytes: try diskUsage(of: modelCacheURL()))
+            let info = LocalModelCacheInfo(modelID: manifest.modelID, cacheURL: layout.modelCacheURL(), diskUsageBytes: try layout.diskUsage(of: layout.modelCacheURL()))
             return .verified(info)
         } catch let error as LocalModelManagerError {
             return failedStatus(for: error)
@@ -297,49 +320,5 @@ private struct LocalModelDownloadWorker {
             failure = LocalModelFailure(code: .verificationFailed, message: "Unpinned Cohere model identity is not allowed: \(modelID)")
         }
         return .failed(modelID: manifest.modelID, reason: failure, retryAvailable: true)
-    }
-
-    private func modelCacheURL() -> URL {
-        cacheRoot.appendingPathComponent(LocalModelManager.cacheDirectoryName(for: manifest.modelID), isDirectory: true)
-    }
-
-    private func artifactURL(_ artifact: LocalModelArtifact) -> URL {
-        modelCacheURL().appendingPathComponent(artifact.relativePath, isDirectory: false)
-    }
-
-    private func partialURL(_ artifact: LocalModelArtifact) -> URL {
-        artifactURL(artifact).appendingPathExtension("partial")
-    }
-
-    private func removePartialArtifacts() throws {
-        for artifact in manifest.artifacts {
-            let partial = partialURL(artifact)
-            if fileManager.fileExists(atPath: partial.path) {
-                try fileManager.removeItem(at: partial)
-            }
-        }
-    }
-
-    private func verify(artifact: LocalModelArtifact, at url: URL) throws {
-        let attrs = try fileManager.attributesOfItem(atPath: url.path)
-        let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
-        guard size == artifact.byteCount else {
-            throw LocalModelManagerError.verificationFailed("Expected \(artifact.relativePath) to be \(artifact.byteCount) bytes, got \(size).")
-        }
-        let digest = try LocalModelManager.sha256Hex(of: url)
-        guard digest == artifact.sha256Hex else {
-            throw LocalModelManagerError.verificationFailed("Checksum mismatch for \(artifact.relativePath).")
-        }
-    }
-
-    private func diskUsage(of url: URL) throws -> Int64 {
-        guard fileManager.fileExists(atPath: url.path) else { return 0 }
-        var total: Int64 = 0
-        if let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
-            for case let fileURL as URL in enumerator {
-                total += Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            }
-        }
-        return total
     }
 }

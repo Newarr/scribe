@@ -53,21 +53,13 @@ final class DiagnosticsWindowController {
                 return await self.exportHandler()
             }
         ))
-        let delegate = DiagnosticsWindowDelegate { [weak self] in self?.window = nil }
+        let delegate = CloseCallbackWindowDelegate(onClose: { [weak self] in self?.window = nil })
         host.delegate = delegate
         objc_setAssociatedObject(host, &diagnosticsWindowDelegateKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         WindowChrome.installGlass(on: host, material: .hudWindow)
         self.window = host
         host.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-private final class DiagnosticsWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
-    private let onClose: @MainActor () -> Void
-    init(onClose: @escaping @MainActor () -> Void) { self.onClose = onClose }
-    func windowWillClose(_ notification: Notification) {
-        Task { @MainActor in onClose() }
     }
 }
 

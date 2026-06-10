@@ -43,16 +43,3 @@ struct FidelityShortcutsPanel: View {
     }
   }
 }
-
-private struct FidelityKeyboardShortcutDisplay: View {
-  let shortcut: KeyboardShortcutSetting
-
-  var body: some View {
-    HStack(spacing: 3) {
-      ForEach(Array(shortcut.displayString.map(String.init).enumerated()), id: \.offset) {
-        _, part in
-        FidelityKey(part)
-      }
-    }
-  }
-}

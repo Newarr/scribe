@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-public enum AudioMixer {
+enum AudioMixer {
     enum MixerError: Error { case readFailed(URL), writeFailed(URL) }
 
     /// Mix two mono input files into a single mono PCM WAV at the target sample rate.
@@ -13,7 +13,7 @@ public enum AudioMixer {
     /// recording is ~1.4GB peak. Slice 4 (AEC pre-pass) needs streaming for the Rust
     /// AEC3 subprocess pipeline anyway; convert this to chunked stream-mix at that
     /// point. Tracked in codex review of slice 2 (P2).
-    public static func mix(
+    static func mix(
         mic: URL,
         system: URL,
         output: URL,

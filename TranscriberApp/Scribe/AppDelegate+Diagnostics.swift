@@ -145,13 +145,4 @@ extension AppDelegate {
     try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
     return logs
   }
-
-  @MainActor
-  private func permissionStatusName(_ status: PermissionStatus) -> String {
-    switch status {
-    case .granted: return "granted"
-    case .denied: return "denied"
-    case .notDetermined: return "notDetermined"
-    }
-  }
 }
