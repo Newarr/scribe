@@ -19,6 +19,20 @@ Common causes:
 - **Output folder unwritable** — Settings → Output, pick a different folder, or fix the permissions on the current one.
 - **Output folder in synced storage** — only a warning, not a blocker. The folder shows a yellow warning if it looks like iCloud Drive, Dropbox, Google Drive, OneDrive, or Box. Recording into synced storage can race the cloud sync and corrupt audio mid-write. Recommended: move the folder to local-only storage.
 
+### Permission toggle is on, but Scribe still reports it denied
+
+macOS pins each privacy grant to the code signature of the binary that requested it. If Scribe's signing identity changes between installs (typically a from-source build signed with a different or ad-hoc certificate replacing a previous install), the old grant no longer matches the new binary: System Settings keeps showing the toggle as enabled, but the running app fails the check. Screen & System Audio Recording is where this usually bites.
+
+Fix:
+
+```
+tccutil reset ScreenCapture com.szymonsypniewicz.scribe
+```
+
+Then re-enable Scribe under System Settings → Privacy & Security → Screen & System Audio Recording and restart the app. The same reset works for other services (`Microphone`, `Calendar`) showing the same symptom.
+
+Release builds are Developer ID signed with a stable identity, so normal updates never trigger this. If you build from source, install via `scripts/dev-install.sh` so dev builds are signed with a stable identity too; see the header comment in that script for the details.
+
 ### Privacy acknowledgement window appears every launch
 
 The privacy modal is gated on `transcriber.settings.v1` in UserDefaults. If you keep seeing it:
