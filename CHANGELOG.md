@@ -145,7 +145,7 @@ deferred to v1.1 product work.
 
 ## 1.0.0-rc3 - 2026-04-30
 
-Closes every entry in `docs/archive/KNOWN_ISSUES-rc3.md` from the rc2 four-parallel
+Closes every entry in the rc3 known-issues list from the rc2 four-parallel
 codex audit (15 architectural P0/P1s + 9 P2s).
 
 ### Capture pipeline correctness
