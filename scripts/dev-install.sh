@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Dev install: build (optional), copy to /Applications/, and sign with the
-# local self-signed code-signing cert so TCC grants persist across rebuilds.
+# Dev install: build (optional), copy to /Applications/, and sign with a
+# stable code-signing identity so TCC grants and Keychain item ACLs
+# persist across rebuilds.
 #
 # Without a stable code-signing identity, every rebuild of Scribe gets a
 # new cdhash and macOS treats it as a different app — Screen Recording,
 # Microphone, etc. grants vanish even though the toggle in System Settings
-# stays on. Signing with a self-signed cert that has a stable Subject Key
-# Identifier solves this: TCC keys grants by the cert's leaf, not cdhash.
+# stays on, and the ElevenLabs key in Keychain becomes unreadable (the
+# item ACL stores the app's designated requirement, which an ad-hoc
+# signature can never satisfy twice). Signing with the login-keychain
+# Apple Development certificate solves both: TCC and Keychain key off
+# the cert leaf / team, not the cdhash.
 #
-# One-time setup that produced the cert + dedicated keychain:
-#   - openssl self-signed cert with CA:TRUE, keyUsage digitalSignature +
-#     keyCertSign, extendedKeyUsage codeSigning (CN "Scribe Dev Signer 2")
-#   - imported to ~/Library/Keychains/scribe-dev.keychain-db
-#   - add-trusted-cert with policy codeSign
+# Identity resolution: $SCRIBE_DEV_IDENTITY if set, else the first
+# "Apple Development" identity in the default keychain search list,
+# else ad-hoc with a loud warning (cloud-key reads will break).
 #
 # Usage:
 #   scripts/dev-install.sh                  # signs /Applications/Scribe.app in place
@@ -23,8 +25,6 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-DEV_KEYCHAIN="$HOME/Library/Keychains/scribe-dev.keychain-db"
-IDENTITY="Scribe Dev Signer 2"
 ENTITLEMENTS="${PROJECT_DIR}/TranscriberApp/Scribe/Scribe.entitlements"
 TARGET="/Applications/Scribe.app"
 DEV_ENTITLEMENTS=""
@@ -130,15 +130,15 @@ if [[ -n "${SCRIBE_DEV_INSTALL_TEST_EXIT_AFTER_ENTITLEMENTS:-}" ]]; then
     esac
 fi
 
-if [[ ! -f "${DEV_KEYCHAIN}" ]]; then
-    echo "Dev keychain missing: ${DEV_KEYCHAIN}" >&2
-    echo "Re-run the one-time cert setup before using this script." >&2
-    exit 1
+IDENTITY="${SCRIBE_DEV_IDENTITY:-}"
+if [[ -z "${IDENTITY}" ]]; then
+    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F'"' '/Apple Development/ {print $2; exit}')"
 fi
-
-if ! security find-identity -v -p codesigning "${DEV_KEYCHAIN}" | grep -q "${IDENTITY}"; then
-    echo "Code-signing identity '${IDENTITY}' not found in ${DEV_KEYCHAIN}" >&2
-    exit 1
+if [[ -z "${IDENTITY}" ]]; then
+    echo "WARNING: no Apple Development identity found; falling back to ad-hoc signing." >&2
+    echo "TCC grants and the ElevenLabs Keychain item will NOT survive this install." >&2
+    IDENTITY="-"
 fi
 
 if [[ ! -f "${ENTITLEMENTS}" ]]; then
@@ -147,6 +147,7 @@ if [[ ! -f "${ENTITLEMENTS}" ]]; then
 fi
 
 SOURCE=""
+BUILD_DIR=""
 if [[ $# -gt 0 ]]; then
     case "$1" in
         --build)
@@ -191,6 +192,9 @@ if [[ -n "${SOURCE}" ]]; then
     echo "==> Installing ${SOURCE} → ${TARGET}"
     rm -rf "${TARGET}"
     cp -R "${SOURCE}" "${TARGET}"
+    if [[ -n "${BUILD_DIR}" ]]; then
+        rm -rf "${BUILD_DIR}"
+    fi
 fi
 
 echo "==> Building dev entitlements (library validation disabled)"
@@ -201,17 +205,23 @@ echo "==> Building dev entitlements (library validation disabled)"
 # uses the unmodified TranscriberApp/Scribe/Scribe.entitlements.
 make_temp_dev_entitlements
 
-echo "==> Signing ${TARGET} for local Debug smoke"
+echo "==> Signing ${TARGET} with identity: ${IDENTITY}"
 # Interrupted codesign runs can leave .cstemp files in the app bundle; remove
 # only those codesign-owned temp files before resealing so verification stays
 # deterministic across repeated dev-install/smoke attempts.
 find "${TARGET}" -name '*.cstemp' -type f -delete
-# The Debug product contains Xcode's preview/debug dylibs. In this environment,
-# re-signing that bundle with the self-signed dev identity can hang while
-# rewriting large debug dylibs, so the smoke install uses deterministic ad-hoc
-# signing with the same dev entitlements. Release signing remains unchanged.
+# Sign nested code first (Xcode's Debug product ships preview/debug dylibs in
+# Contents/MacOS and Contents/Frameworks); signing the bundle does not re-sign
+# nested Mach-O files, and the bundle seal requires them to carry the same
+# identity. The earlier self-signed "Scribe Dev Signer" cert hung here because
+# its private key lived in a locked custom keychain; the login-keychain Apple
+# Development identity signs the same dylibs in seconds.
+find "${TARGET}/Contents/Frameworks" "${TARGET}/Contents/MacOS" \
+    -name '*.dylib' -type f 2>/dev/null | while read -r dylib; do
+    codesign --force --sign "${IDENTITY}" --timestamp=none "${dylib}"
+done
 codesign --force \
-    --sign - \
+    --sign "${IDENTITY}" \
     --timestamp=none \
     --entitlements "${DEV_ENTITLEMENTS}" \
     "${TARGET}"
@@ -231,6 +241,8 @@ if ! grep -q "com.apple.security.personal-information.calendars" <<<"${SIGNED_EN
 fi
 
 echo
-echo "Done. Local Debug app installed and signed for smoke testing."
-echo "For TCC-persistent developer installs, re-sign with '${IDENTITY}' after the"
-echo "local keychain/codesign environment can complete that signing path."
+echo "Done. Local Debug app installed and signed with '${IDENTITY}'."
+if [[ "${IDENTITY}" == "-" ]]; then
+    echo "Ad-hoc fallback was used: TCC grants and the ElevenLabs Keychain ACL"
+    echo "will not match this build. Install an Apple Development identity and re-run."
+fi
