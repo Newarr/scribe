@@ -40,11 +40,11 @@ final class RecordingMenuAnimationTests: XCTestCase {
       source.contains("model.status == .recording && audioCaptureIsActive"),
       "Waveform should animate only during recording with both channels active.")
 
-    guard let waveformRange = source.range(of: "private struct AnimatedWaveform") else {
+    guard let waveformRange = source.range(of: "struct AnimatedWaveform") else {
       return XCTFail("Recording menu must define the animated waveform view")
     }
     let waveformEnd =
-      source[waveformRange.upperBound...].range(of: "private struct PrimaryPopoverButtonStyle")?
+      source[waveformRange.upperBound...].range(of: "struct PrimaryPopoverButtonStyle")?
       .lowerBound ?? source.endIndex
     let waveform = String(source[waveformRange.lowerBound..<waveformEnd])
 
@@ -100,7 +100,7 @@ final class RecordingMenuAnimationTests: XCTestCase {
       source.contains("private struct ChannelAudioMeter"),
       "Recording popover must not render horizontal channel bars.")
     XCTAssertTrue(
-      source.contains("private struct CompactAudioActivity"),
+      source.contains("struct CompactAudioActivity"),
       "Recording popover must keep compact channel health indicators.")
     XCTAssertTrue(
       source.contains("micLevel: model.micLevel"),
@@ -183,10 +183,36 @@ final class RecordingMenuAnimationTests: XCTestCase {
       .deletingLastPathComponent()  // TranscriberCoreTests
       .deletingLastPathComponent()  // Tests
       .deletingLastPathComponent()  // repo root
-    return
-      repoRoot
-      .appendingPathComponent("TranscriberApp/Scribe")
-      .appendingPathComponent(file)
-      .path
+    let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
+    guard file == "RecordingMenu.swift",
+      let combined = Self.combinedRecordingMenuSourcePath(scribeDir: scribeDir)
+    else {
+      return scribeDir.appendingPathComponent(file).path
+    }
+    return combined
+  }
+
+  /// RecordingMenu is split across files under RecordingMenu/. Source guards
+  /// treat them as one logical source, so the split files are concatenated in
+  /// the original file's layout order (declarations before their call sites)
+  /// into a temp file read like the original single file.
+  private static func combinedRecordingMenuSourcePath(scribeDir: URL) -> String? {
+    let fm = FileManager.default
+    let menuDir = scribeDir.appendingPathComponent("RecordingMenu")
+    guard let names = try? fm.contentsOfDirectory(atPath: menuDir.path) else { return nil }
+    let layoutOrder = [
+      "RecordingMenu.swift", "RecordingMenuModel.swift",
+      "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
+    ]
+    let parts = layoutOrder.filter { names.contains($0) }
+      + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+    let combined = parts.compactMap {
+      try? String(contentsOfFile: menuDir.appendingPathComponent($0).path, encoding: .utf8)
+    }.joined(separator: "\n")
+    guard combined.isEmpty == false else { return nil }
+    let url = fm.temporaryDirectory.appendingPathComponent(
+      "scribe-recordingmenu-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
+    guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+    return url.path
   }
 }

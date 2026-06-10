@@ -511,6 +511,10 @@ final class SessionRepairRoutingTests: XCTestCase {
            let combined = Self.combinedSettingsWindowSourcePath(scribeDir: scribeDir) {
             return combined
         }
+        if file == "RecordingMenu.swift",
+           let combined = Self.combinedRecordingMenuSourcePath(scribeDir: scribeDir) {
+            return combined
+        }
         return scribeDir.appendingPathComponent(file).path
     }
 
@@ -557,6 +561,30 @@ final class SessionRepairRoutingTests: XCTestCase {
         guard combined.isEmpty == false else { return nil }
         let url = fm.temporaryDirectory.appendingPathComponent(
             "scribe-settingswindow-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
+        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return url.path
+    }
+
+    /// RecordingMenu is split across files under RecordingMenu/. Source guards
+    /// treat them as one logical source, so the split files are concatenated in
+    /// the original file's layout order (declarations before their call sites)
+    /// into a temp file read like the original single file.
+    private static func combinedRecordingMenuSourcePath(scribeDir: URL) -> String? {
+        let fm = FileManager.default
+        let menuDir = scribeDir.appendingPathComponent("RecordingMenu")
+        guard let names = try? fm.contentsOfDirectory(atPath: menuDir.path) else { return nil }
+        let layoutOrder = [
+            "RecordingMenu.swift", "RecordingMenuModel.swift",
+            "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
+        ]
+        let parts = layoutOrder.filter { names.contains($0) }
+            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+        let combined = parts.compactMap {
+            try? String(contentsOfFile: menuDir.appendingPathComponent($0).path, encoding: .utf8)
+        }.joined(separator: "\n")
+        guard combined.isEmpty == false else { return nil }
+        let url = fm.temporaryDirectory.appendingPathComponent(
+            "scribe-recordingmenu-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
         guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
         return url.path
     }

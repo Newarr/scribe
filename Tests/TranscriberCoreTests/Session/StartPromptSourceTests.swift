@@ -55,13 +55,24 @@ final class StartPromptSourceTests: XCTestCase {
     }
 
     func testMenuRecoveryStillExposesSuppressionBehindDisclosure() throws {
-        let path = URL(fileURLWithPath: #filePath)
+        let menuDir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("TranscriberApp/Scribe/RecordingMenu.swift")
-        let source = try String(contentsOf: path, encoding: .utf8)
+            .appendingPathComponent("TranscriberApp/Scribe/RecordingMenu")
+        // RecordingMenu is split across files under RecordingMenu/. Source guards
+        // treat them as one logical source.
+        let names = try FileManager.default.contentsOfDirectory(atPath: menuDir.path)
+        let layoutOrder = [
+            "RecordingMenu.swift", "RecordingMenuModel.swift",
+            "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
+        ]
+        let parts = layoutOrder.filter { names.contains($0) }
+            + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+        let source = try parts.map {
+            try String(contentsOf: menuDir.appendingPathComponent($0), encoding: .utf8)
+        }.joined(separator: "\n")
         XCTAssertTrue(source.contains("DisclosureGroup(\"More options ▾\")"))
         XCTAssertTrue(source.contains("Stop detecting \\(prompt?.appDisplayName ?? \"this app\") for 30 minutes"))
     }

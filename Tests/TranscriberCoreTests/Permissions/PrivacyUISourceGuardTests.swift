@@ -790,6 +790,38 @@ final class PrivacyUISourceGuardTests: XCTestCase {
                 try String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
             }.joined(separator: "\n")
         }
+        if file == "RecordingMenu.swift" {
+            // RecordingMenu is split across files under RecordingMenu/. Source
+            // guards treat them as one logical source, concatenated in the
+            // original file's layout order (declarations before their call sites).
+            let menuDir = scribeDir.appendingPathComponent("RecordingMenu")
+            let names = try FileManager.default.contentsOfDirectory(atPath: menuDir.path)
+            let layoutOrder = [
+                "RecordingMenu.swift", "RecordingMenuModel.swift",
+                "RecordingPopoverContent.swift", "RecordingPopoverComponents.swift",
+            ]
+            let parts = layoutOrder.filter { names.contains($0) }
+                + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+            return try parts.map {
+                try String(contentsOfFile: menuDir.appendingPathComponent($0).path, encoding: .utf8)
+            }.joined(separator: "\n")
+        }
+        if file == "DesignSystem.swift" {
+            // DesignSystem is split across files under DesignSystem/. Source
+            // guards treat them as one logical source, concatenated in the
+            // original file's layout order (declarations before their call sites).
+            let designDir = scribeDir.appendingPathComponent("DesignSystem")
+            let names = try FileManager.default.contentsOfDirectory(atPath: designDir.path)
+            let layoutOrder = [
+                "DSTokens.swift", "DSButtonStyles.swift", "DSInteraction.swift",
+                "WindowChrome.swift", "DSComponents.swift", "DebugVisualSnapshotWriter.swift",
+            ]
+            let parts = layoutOrder.filter { names.contains($0) }
+                + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+            return try parts.map {
+                try String(contentsOfFile: designDir.appendingPathComponent($0).path, encoding: .utf8)
+            }.joined(separator: "\n")
+        }
         return try String(
             contentsOfFile: scribeDir.appendingPathComponent(file).path, encoding: .utf8)
     }
