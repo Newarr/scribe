@@ -121,11 +121,13 @@ final class OnboardingFlowTests: XCTestCase {
         await controller.enter(.screenRecording)
         let elapsed = start.duration(to: ContinuousClock.now)
         XCTAssertLessThan(elapsed, .milliseconds(200), "entering Screen Recording must return immediately instead of awaiting the multi-GB download")
+        await controller.waitForStagingDispatch()
         let countsAfterEnter = await starter.counts()
         XCTAssertEqual(countsAfterEnter.start, 1, "background start should be scheduled before enter returns")
 
         await controller.enter(.screenRecording)
         await controller.enter(.screenRecording)
+        await controller.waitForStagingDispatch()
         let firstCounts = await starter.counts()
         XCTAssertEqual(firstCounts.start, 1)
         XCTAssertEqual(firstCounts.retry, 0)
@@ -496,6 +498,7 @@ final class OnboardingFlowTests: XCTestCase {
 
         await controller.startLocalModelStagingIfNeeded(localModelStatus: notDownloaded)
         await controller.startLocalModelStagingIfNeeded(localModelStatus: notDownloaded)
+        await controller.waitForStagingDispatch()
 
         let counts = await starter.counts()
         XCTAssertEqual(counts.start, 1, "resumed onboarding must start Local staging once even when it resumes after the Screen Recording visual step")
@@ -530,6 +533,7 @@ final class OnboardingFlowTests: XCTestCase {
 
             await controller.startLocalModelStagingIfNeeded(localModelStatus: state)
             await controller.startLocalModelStagingIfNeeded(localModelStatus: state)
+            await controller.waitForStagingDispatch()
 
             let counts = await starter.counts()
             XCTAssertEqual(counts.start, 1, "automatic onboarding staging should continue for download-appropriate state \(state)")

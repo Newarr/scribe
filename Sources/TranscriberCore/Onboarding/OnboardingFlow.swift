@@ -360,7 +360,15 @@ public actor OnboardingFlowController {
         screenRecordingDownloadTask = Task {
             await starter.startDownload()
         }
-        await Task.yield()
+    }
+
+    /// Awaits the in-flight background staging task, if any. Staging is
+    /// fire-and-forget by contract (entering Screen Recording must not
+    /// block on a multi-GB download), so observers that need the dispatch
+    /// settled - tests asserting on starter call counts - await this
+    /// instead of racing the spawned Task.
+    public func waitForStagingDispatch() async {
+        _ = await screenRecordingDownloadTask?.value
     }
 
     private static func shouldStartAutomaticLocalModelStaging(for status: LocalModelCacheStatus) -> Bool {
