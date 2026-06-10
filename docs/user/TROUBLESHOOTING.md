@@ -75,7 +75,7 @@ Hearing the same voice transcribed twice (once attributed to mic, once to system
 
 The mix recipe in `AudioFinalizer` is power-preserving (single-active sides pass through at unity, dual-active scaled by 1/√2 each), with a hard peak limit at 0.891 ≈ -1 dBFS. If your recording sounds quieter than expected on first listen, the limit is conservative — playback level is still consistent across sessions.
 
-True LUFS-based normalization (target -16 LUFS / -1 dBTP) is documented as deferred to V1.1 in `docs/spec/SPEC.md` § Audio normalization.
+True LUFS-based normalization (target -16 LUFS / -1 dBTP) is deferred to V1.1.
 
 ## Local Cohere repair
 

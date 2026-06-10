@@ -52,9 +52,8 @@ final class DocsConsistencyTests: XCTestCase {
   }
 
   private func loadActiveDocs(root: URL) throws -> [String: String] {
-    let relativePaths = [
+    let requiredPaths = [
       "README.md",
-      "docs/spec/SPEC.md",
       "docs/user/PRIVACY.md",
       "docs/user/SECURITY.md",
       "docs/user/TROUBLESHOOTING.md",
@@ -62,9 +61,21 @@ final class DocsConsistencyTests: XCTestCase {
       "docs/contributing/TESTING.md",
       "docs/contributing/STYLE.md",
     ]
-    return try Dictionary(uniqueKeysWithValues: relativePaths.map { path in
+    // Internal docs are untracked in the public repo (see .gitignore), so
+    // they exist on dev machines but not in CI clones. Check them only
+    // when present.
+    let internalPaths = [
+      "docs/spec/SPEC.md",
+    ]
+    var docs = try Dictionary(uniqueKeysWithValues: requiredPaths.map { path in
       (path, try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8))
     })
+    for path in internalPaths {
+      let url = root.appendingPathComponent(path)
+      guard FileManager.default.fileExists(atPath: url.path) else { continue }
+      docs[path] = try String(contentsOf: url, encoding: .utf8)
+    }
+    return docs
   }
 
   private func buildInfoVersion(root: URL) throws -> String {

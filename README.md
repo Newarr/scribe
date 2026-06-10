@@ -85,7 +85,6 @@ Common issues + fixes: [`docs/user/TROUBLESHOOTING.md`](docs/user/TROUBLESHOOTIN
 - **`TranscriberCore`**: pure-Swift library, no AppKit. Capture, audio, recovery, engine clients, settings. Fully unit-tested. (Library name kept stable across the product rename.)
 - **`Scribe`**: menu bar shell. Lifecycle, SwiftUI windows, permission flows.
 
-Spec: [`docs/spec/SPEC.md`](docs/spec/SPEC.md). Roadmap: [`docs/archive/superpowers/plans/2026-04-29-MASTER-ROADMAP.md`](docs/archive/superpowers/plans/2026-04-29-MASTER-ROADMAP.md).
 
 ## Status
 

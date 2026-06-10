@@ -22,11 +22,24 @@ TranscriberApp/.dd-release/
 # Build output
 build/
 
-# Clawpatch generated state (keep source-discovery config tracked)
-.clawpatch/*
-!.clawpatch/config.json
+# Clawpatch generated state
+.clawpatch/
 
 # Design handoff and screenshots
 .design-handoff*/
 .screenshots/
 *.zip
+
+# Internal docs, specs, plans, and agent artifacts — local only, not for the
+# public repo. docs/user/ and docs/contributing/ remain public.
+AGENTS.md
+transcript.md
+docs/spec/
+docs/working/
+docs/archive/
+plans/
+reviews/
+.missions/
+*.pen
+image.png
+images/

@@ -2,7 +2,7 @@
 
 Scribe records meeting audio on your Mac and turns it into a Markdown transcript. This document is the complete description of what data the app handles, where it lives, and what leaves your device.
 
-This is reference material, not a mission statement: Scribe's design priority is seamless capture (see `docs/spec/SPEC.md` → Priorities). Knowing exactly what leaves the device, and being able to choose Local for sensitive calls, exists to remove hesitation before hitting record.
+This is reference material, not a mission statement: Scribe's design priority is seamless capture. Knowing exactly what leaves the device, and being able to choose Local for sensitive calls, exists to remove hesitation before hitting record.
 
 ## What stays on your Mac
 
