@@ -230,7 +230,7 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         XCTAssertFalse(styleBlock.contains(".onTapGesture"))
 
         let settingsSource = try appSource("SettingsWindow.swift")
-        guard let toggleRange = settingsSource.range(of: "private struct FidelityToggle") else {
+        guard let toggleRange = settingsSource.range(of: "struct FidelityToggle") else {
             XCTFail("FidelityToggle must exist")
             return
         }
@@ -760,17 +760,37 @@ final class PrivacyUISourceGuardTests: XCTestCase {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
         let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
-        guard file == "AppDelegate.swift" else {
-            return try String(
-                contentsOfFile: scribeDir.appendingPathComponent(file).path, encoding: .utf8)
+        if file == "AppDelegate.swift" {
+            // AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
+            // extension files. Source guards treat them as one logical source.
+            let names = try FileManager.default.contentsOfDirectory(atPath: scribeDir.path)
+            let parts = ["AppDelegate.swift"]
+                + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
+            return try parts.map {
+                try String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
+            }.joined(separator: "\n")
         }
-        // AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
-        // extension files. Source guards treat them as one logical source.
-        let names = try FileManager.default.contentsOfDirectory(atPath: scribeDir.path)
-        let parts = ["AppDelegate.swift"]
-            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
-        return try parts.map {
-            try String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
-        }.joined(separator: "\n")
+        if file == "SettingsWindow.swift" {
+            // SettingsWindow is split across files under Settings/. Source guards
+            // treat them as one logical source, concatenated in the original
+            // file's layout order (declarations before their call sites).
+            let settingsDir = scribeDir.appendingPathComponent("Settings")
+            let names = try FileManager.default.contentsOfDirectory(atPath: settingsDir.path)
+            let layoutOrder = [
+                "SettingsWindowController.swift", "SettingsFormModel.swift", "SettingsForm.swift",
+                "FidelityChrome.swift", "ShortcutCapture.swift", "GeneralPanel.swift",
+                "AudioPanel.swift", "ShortcutsPanel.swift", "VaultPanel.swift",
+                "PrivacyPanel.swift", "PermissionsPanel.swift", "AboutPanel.swift",
+                "FidelityComponents.swift", "PermissionsOnboardingWindow.swift",
+                "InstalledAppSmokeSettingsFrame.swift",
+            ]
+            let parts = layoutOrder.filter { names.contains($0) }
+                + names.filter { $0.hasSuffix(".swift") && !layoutOrder.contains($0) }.sorted()
+            return try parts.map {
+                try String(contentsOfFile: settingsDir.appendingPathComponent($0).path, encoding: .utf8)
+            }.joined(separator: "\n")
+        }
+        return try String(
+            contentsOfFile: scribeDir.appendingPathComponent(file).path, encoding: .utf8)
     }
 }
