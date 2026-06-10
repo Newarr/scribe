@@ -232,13 +232,20 @@ final class StartPromptSourceTests: XCTestCase {
 final class PromptPreflightRecoverySourceTests: XCTestCase {
     private var appDelegateSource: String {
         get throws {
-            let path = URL(fileURLWithPath: #filePath)
+            let scribeDir = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent("TranscriberApp/Scribe/AppDelegate.swift")
-            return try String(contentsOf: path, encoding: .utf8)
+                .appendingPathComponent("TranscriberApp/Scribe")
+            // AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
+            // extension files. Source guards treat them as one logical source.
+            let names = try FileManager.default.contentsOfDirectory(atPath: scribeDir.path)
+            let parts = ["AppDelegate.swift"]
+                + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
+            return try parts.map {
+                try String(contentsOf: scribeDir.appendingPathComponent($0), encoding: .utf8)
+            }.joined(separator: "\n")
         }
     }
 

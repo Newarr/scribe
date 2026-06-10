@@ -197,7 +197,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     func testVisibleAppDelegateSetupPopoverPrioritizesSessionRepairPayloadBeforeCurrentSettingsAudit() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 
-        guard let range = source.range(of: "private func presentSetupRequiredPopover() async") else {
+        guard let range = source.range(of: "func presentSetupRequiredPopover() async") else {
             return XCTFail("presentSetupRequiredPopover must exist")
         }
         let body = String(source[range.lowerBound..<source.index(range.lowerBound, offsetBy: min(900, source.distance(from: range.lowerBound, to: source.endIndex)))])
@@ -260,7 +260,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
     func testPromptStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        XCTAssertTrue(source.contains("private var pendingPromptCalendarEventForStart: CalendarEvent?"))
+        XCTAssertTrue(source.contains("var pendingPromptCalendarEventForStart: CalendarEvent?"))
         XCTAssertTrue(source.contains("pendingPromptCalendarEventForStart = event"))
         XCTAssertTrue(source.contains("let promptedEvent = pendingPromptCalendarEventForStart"), "prompt Start Recording must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
     }
@@ -296,7 +296,7 @@ final class SessionRepairRoutingTests: XCTestCase {
     func testRetrySuccessResetsAppAndMenuToIdle() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 
-        guard let retryRange = source.range(of: "private func retryFailedSession(at sessionURL: URL) async") else {
+        guard let retryRange = source.range(of: "func retryFailedSession(at sessionURL: URL) async") else {
             return XCTFail("AppDelegate must keep failed-session retry routed through a visible state transition")
         }
         let body = String(source[retryRange.lowerBound..<source.index(retryRange.lowerBound, offsetBy: min(2200, source.distance(from: retryRange.lowerBound, to: source.endIndex)))])
@@ -372,12 +372,12 @@ final class SessionRepairRoutingTests: XCTestCase {
     func testEndedCallsInvalidatePendingPromptBeforeStaleActionsCanStartRecording() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 
-        XCTAssertTrue(source.contains("private var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
+        XCTAssertTrue(source.contains("var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
         XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
         XCTAssertTrue(source.contains("DetectionTriggerIdentity.matchesEndedCandidate"), "only the current trigger identity or the explicit calendar-to-app transition may be invalidated by an ended-call signal")
 
-        guard let endedRange = source.range(of: "private func handleEndedDetectionCandidate") else {
+        guard let endedRange = source.range(of: "func handleEndedDetectionCandidate") else {
             return XCTFail("ended candidate handler must exist")
         }
         let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(1400, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
@@ -399,8 +399,8 @@ final class SessionRepairRoutingTests: XCTestCase {
 
     func testEndedCurrentRecordingRoutesToEndGuardStopPrompt() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        XCTAssertTrue(source.contains("private var endGuard: EndGuard?"), "AppDelegate must own the recording end guard")
-        XCTAssertTrue(source.contains("private let endCountdownController = EndCountdownWindowController()"), "AppDelegate must own the stop-prompt HUD")
+        XCTAssertTrue(source.contains("var endGuard: EndGuard?"), "AppDelegate must own the recording end guard")
+        XCTAssertTrue(source.contains("let endCountdownController = EndCountdownWindowController()"), "AppDelegate must own the stop-prompt HUD")
         XCTAssertTrue(source.contains("await endGuard?.suspectCallEnded(at: Date())"), "ended-call recognition during recording must enter the stop-prompt flow")
         XCTAssertTrue(source.contains("await startEndGuard(startedAt:"), "recording start must arm the end guard")
         XCTAssertTrue(source.contains("endGuard.observeAudioLevel"), "live mic/system levels must feed the silence fallback")
@@ -469,7 +469,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
     func testPromptStopPathWritesPendingTranscriptBeforeQueueReevaluation() throws {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
-        guard let stopRange = source.range(of: "private func stopRecording() async") else {
+        guard let stopRange = source.range(of: "func stopRecording() async") else {
             return XCTFail("stopRecording route must exist")
         }
         let stopBody = String(source[stopRange.lowerBound..<source.index(stopRange.lowerBound, offsetBy: min(5200, source.distance(from: stopRange.lowerBound, to: source.endIndex)))])
@@ -502,10 +502,31 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
     private func appSourcePath(_ file: String) -> String {
-        repoRoot()
-            .appendingPathComponent("TranscriberApp/Scribe")
-            .appendingPathComponent(file)
-            .path
+        let scribeDir = repoRoot().appendingPathComponent("TranscriberApp/Scribe")
+        guard file == "AppDelegate.swift",
+              let combined = Self.combinedAppDelegateSourcePath(scribeDir: scribeDir) else {
+            return scribeDir.appendingPathComponent(file).path
+        }
+        return combined
+    }
+
+    /// AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
+    /// extension files. Source guards treat them as one logical source, so the
+    /// split files are concatenated into a temp file read like the original
+    /// single file.
+    private static func combinedAppDelegateSourcePath(scribeDir: URL) -> String? {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: scribeDir.path) else { return nil }
+        let parts = ["AppDelegate.swift"]
+            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
+        let combined = parts.compactMap {
+            try? String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
+        }.joined(separator: "\n")
+        guard combined.isEmpty == false else { return nil }
+        let url = fm.temporaryDirectory.appendingPathComponent(
+            "scribe-appdelegate-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
+        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return url.path
     }
 
     private func coreSourcePath(_ file: String) -> String {

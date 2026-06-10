@@ -759,10 +759,18 @@ final class PrivacyUISourceGuardTests: XCTestCase {
             .deletingLastPathComponent() // TranscriberCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
-        let path = repoRoot
-            .appendingPathComponent("TranscriberApp/Scribe")
-            .appendingPathComponent(file)
-            .path
-        return try String(contentsOfFile: path, encoding: .utf8)
+        let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
+        guard file == "AppDelegate.swift" else {
+            return try String(
+                contentsOfFile: scribeDir.appendingPathComponent(file).path, encoding: .utf8)
+        }
+        // AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
+        // extension files. Source guards treat them as one logical source.
+        let names = try FileManager.default.contentsOfDirectory(atPath: scribeDir.path)
+        let parts = ["AppDelegate.swift"]
+            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
+        return try parts.map {
+            try String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
+        }.joined(separator: "\n")
     }
 }

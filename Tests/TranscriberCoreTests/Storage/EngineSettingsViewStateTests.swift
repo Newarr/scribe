@@ -240,10 +240,31 @@ final class EngineSettingsViewStateTests: XCTestCase {
             .deletingLastPathComponent() // TranscriberCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // repo root
-        return repoRoot
-            .appendingPathComponent("TranscriberApp/Scribe")
-            .appendingPathComponent(file)
-            .path
+        let scribeDir = repoRoot.appendingPathComponent("TranscriberApp/Scribe")
+        guard file == "AppDelegate.swift",
+              let combined = Self.combinedAppDelegateSourcePath(scribeDir: scribeDir) else {
+            return scribeDir.appendingPathComponent(file).path
+        }
+        return combined
+    }
+
+    /// AppDelegate is split across AppDelegate.swift plus AppDelegate+<Area>.swift
+    /// extension files. Source guards treat them as one logical source, so the
+    /// split files are concatenated into a temp file read like the original
+    /// single file.
+    private static func combinedAppDelegateSourcePath(scribeDir: URL) -> String? {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: scribeDir.path) else { return nil }
+        let parts = ["AppDelegate.swift"]
+            + names.filter { $0.hasPrefix("AppDelegate+") && $0.hasSuffix(".swift") }.sorted()
+        let combined = parts.compactMap {
+            try? String(contentsOfFile: scribeDir.appendingPathComponent($0).path, encoding: .utf8)
+        }.joined(separator: "\n")
+        guard combined.isEmpty == false else { return nil }
+        let url = fm.temporaryDirectory.appendingPathComponent(
+            "scribe-appdelegate-combined-\(ProcessInfo.processInfo.processIdentifier).swift")
+        guard (try? combined.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return url.path
     }
 }
 
