@@ -11,6 +11,24 @@ final class CalendarWatcherTests: XCTestCase {
       attendees: []
     )
   }
+
+  /// Waits for an asynchronously observable condition instead of sleeping a
+  /// fixed duration. The watcher commits cache writes from internally spawned
+  /// tasks (notification refreshes, poll iterations) that expose no awaitable
+  /// handle: resuming a lookup continuation only schedules the refresh task,
+  /// so the commit lands at an unordered later point. Tests must wait on the
+  /// state the commit produces, not on wall-clock time.
+  private func waitUntil(
+    timeout: TimeInterval = 2,
+    _ condition: () async -> Bool
+  ) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if await condition() { return true }
+      try? await Task.sleep(nanoseconds: 1_000_000)
+    }
+    return await condition()
+  }
   func testStartPopulatesCacheFromLookup() async {
     let now = Date()
     let event = CalendarEvent(
@@ -159,8 +177,10 @@ final class CalendarWatcherTests: XCTestCase {
     XCTAssertEqual(changed.events.map(\.title), ["After notification"])
 
     await watcher.stop()
-    let stoppedObserverCount = await fakeNotifications.activeObserverCount
-    XCTAssertEqual(stoppedObserverCount, 0)
+    let observerRemoved = await waitUntil {
+      await fakeNotifications.activeObserverCount == 0
+    }
+    XCTAssertTrue(observerRemoved, "stop() must remove the calendar change observer")
     await fakeNotifications.postChange()
     try? await Task.sleep(nanoseconds: 20_000_000)
     let finalLookupCount = await fakeLookup.callCount
@@ -187,7 +207,9 @@ final class CalendarWatcherTests: XCTestCase {
     await manualRefresh.value
 
     await fake.completeFetch(number: 2, with: [periodicEvent])
-    try? await Task.sleep(nanoseconds: 20_000_000)
+    _ = await waitUntil {
+      await watcher.currentCache().events.map(\.title) == ["Periodic"]
+    }
 
     let snapshot = await watcher.currentCache()
     XCTAssertEqual(
@@ -217,9 +239,17 @@ final class CalendarWatcherTests: XCTestCase {
     await fakeNotifications.postChange()
     await fakeLookup.waitForFetchCount(3)
     await fakeLookup.completeFetch(number: 3, with: [notificationEvent])
+    let notificationCommitted = await waitUntil {
+      await watcher.currentCache().events.map(\.title) == ["Notification"]
+    }
+    XCTAssertTrue(
+      notificationCommitted,
+      "Notification refresh must commit before the periodic poll is released")
 
     await fakeLookup.completeFetch(number: 2, with: [periodicEvent])
-    try? await Task.sleep(nanoseconds: 20_000_000)
+    _ = await waitUntil {
+      await watcher.currentCache().events.map(\.title) == ["Periodic"]
+    }
 
     let snapshot = await watcher.currentCache()
     XCTAssertEqual(
