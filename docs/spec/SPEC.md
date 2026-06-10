@@ -40,7 +40,17 @@ This document is the single source of truth: product spec, design decisions, ope
 - **v1 surface:** Menu-bar app.
 - **Record-only:** No import flow. Record-only is intentional; importing existing audio is a different product.
 
+### Priorities
+
+When trade-offs arise, they resolve in this order:
+
+1. **Seamlessness and beautiful, simple UI.** Every meeting captured with zero friction. The app earns its place by being effortless, not by being principled: one obvious action beats a correct-but-busy surface, and any feature that adds a step to capture is suspect.
+2. **Transcripts as agent inputs.** The durable outputs (`transcript.md` frontmatter + `metadata.json`) are structured for downstream agentic workflows: capture today, automate later. Anything that makes outputs more machine-consumable serves the core intent.
+3. **Privacy as a feature, not the mission.** The local engine and the no-leak guarantees exist for ease of mind on sensitive conversations; they are a function of seamlessness (no hesitation before hitting record), not the organizing principle. Hard security invariants (Keychain-only secrets, no secrets in logs, diagnostics redaction) stay as engineering hygiene, but privacy posture must not add capture friction and is not, by itself, a reason to add or veto a feature.
+
 ### Non-goals
+
+Post-capture intelligence (notes, summaries, search, chat) belongs to the user's downstream agents consuming `transcript.md` / `metadata.json`, not to the app. The app's job ends at a clean, structured capture.
 
 - No live transcript display.
 - No transcript history UI. Finder is the database; the menu-bar Recents popover is a 5-item shortcut, not a browser.

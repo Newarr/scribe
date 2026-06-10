@@ -1,8 +1,8 @@
 # Scribe
 
-A menu-bar macOS app that records your meetings and turns them into Markdown transcripts you can search, paste, and forget you took.
+A menu-bar macOS app that records your meetings and turns them into Markdown transcripts you can search, paste, feed to your agents, and forget you took.
 
-It stays out of the way until it matters: a meeting starts, audio drops, a permission breaks, a recording's been running too long. Then it asks one clear question with one obvious answer.
+Every session lands as plain Markdown with structured frontmatter plus a `metadata.json` mirror, so transcripts work as inputs for downstream automation without any export step. It stays out of the way until it matters: a meeting starts, audio drops, a permission breaks, a recording's been running too long. Then it asks one clear question with one obvious answer.
 
 ## What it does today (V1.0)
 

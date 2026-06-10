@@ -2,6 +2,25 @@
 
 Use this directory as the source of truth for the Scribe product spec.
 
+## Product priorities (read first)
+
+Scribe's intent is convenience: every meeting captured so the transcripts can
+feed agentic workflows later. Priority order for any product, design, or
+roadmap decision:
+
+1. **Seamlessness and beautiful, simple UI.** Zero-friction capture is the
+   product. Anything that adds a step, a prompt, or visual noise to the
+   capture path needs to justify itself against this.
+2. **Outputs as agent inputs.** `transcript.md` frontmatter and
+   `metadata.json` are designed for downstream automation; machine
+   consumability is a first-class concern.
+3. **Privacy is a feature, not the mission.** Local mode exists for ease of
+   mind on sensitive calls; it is a function of seamlessness, not an
+   ideology. Keep the hard invariants (Keychain-only secrets, no secrets in
+   logs, diagnostics redaction), but do not rank privacy posture above
+   convenience, frame the product around it, or propose features primarily
+   on privacy grounds.
+
 ## GStack
 
 Future agents should use GStack workflows for this project when the task matches them:
@@ -38,14 +57,18 @@ When adding open questions, use stable unique IDs in the `## Open Questions` sec
 
 ## Dev Build Signing (TCC persistence)
 
-Local dev builds use a self-signed code-signing cert so TCC grants
-(Screen Recording, Microphone, Calendar) survive every rebuild. Without
-a stable identity, every `xcodebuild` / `swift build` produces a new
-cdhash and macOS treats it as a different app — the "Scribe" toggle
-stays on in System Settings but the running binary can't see the grant.
+Local dev builds are signed with a stable identity so TCC grants
+(Screen Recording, Microphone, Calendar) and Keychain item ACLs survive
+every rebuild. Without a stable identity, every `xcodebuild` /
+`swift build` produces a new cdhash and macOS treats it as a different
+app — the "Scribe" toggle stays on in System Settings but the running
+binary can't see the grant.
 
-- Cert identity: `Scribe Dev Signer 2`
-- Keychain: `~/Library/Keychains/scribe-dev.keychain-db`
+- Identity: `$SCRIBE_DEV_IDENTITY` if set, else the first
+  "Apple Development" identity in the default keychain search list
+  (the earlier self-signed `Scribe Dev Signer 2` cert is retired; its
+  locked custom keychain hung codesign and its NULL Team ID broke
+  Keychain ACL matching)
 - Install + sign script: `scripts/dev-install.sh`
 
 Usage:
@@ -56,16 +79,11 @@ scripts/dev-install.sh --build        # xcodegen + xcodebuild Debug + install + 
 scripts/dev-install.sh path/to/Scribe.app
 ```
 
-If the cert / keychain is missing on a fresh machine, regenerate via:
-
-```bash
-# Generate cert (CN, CA:TRUE, keyUsage digitalSignature+keyCertSign,
-# extendedKeyUsage codeSigning), import to dedicated keychain, trust
-# as code-signing root. See git history for the openssl + security
-# sequence; the key steps are import + set-key-partition-list +
-# add-trusted-cert -r trustRoot -p codeSign.
-```
+On a fresh machine, install an Apple Development certificate via Xcode
+(Settings → Accounts → Manage Certificates) or set `SCRIBE_DEV_IDENTITY`
+to any code-signing identity in the login keychain. Without one the
+script falls back to ad-hoc signing with a loud warning (TCC grants and
+the cloud-key Keychain ACL will not survive).
 
 `scripts/release.sh` still uses Developer ID + notarization for shipping
-releases; the self-signed cert is for local /Applications dev installs
-only.
+releases; the dev identity is for local /Applications installs only.
