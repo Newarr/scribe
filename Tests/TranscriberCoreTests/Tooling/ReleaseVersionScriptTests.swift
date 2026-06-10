@@ -161,14 +161,17 @@ final class ReleaseVersionScriptTests: XCTestCase {
       0
     )
 
-    let clawpatchConfig = try String(
-      contentsOf: root.appendingPathComponent(".clawpatch/config.json"),
-      encoding: .utf8
-    )
-    XCTAssertTrue(clawpatchConfig.contains(#""TranscriberApp/.dd-release/**""#))
-    XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates.noindex/**""#))
-    XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates/**""#))
-    XCTAssertTrue(clawpatchConfig.contains(#""**/DerivedSources/**""#))
+    // .clawpatch/config.json is local-only agent tooling state (gitignored),
+    // so it does not exist on a fresh clone or in CI. Assert its discovery
+    // excludes only where the tooling is actually present.
+    let clawpatchConfigURL = root.appendingPathComponent(".clawpatch/config.json")
+    if FileManager.default.fileExists(atPath: clawpatchConfigURL.path) {
+      let clawpatchConfig = try String(contentsOf: clawpatchConfigURL, encoding: .utf8)
+      XCTAssertTrue(clawpatchConfig.contains(#""TranscriberApp/.dd-release/**""#))
+      XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates.noindex/**""#))
+      XCTAssertTrue(clawpatchConfig.contains(#""**/Build/Intermediates/**""#))
+      XCTAssertTrue(clawpatchConfig.contains(#""**/DerivedSources/**""#))
+    }
 
     let project = try String(
       contentsOf: root.appendingPathComponent("TranscriberApp/Scribe.xcodeproj/project.pbxproj"),
