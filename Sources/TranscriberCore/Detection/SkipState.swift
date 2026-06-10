@@ -16,7 +16,7 @@ public actor SkipState {
 
     /// True if the bundle is currently suppressed. Side-effect: if the entry
     /// has expired, it's removed from the map so the next check is fast.
-    public func isSuppressed(_ bundleID: String, now: Date = Date()) -> Bool {
+    func isSuppressed(_ bundleID: String, now: Date = Date()) -> Bool {
         guard let expiry = until[bundleID] else { return false }
         if expiry > now { return true }
         until.removeValue(forKey: bundleID)

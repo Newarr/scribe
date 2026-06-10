@@ -26,16 +26,16 @@ public enum EngineSettingsEffect: Sendable, Equatable {
 
 public struct EngineSettingsViewState: Sendable, Equatable {
     public struct CloudCard: Sendable, Equatable {
-        public let isSelected: Bool
+        let isSelected: Bool
         public let isReady: Bool
         public let isSelectionEnabled: Bool
         public let statusText: String
         public let detailText: String
-        public let rawAPIKey: String?
+        let rawAPIKey: String?
     }
 
     public struct LocalCard: Sendable, Equatable {
-        public let isSelected: Bool
+        let isSelected: Bool
         public let isReady: Bool
         public let isSelectionEnabled: Bool
         public let modelName: String
@@ -51,7 +51,7 @@ public struct EngineSettingsViewState: Sendable, Equatable {
     public let local: LocalCard
 
     public static let localModelName = "Cohere Transcribe 03-2026"
-    public static let localPrivacyCopy = "Local keeps audio on this Mac."
+    static let localPrivacyCopy = "Local keeps audio on this Mac."
 
     public static func make(
         selectedEngine: EngineMode,

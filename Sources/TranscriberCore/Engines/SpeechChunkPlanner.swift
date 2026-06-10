@@ -2,34 +2,34 @@ import Foundation
 
 /// A half-open sample range `[start, end)` of detected speech, as produced
 /// by the Silero VAD (`SileroVADTimestamp` start/end are sample indices).
-public struct SpeechSpan: Sendable, Equatable {
-    public let start: Int
-    public let end: Int
+struct SpeechSpan: Sendable, Equatable {
+    let start: Int
+    let end: Int
 
-    public init(start: Int, end: Int) {
+    init(start: Int, end: Int) {
         self.start = start
         self.end = end
     }
 
-    public var count: Int { max(0, end - start) }
+    var count: Int { max(0, end - start) }
 }
 
 /// One contiguous audio slice to send to the model, with its true offset
 /// in the source recording so transcript segments carry real timestamps.
-public struct SpeechChunk: Sendable, Equatable {
-    public let startSample: Int
-    public let endSample: Int
+struct SpeechChunk: Sendable, Equatable {
+    let startSample: Int
+    let endSample: Int
 
-    public init(startSample: Int, endSample: Int) {
+    init(startSample: Int, endSample: Int) {
         self.startSample = startSample
         self.endSample = endSample
     }
 
-    public func startSeconds(sampleRate: Int) -> Double {
+    func startSeconds(sampleRate: Int) -> Double {
         Double(startSample) / Double(sampleRate)
     }
 
-    public func endSeconds(sampleRate: Int) -> Double {
+    func endSeconds(sampleRate: Int) -> Double {
         Double(endSample) / Double(sampleRate)
     }
 }
@@ -47,8 +47,8 @@ public struct SpeechChunk: Sendable, Equatable {
 /// - Spans are merged into one chunk only when the silence gap between them
 ///   is at most `maxMergeGapSeconds` — long silences are excluded entirely,
 ///   which is the whole point (the model hallucinates on silence).
-public enum SpeechChunkPlanner {
-    public static func plan(
+enum SpeechChunkPlanner {
+    static func plan(
         spans: [SpeechSpan],
         sampleCount: Int,
         sampleRate: Int,

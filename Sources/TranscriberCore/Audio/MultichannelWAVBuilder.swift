@@ -1,8 +1,8 @@
 import AVFoundation
 import Foundation
 
-public enum MultichannelWAVBuilder {
-    public enum BuildError: Error {
+enum MultichannelWAVBuilder {
+    enum BuildError: Error {
         case readFailed(URL)
         case writeFailed(URL)
     }
@@ -14,7 +14,7 @@ public enum MultichannelWAVBuilder {
     /// TODO(slice 4): same memory footprint concern as `AudioMixer` — buffers each
     /// full input plus the full output. Stream in chunks once the AEC subprocess
     /// pipeline lands.
-    public static func build(
+    static func build(
         mic: URL,
         system: URL,
         output: URL,

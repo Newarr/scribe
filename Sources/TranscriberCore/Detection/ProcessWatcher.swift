@@ -161,7 +161,7 @@ public final class ProcessWatcher: @unchecked Sendable {
   /// `launchDate` is within this many seconds of now. Catches the
   /// "Scribe restarted mid-call" case while ignoring apps the user
   /// has had open all day.
-  public static let coldStartLaunchWindow: TimeInterval = 60
+  static let coldStartLaunchWindow: TimeInterval = 60
 
   public func start() {
     guard launchObserver == nil, terminateObserver == nil, reevaluationTimer == nil else { return }
@@ -207,7 +207,7 @@ public final class ProcessWatcher: @unchecked Sendable {
     }
   }
 
-  public static func meetingApps(from bundleIDs: [String]) -> [MeetingApp] {
+  static func meetingApps(from bundleIDs: [String]) -> [MeetingApp] {
     var seen = Set<String>()
     var apps: [MeetingApp] = []
     for bundleID in bundleIDs {

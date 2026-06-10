@@ -529,7 +529,7 @@ public actor TranscriptionWorker {
     /// `RetryClassifiableError`; network transience stays mapped here
     /// because URLError is Foundation's type and a retroactive
     /// conformance would be a footgun. Unknown errors are terminal.
-    public static func isTransient(_ error: Error) -> Bool {
+    static func isTransient(_ error: Error) -> Bool {
         if let classified = error as? RetryClassifiableError {
             return classified.isTransient
         }

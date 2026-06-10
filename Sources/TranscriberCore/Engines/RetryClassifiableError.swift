@@ -6,7 +6,7 @@ import Foundation
 /// dispatches on the protocol (plus a URLError fallback for network
 /// errors, since retroactively conforming Foundation's type is a
 /// footgun).
-public protocol RetryClassifiableError: Error {
+protocol RetryClassifiableError: Error {
     /// Whether the failure is worth retrying with backoff (rate limits,
     /// server 5xx) versus terminal (auth failures, malformed payloads,
     /// deterministic decode failures).

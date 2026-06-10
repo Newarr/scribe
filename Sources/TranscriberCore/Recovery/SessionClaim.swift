@@ -30,23 +30,23 @@ import Foundation
 /// (the live process still holds the lock). Stale-detection runs against
 /// the payload before attempting acquire so a hung-but-alive worker can
 /// be displaced after `staleAfter` seconds.
-public enum SessionClaim {
-  public struct Token: Sendable, Equatable {
-    public let url: URL
-    public let pid: Int32
-    public let bootTime: Int64
-    public let startedAt: Date
+enum SessionClaim {
+  struct Token: Sendable, Equatable {
+    let url: URL
+    let pid: Int32
+    let bootTime: Int64
+    let startedAt: Date
     /// Per-claim generation identity. PID + boot time identifies a process,
     /// but multiple same-process workers can claim the same session over
     /// time. This nonce distinguishes those generations so an old token
     /// cannot release a live replacement claim.
-    public let claimID: String
+    let claimID: String
     /// File descriptor held with `flock(LOCK_EX)`. Closing it releases
     /// the lock; nil for tokens produced by tests or migration paths
     /// that need a Token without a real OS lock.
-    public let fd: Int32
+    let fd: Int32
 
-    public init(
+    init(
       url: URL,
       pid: Int32,
       bootTime: Int64,
@@ -63,14 +63,14 @@ public enum SessionClaim {
     }
   }
 
-  public struct Payload: Codable, Equatable {
-    public let pid: Int32
-    public let bootTime: Int64
-    public let startedAt: Date
-    public let heartbeatAt: Date
-    public let claimID: String?
+  struct Payload: Codable, Equatable {
+    let pid: Int32
+    let bootTime: Int64
+    let startedAt: Date
+    let heartbeatAt: Date
+    let claimID: String?
 
-    public init(
+    init(
       pid: Int32, bootTime: Int64, startedAt: Date, heartbeatAt: Date, claimID: String? = nil
     ) {
       self.pid = pid
@@ -81,20 +81,20 @@ public enum SessionClaim {
     }
   }
 
-  public enum ClaimError: Error, Equatable {
+  enum ClaimError: Error, Equatable {
     case alreadyClaimed
     case writeFailed(Int32)  // errno
   }
 
-  public static let defaultStaleAfter: TimeInterval = 30
-  public static let defaultHeartbeatInterval: TimeInterval = 15
+  static let defaultStaleAfter: TimeInterval = 30
+  static let defaultHeartbeatInterval: TimeInterval = 15
 
   /// Returns the kernel boot time as a Unix timestamp (seconds).
   /// `kern.boottime` is the canonical macOS source for "this boot started
   /// at." The PID identity check (`{pid, boot_time}`) survives PID reuse:
   /// a recycled PID after reboot doesn't match the recorded boot time so
   /// the new worker reclaims.
-  public static func currentBootTime() -> Int64 {
+  static func currentBootTime() -> Int64 {
     var bootTime = timeval()
     var size = MemoryLayout<timeval>.size
     var mib = [CTL_KERN, KERN_BOOTTIME]
@@ -111,7 +111,7 @@ public enum SessionClaim {
   /// claim is still valid by staleness rules. Returns a Token after a
   /// fresh claim or a successful reclaim; the Token's `fd` MUST be
   /// closed via `release(_:)` to free the OS lock.
-  public static func acquire(
+  static func acquire(
     at url: URL,
     pid: Int32 = getpid(),
     now: Date = Date(),
@@ -165,7 +165,7 @@ public enum SessionClaim {
   /// Codex rc2-audit CAP-4: writes through the held FD so the
   /// read-modify-write sequence can't be interleaved with another
   /// process's reclaim — the lock blocks anyone else's open+flock.
-  public static func heartbeat(_ token: Token, now: Date = Date()) {
+  static func heartbeat(_ token: Token, now: Date = Date()) {
     guard token.fd >= 0 else { return }
     let updated = Payload(
       pid: token.pid,
@@ -182,7 +182,7 @@ public enum SessionClaim {
   /// this exact token's generation owns it. The ownership check happens
   /// before closing the locked FD so no replacement claimant can race into
   /// the close/remove window and be unlinked by an old token.
-  public static func release(_ token: Token) {
+  static func release(_ token: Token) {
     defer {
       if token.fd >= 0 {
         close(token.fd)

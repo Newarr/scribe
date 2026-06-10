@@ -29,14 +29,14 @@ public enum TranscriptFrontmatterReader {
     /// titles into memory. Returns ONLY (status, attempts) for the
     /// diagnostics aggregate-counts surface; the full Frontmatter
     /// reader stays available for the supervisor's resume path.
-    public static func readStatusAndAttemptsStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int)? {
+    static func readStatusAndAttemptsStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int)? {
         readDiagnosticsFrontmatterStreaming(at: url).map { ($0.status, $0.attempts) }
     }
 
     /// Diagnostics-only frontmatter reader. It extracts only safe enum/count
     /// fields plus normalized engine provenance, and still stops at the
     /// frontmatter delimiter without reading transcript bodies.
-    public static func readDiagnosticsFrontmatterStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int, engine: String)? {
+    static func readDiagnosticsFrontmatterStreaming(at url: URL) -> (status: TranscriptStatus, attempts: Int, engine: String)? {
         guard let stream = InputStream(url: url) else { return nil }
         stream.open()
         defer { stream.close() }

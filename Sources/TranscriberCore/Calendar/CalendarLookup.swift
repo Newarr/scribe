@@ -2,7 +2,7 @@ import EventKit
 import Foundation
 
 public final class CalendarLookup: Sendable {
-    public enum LookupError: Error {
+    enum LookupError: Error {
         case accessDenied
         case noEventStore
     }
@@ -12,7 +12,7 @@ public final class CalendarLookup: Sendable {
     /// Triggers the EKEventStore.requestFullAccessToEvents prompt. Returns the
     /// resulting authorization status. Per spec, missing calendar permission must
     /// not block recording — callers degrade gracefully when this returns .denied.
-    public func requestAccess() async -> EKAuthorizationStatus {
+    func requestAccess() async -> EKAuthorizationStatus {
         let store = EKEventStore()
         do {
             _ = try await store.requestFullAccessToEvents()
@@ -52,7 +52,7 @@ public final class CalendarLookup: Sendable {
     /// the [windowStart, windowEnd] range. Used by `CalendarWatcher` to populate
     /// the rolling cache in a single EventKit query rather than 291 sampled
     /// `eventOverlapping` probes (codex slice-6 review P2.1).
-    public func fetchEvents(from windowStart: Date, to windowEnd: Date) -> [CalendarEvent] {
+    func fetchEvents(from windowStart: Date, to windowEnd: Date) -> [CalendarEvent] {
         let status = EKEventStore.authorizationStatus(for: .event)
         guard status == .fullAccess || status == .authorized else { return [] }
 

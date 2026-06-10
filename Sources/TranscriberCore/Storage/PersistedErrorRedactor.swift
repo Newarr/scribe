@@ -5,8 +5,8 @@ import Foundation
 /// diagnostics redaction because failed-session artifacts are durable local
 /// records, but they must still exclude bearer tokens, signed URLs, raw paths,
 /// emails, stack traces, and other copy/paste secrets from provider errors.
-public enum PersistedErrorRedactor {
-    public static func redact(_ raw: String, maxLength: Int = 240) -> String {
+enum PersistedErrorRedactor {
+    static func redact(_ raw: String, maxLength: Int = 240) -> String {
         var value = raw
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")

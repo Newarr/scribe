@@ -2,8 +2,8 @@ import Foundation
 
 public struct LocalModelManifest: Sendable, Equatable {
     public let modelID: String
-    public let artifacts: [LocalModelArtifact]
-    public let requiredFreeBytes: Int64
+    let artifacts: [LocalModelArtifact]
+    let requiredFreeBytes: Int64
 
     public init(modelID: String, artifacts: [LocalModelArtifact], requiredFreeBytes: Int64? = nil) {
         self.modelID = modelID
@@ -17,11 +17,11 @@ public struct LocalModelManifest: Sendable, Equatable {
     /// Every manifest this app is allowed to download. The downloader and
     /// manager refuse any modelID outside this set, so a compromised
     /// settings blob can't redirect downloads to an arbitrary repo.
-    public static var allPinned: [LocalModelManifest] {
+    static var allPinned: [LocalModelManifest] {
         [cohereTranscribePinned, sileroVADPinned, ecapaLanguageIDPinned]
     }
 
-    public static func pinned(modelID: String) -> LocalModelManifest? {
+    static func pinned(modelID: String) -> LocalModelManifest? {
         allPinned.first { $0.modelID == modelID }
     }
 

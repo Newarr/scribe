@@ -11,12 +11,12 @@ public struct CohereMLXAdapterRequest: Sendable, Equatable {
     /// must never replace or mutate it.
     public let audioURL: URL
     public let modelID: String
-    public let modelDirectoryURL: URL
+    let modelDirectoryURL: URL
     public let languageCode: String
     public let keyterms: [String]
-    public let inputSampleRate: Int
-    public let inputChannelCount: Int
-    public let audioDurationSeconds: Double
+    let inputSampleRate: Int
+    let inputChannelCount: Int
+    let audioDurationSeconds: Double
 
     public init(
         audioURL: URL,
@@ -80,18 +80,18 @@ public protocol CohereMLXAudioDurationReading: Sendable {
 /// `String(describing: error)` into `transcript.md`/`metadata.json` on
 /// failure, so anything embedded in this case lands on disk — keep
 /// transcript text out of the payload.
-public enum CohereMLXBackendError: Error, Sendable, Equatable {
+enum CohereMLXBackendError: Error, Sendable, Equatable {
     case degenerateOutput(reason: String)
 }
 
 extension CohereMLXBackendError: RetryClassifiableError {
     /// Deterministic local inference would just loop into the same
     /// degenerate decode, so nothing here is worth a retry.
-    public var isTransient: Bool { false }
+    var isTransient: Bool { false }
 
     /// Without a typed code, the worker's reason-string sniff would see
     /// "rate" inside "degenerateOutput" and persist "rate_limited".
-    public var persistedErrorCode: String? {
+    var persistedErrorCode: String? {
         switch self {
         case .degenerateOutput: return "degenerate_output"
         }
@@ -139,10 +139,10 @@ enum DegenerateOutputDetector {
 
 public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     public static let modelID = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
-    public static let defaultRequestModelID = modelID
-    public static let defaultLanguageCode = "en"
-    public static let nativeModelTypeName = "CohereTranscribeModel"
-    public static let nativeModuleNames = ["MLXAudioSTT", "MLXAudioCore"]
+    static let defaultRequestModelID = modelID
+    static let defaultLanguageCode = "en"
+    static let nativeModelTypeName = "CohereTranscribeModel"
+    static let nativeModuleNames = ["MLXAudioSTT", "MLXAudioCore"]
 
     public static let defaultModelCacheRoot = FileManager.default
         .homeDirectoryForCurrentUser
@@ -166,8 +166,8 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         )
     }
 
-    public static let inferenceSampleRate = 16_000
-    public static let inferenceChannelCount = 1
+    static let inferenceSampleRate = 16_000
+    static let inferenceChannelCount = 1
 
     // Inference parameter overrides. The upstream `mlx-audio-swift` defaults
     // (`chunkDuration=1200`, `repetitionPenalty=1.0`) are unsafe for real
@@ -175,10 +175,10 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     // greedy decoding without a penalty collapses into loop output on longer
     // audio. These values are deliberately wrapper-side so the upstream fork
     // can stay close to Blaizzy/mlx-audio-swift.
-    public static let inferenceChunkDurationSeconds: Float = 30.0
-    public static let inferenceMinChunkDurationSeconds: Float = 1.0
-    public static let inferenceRepetitionPenalty: Float = 1.2
-    public static let inferenceRepetitionContextSize: Int = 32
+    static let inferenceChunkDurationSeconds: Float = 30.0
+    static let inferenceMinChunkDurationSeconds: Float = 1.0
+    static let inferenceRepetitionPenalty: Float = 1.2
+    static let inferenceRepetitionContextSize: Int = 32
 
     private let adapter: any CohereMLXTranscribing
     private let durationReader: any CohereMLXAudioDurationReading
@@ -247,7 +247,7 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         )
     }
 
-    public static func normalizedLanguageCode(from hint: String?) -> String {
+    static func normalizedLanguageCode(from hint: String?) -> String {
         guard let hint else { return defaultLanguageCode }
         let normalized = hint
             .trimmingCharacters(in: .whitespacesAndNewlines)

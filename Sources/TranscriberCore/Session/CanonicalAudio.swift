@@ -5,7 +5,7 @@ import Foundation
 /// sufficient here: directories, FIFOs, broken nodes, and unreadable files must
 /// not be treated as retryable audio.
 public enum CanonicalAudio {
-  public static let fileName = "audio.m4a"
+  static let fileName = "audio.m4a"
 
   public static func url(in sessionDirectory: URL) -> URL {
     sessionDirectory.appendingPathComponent(fileName)

@@ -7,57 +7,57 @@ import Foundation
 /// not regress: duplicate start prompts share all awaiters, authorization is
 /// re-read for each notification attempt, notification actions are generation
 /// guarded, and dismissed modals leave recovery actions retryable.
-public actor PromptNotificationCoordinatorCore {
-  public enum StartChoice: Sendable, Equatable {
+actor PromptNotificationCoordinatorCore {
+  enum StartChoice: Sendable, Equatable {
     case start
     case notAMeeting
     case skipForNow
   }
 
-  public enum ModalDecision: Sendable, Equatable {
+  enum ModalDecision: Sendable, Equatable {
     case primary
     case secondary
     case dismissed
   }
 
-  public enum NotificationAuthorization: Sendable, Equatable {
+  enum NotificationAuthorization: Sendable, Equatable {
     case authorized
     case denied
     case notDetermined(grantedOnRequest: Bool)
   }
 
-  public enum StartNotificationKind: Sendable, Equatable {
+  enum StartNotificationKind: Sendable, Equatable {
     case backup
     case reminder
     case finalReminder
   }
 
-  public enum EndPromptAction: Sendable, Equatable {
+  enum EndPromptAction: Sendable, Equatable {
     case keepRecording
     case stopNow
     case dismissed
     case defaultAction
   }
 
-  public struct StartPromptRequest: Sendable, Equatable {
-    public let identifier: String
-    public let appDisplayName: String
-    public let eventTitle: String?
+  struct StartPromptRequest: Sendable, Equatable {
+    let identifier: String
+    let appDisplayName: String
+    let eventTitle: String?
 
-    public init(identifier: String, appDisplayName: String, eventTitle: String? = nil) {
+    init(identifier: String, appDisplayName: String, eventTitle: String? = nil) {
       self.identifier = identifier
       self.appDisplayName = appDisplayName
       self.eventTitle = eventTitle
     }
   }
 
-  public struct StartNotificationRequest: Sendable, Equatable {
-    public let promptID: String
-    public let kind: StartNotificationKind
-    public let appDisplayName: String
-    public let eventTitle: String?
+  struct StartNotificationRequest: Sendable, Equatable {
+    let promptID: String
+    let kind: StartNotificationKind
+    let appDisplayName: String
+    let eventTitle: String?
 
-    public init(
+    init(
       promptID: String, kind: StartNotificationKind, appDisplayName: String, eventTitle: String?
     ) {
       self.promptID = promptID
@@ -67,36 +67,36 @@ public actor PromptNotificationCoordinatorCore {
     }
   }
 
-  public struct EndNotificationRequest: Sendable, Equatable {
-    public let promptID: String
-    public let generation: Int
-    public let secondsRemaining: Int
+  struct EndNotificationRequest: Sendable, Equatable {
+    let promptID: String
+    let generation: Int
+    let secondsRemaining: Int
 
-    public init(promptID: String, generation: Int, secondsRemaining: Int) {
+    init(promptID: String, generation: Int, secondsRemaining: Int) {
       self.promptID = promptID
       self.generation = generation
       self.secondsRemaining = secondsRemaining
     }
   }
 
-  public struct EndPromptCallback: Sendable, Equatable {
-    public let promptID: String
-    public let generation: Int
-    public let action: EndPromptAction
+  struct EndPromptCallback: Sendable, Equatable {
+    let promptID: String
+    let generation: Int
+    let action: EndPromptAction
 
-    public init(promptID: String, generation: Int, action: EndPromptAction) {
+    init(promptID: String, generation: Int, action: EndPromptAction) {
       self.promptID = promptID
       self.generation = generation
       self.action = action
     }
   }
 
-  public typealias PromptPresenter = @Sendable (StartPromptRequest) async -> ModalDecision
-  public typealias StartNotificationPoster =
+  typealias PromptPresenter = @Sendable (StartPromptRequest) async -> ModalDecision
+  typealias StartNotificationPoster =
     @Sendable (StartNotificationRequest) async throws -> Void
-  public typealias EndNotificationPoster = @Sendable (EndNotificationRequest) async throws -> Void
-  public typealias AuthorizationProvider = @Sendable () async -> NotificationAuthorization
-  public typealias EndPromptCallbackHandler = @Sendable (EndPromptCallback) async -> Void
+  typealias EndNotificationPoster = @Sendable (EndNotificationRequest) async throws -> Void
+  typealias AuthorizationProvider = @Sendable () async -> NotificationAuthorization
+  typealias EndPromptCallbackHandler = @Sendable (EndPromptCallback) async -> Void
 
   private final class PendingStart: @unchecked Sendable {
     let request: StartPromptRequest
@@ -136,7 +136,7 @@ public actor PromptNotificationCoordinatorCore {
   private var activePromptIdentifier: String?
   private var pendingEnds: [String: PendingEnd] = [:]
 
-  public init(
+  init(
     presentPrompt: @escaping PromptPresenter,
     postStartNotification: @escaping StartNotificationPoster = { _ in },
     postEndNotification: @escaping EndNotificationPoster = { _ in },
@@ -148,15 +148,15 @@ public actor PromptNotificationCoordinatorCore {
     self.authorizationProvider = authorizationProvider
   }
 
-  public var hasActivePrompt: Bool { activePromptIdentifier != nil }
+  var hasActivePrompt: Bool { activePromptIdentifier != nil }
 
-  public var pendingStartCount: Int { pendingStarts.count }
+  var pendingStartCount: Int { pendingStarts.count }
 
-  public func pendingAwaiterCount(identifier: String) -> Int {
+  func pendingAwaiterCount(identifier: String) -> Int {
     pendingStarts[identifier]?.continuations.count ?? 0
   }
 
-  public func prompt(for request: StartPromptRequest) async -> StartChoice {
+  func prompt(for request: StartPromptRequest) async -> StartChoice {
     await withCheckedContinuation { continuation in
       if let pending = pendingStarts[request.identifier] {
         pending.append(continuation)
@@ -187,7 +187,7 @@ public actor PromptNotificationCoordinatorCore {
   }
 
   @discardableResult
-  public func postStartNotificationIfPossible(_ request: StartNotificationRequest) async -> Bool {
+  func postStartNotificationIfPossible(_ request: StartNotificationRequest) async -> Bool {
     guard await ensureAuthorization() else { return false }
     guard pendingStarts[request.promptID] != nil else { return false }
     do {
@@ -199,7 +199,7 @@ public actor PromptNotificationCoordinatorCore {
   }
 
   @discardableResult
-  public func postEndPromptNotificationIfPossible(
+  func postEndPromptNotificationIfPossible(
     promptID: String,
     generation: Int,
     secondsRemaining: Int,
@@ -225,7 +225,7 @@ public actor PromptNotificationCoordinatorCore {
     }
   }
 
-  public func resolveEndPromptNotification(
+  func resolveEndPromptNotification(
     promptID: String,
     generation: Int?,
     action: EndPromptAction
@@ -247,19 +247,19 @@ public actor PromptNotificationCoordinatorCore {
     }
   }
 
-  public func chooseStartFromRecovery(identifier: String? = nil) {
+  func chooseStartFromRecovery(identifier: String? = nil) {
     resolve(identifier: identifier ?? activePromptIdentifier, with: .start)
   }
 
-  public func chooseNotNowFromRecovery(identifier: String? = nil) {
+  func chooseNotNowFromRecovery(identifier: String? = nil) {
     resolve(identifier: identifier ?? activePromptIdentifier, with: .skipForNow)
   }
 
-  public func chooseSuppressAppFromRecovery(identifier: String? = nil) {
+  func chooseSuppressAppFromRecovery(identifier: String? = nil) {
     resolve(identifier: identifier ?? activePromptIdentifier, with: .notAMeeting)
   }
 
-  public func isModalDismissedAndRetryable(identifier: String) -> Bool {
+  func isModalDismissedAndRetryable(identifier: String) -> Bool {
     pendingStarts[identifier]?.modalDismissed == true
   }
 

@@ -6,7 +6,7 @@ import Foundation
 /// the TranscriptionWorker integration seam; the real WebRTC-rs
 /// or AUVoiceProcessing backend lands in a post-rc1 spike (per
 /// docs/AEC-RESEARCH.md once the spike completes).
-public enum AECStatus: String, Sendable, Codable, Equatable {
+enum AECStatus: String, Sendable, Codable, Equatable {
     /// Pre-pass ran and produced a cleaned mic file. Worker proceeds
     /// with multichannel mode using the cleaned mic + raw system.
     case succeeded
@@ -16,16 +16,16 @@ public enum AECStatus: String, Sendable, Codable, Equatable {
     case failed
 }
 
-public struct AECResult: Sendable, Equatable {
-    public let status: AECStatus
+struct AECResult: Sendable, Equatable {
+    let status: AECStatus
     /// URL of the cleaned mic file when status == .succeeded.
     /// `nil` when status == .failed (raw streams remain on disk).
-    public let cleanedMicURL: URL?
+    let cleanedMicURL: URL?
     /// Optional diagnostic message when status == .failed (logged but
     /// not surfaced to the user beyond the diagnostics export).
-    public let failureReason: String?
+    let failureReason: String?
 
-    public init(status: AECStatus, cleanedMicURL: URL?, failureReason: String? = nil) {
+    init(status: AECStatus, cleanedMicURL: URL?, failureReason: String? = nil) {
         self.status = status
         self.cleanedMicURL = cleanedMicURL
         self.failureReason = failureReason
@@ -35,7 +35,7 @@ public struct AECResult: Sendable, Equatable {
 /// Pre-upload AEC processor. Produces `mic.cleaned.wav` from
 /// `mic.m4a` + `system.m4a`, with the system audio used as the
 /// reference signal for echo subtraction.
-public protocol AECPrePass: Sendable {
+protocol AECPrePass: Sendable {
     func process(mic: URL, system: URL, output: URL) async -> AECResult
 }
 
@@ -43,9 +43,9 @@ public protocol AECPrePass: Sendable {
 /// (rc1) so the worker takes the spec-line-119 single-channel-diarized
 /// fallback path. Replacing this with a real backend is a one-line
 /// change at the worker factory.
-public struct DisabledAECPrePass: AECPrePass {
-    public init() {}
-    public func process(mic: URL, system: URL, output: URL) async -> AECResult {
+struct DisabledAECPrePass: AECPrePass {
+    init() {}
+    func process(mic: URL, system: URL, output: URL) async -> AECResult {
         AECResult(status: .failed, cleanedMicURL: nil, failureReason: "AEC backend disabled in rc1 (deferred to spike)")
     }
 }
@@ -62,9 +62,9 @@ public struct DisabledAECPrePass: AECPrePass {
 ///      future Cohere binary).
 ///   3. Bundle into `Resources/` and reference via Bundle.module.
 ///   4. Replace the body of `process` with the binary subprocess call.
-public struct WebRTCAECBackend: AECPrePass {
-    public init() {}
-    public func process(mic: URL, system: URL, output: URL) async -> AECResult {
+struct WebRTCAECBackend: AECPrePass {
+    init() {}
+    func process(mic: URL, system: URL, output: URL) async -> AECResult {
         Log.engine.info("WebRTCAECBackend: deferred to spike — returning .failed for single-channel fallback")
         return AECResult(status: .failed, cleanedMicURL: nil, failureReason: "WebRTC-rs backend deferred to post-rc1 spike")
     }

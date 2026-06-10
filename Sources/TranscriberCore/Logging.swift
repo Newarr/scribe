@@ -1,7 +1,7 @@
 import os
 
 public enum Log {
-    public static let subsystem = "com.szymonsypniewicz.transcriber"
+    static let subsystem = "com.szymonsypniewicz.transcriber"
 
     public static let lifecycle    = Logger(subsystem: subsystem, category: "lifecycle")
     public static let capture      = Logger(subsystem: subsystem, category: "capture")
@@ -11,7 +11,7 @@ public enum Log {
     public static let storage      = Logger(subsystem: subsystem, category: "storage")
     public static let diagnostics  = Logger(subsystem: subsystem, category: "diagnostics")
 
-    public static let categories: [String] = [
+    static let categories: [String] = [
         "lifecycle", "capture", "engine", "calendar",
         "permissions", "storage", "diagnostics"
     ]

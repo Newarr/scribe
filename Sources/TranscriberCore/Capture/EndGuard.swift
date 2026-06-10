@@ -36,12 +36,12 @@ public actor EndGuard {
     public typealias OnCancel = @Sendable () async -> Void
 
     public struct Config: Sendable {
-        public let silenceThreshold: Float
-        public let silenceWindow: TimeInterval
+        let silenceThreshold: Float
+        let silenceWindow: TimeInterval
         public let countdownDuration: TimeInterval
-        public let snoozeDuration: TimeInterval
-        public let cancelSuppressionDuration: TimeInterval
-        public let maxSessionDuration: TimeInterval
+        let snoozeDuration: TimeInterval
+        let cancelSuppressionDuration: TimeInterval
+        let maxSessionDuration: TimeInterval
 
         public static let `default` = Config(
             silenceThreshold: 0.01,        // ~-40 dBFS RMS
@@ -52,7 +52,7 @@ public actor EndGuard {
             maxSessionDuration: 4 * 60 * 60  // 4h safety net (plan addition)
         )
 
-        public init(
+        init(
             silenceThreshold: Float,
             silenceWindow: TimeInterval,
             countdownDuration: TimeInterval,

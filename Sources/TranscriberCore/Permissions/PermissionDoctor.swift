@@ -43,7 +43,7 @@ public extension EngineMode {
 /// individually addressable so `PermissionRecoveryView` can deep-link to the
 /// matching System Settings pane (Phase η).
 public enum PreflightReason: Sendable, Equatable, Hashable {
-    public static let systemAudioRequiredMessage = "System Audio is required to capture other people in calls."
+    static let systemAudioRequiredMessage = "System Audio is required to capture other people in calls."
 
     case microphoneDenied
     case microphoneNotDetermined
@@ -63,7 +63,7 @@ public enum PreflightReason: Sendable, Equatable, Hashable {
     /// associated `URL` (which would carry `/Users/<name>/...`).
     /// Use this in `Log.*` calls with `.public` privacy; pair with
     /// the full reason at `.private` if path detail is needed.
-    public var publicLabel: String {
+    var publicLabel: String {
         switch self {
         case .microphoneDenied: return "microphoneDenied"
         case .microphoneNotDetermined: return "microphoneNotDetermined"
@@ -95,7 +95,7 @@ public struct PreflightReport: Sendable, Equatable {
     public let blockers: [PreflightReason]
     public let warnings: [PreflightReason]
 
-    public init(blockers: [PreflightReason], warnings: [PreflightReason]) {
+    init(blockers: [PreflightReason], warnings: [PreflightReason]) {
         self.blockers = blockers
         self.warnings = warnings
     }
@@ -157,7 +157,7 @@ public protocol EngineReadinessProbing: Sendable {
     func localModelID() -> String
 }
 
-public extension EngineReadinessProbing {
+extension EngineReadinessProbing {
     func localRuntimeAvailable() async -> Bool {
         if case .unsupported = await localModelStatus() { return false }
         return true
@@ -196,19 +196,19 @@ public struct LocalModelEngineReadinessProbe: EngineReadinessProbing {
 
 /// Default readiness probe. Until the app wires an owned model manager into
 /// this probe, Local fails closed as not downloaded rather than falling back.
-public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
+struct DefaultEngineReadinessProbe: EngineReadinessProbing {
     private let keychain: KeychainStore
 
-    public init(keychain: KeychainStore) {
+    init(keychain: KeychainStore) {
         self.keychain = keychain
     }
 
-    public func cloudKeyAvailable() async -> Bool {
+    func cloudKeyAvailable() async -> Bool {
         guard let value = (try? keychain.read(allowingUserInteraction: false)) ?? nil else { return false }
         return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    public func localModelStatus() async -> LocalModelCacheStatus {
+    func localModelStatus() async -> LocalModelCacheStatus {
 #if arch(arm64)
         return .notDownloaded(modelID: CohereMLXBackend.modelID)
 #else
@@ -219,7 +219,7 @@ public struct DefaultEngineReadinessProbe: EngineReadinessProbing {
 #endif
     }
 
-    public func localModelID() -> String { CohereMLXBackend.modelID }
+    func localModelID() -> String { CohereMLXBackend.modelID }
 }
 
 /// Output folder probing — writability check + cloud-sync heuristic. Pulled

@@ -193,7 +193,7 @@ public actor CalendarWatcher {
   }
 
   /// Test introspection.
-  public func currentCache() -> CalendarCache {
+  func currentCache() -> CalendarCache {
     cache
   }
 }

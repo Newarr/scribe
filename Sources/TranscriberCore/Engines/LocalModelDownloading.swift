@@ -11,7 +11,7 @@ public protocol LocalModelDownloading: Sendable {
 
 
 public struct HuggingFaceLocalModelDownloader: LocalModelDownloading {
-    public let baseURL: URL
+    let baseURL: URL
 
     public init(baseURL: URL = URL(string: "https://huggingface.co")!) {
         self.baseURL = baseURL

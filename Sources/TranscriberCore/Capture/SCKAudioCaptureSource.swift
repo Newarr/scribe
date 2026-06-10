@@ -50,7 +50,7 @@ extension SCStream: SCKStreaming {}
 public final class SCKDualOutputStream: @unchecked Sendable {
     public enum Kind: Hashable, Sendable { case microphone, system }
 
-    public enum SCKError: Error {
+    enum SCKError: Error {
         case noShareableContent
         case noDisplay
         case streamFailedToStart(Error)
@@ -107,7 +107,7 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     /// Idempotent: a second call after the stream is already running returns
     /// without creating a new stream. Concurrent calls share the same start
     /// Task so only one SCStream is ever built per coordinator.
-    public func startIfNeeded() async throws {
+    func startIfNeeded() async throws {
         let task: Task<Void, Error> = queue.sync {
             if let existing = inFlightStart { return existing }
             if stream != nil {
@@ -138,7 +138,7 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     /// in-flight start to drain (so performStart can self-clean), and
     /// clear it after the stop completes so the next start runs to
     /// completion.
-    public func stopIfRunning() async {
+    func stopIfRunning() async {
         let pendingStart: Task<Void, Error>? = queue.sync {
             // Only signal stop to an in-flight start; if no start is
             // racing us, there's nothing to cancel via the flag.

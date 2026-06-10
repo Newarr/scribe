@@ -76,10 +76,10 @@ public struct OnboardingEngineOptionState: Sendable, Equatable {
     public let statusText: String
     public let modelID: String?
     public let progress: LocalModelDownloadProgress?
-    public let failureReason: LocalModelFailure?
+    let failureReason: LocalModelFailure?
     public let retryAvailable: Bool
 
-    public init(
+    init(
         engine: EngineMode,
         title: String,
         isReady: Bool,
@@ -120,19 +120,19 @@ public struct OnboardingTestRecordingState: Sendable, Equatable {
     }
 }
 
-public protocol OnboardingTestRecordingStarting: Sendable {
+protocol OnboardingTestRecordingStarting: Sendable {
     func startTestRecording() async -> Bool
 }
 
-public struct OnboardingTestRecordingGate: Sendable {
+struct OnboardingTestRecordingGate: Sendable {
     private let starter: any OnboardingTestRecordingStarting
 
-    public init(starter: any OnboardingTestRecordingStarting) {
+    init(starter: any OnboardingTestRecordingStarting) {
         self.starter = starter
     }
 
     @discardableResult
-    public func startIfReady(
+    func startIfReady(
         selectedEngine: EngineMode,
         cloudKeyAvailable: Bool,
         localModelStatus: LocalModelCacheStatus,
@@ -367,7 +367,7 @@ public actor OnboardingFlowController {
     /// block on a multi-GB download), so observers that need the dispatch
     /// settled - tests asserting on starter call counts - await this
     /// instead of racing the spawned Task.
-    public func waitForStagingDispatch() async {
+    func waitForStagingDispatch() async {
         _ = await screenRecordingDownloadTask?.value
     }
 

@@ -27,9 +27,9 @@ public protocol LanguageDetector: Sendable {
 /// No-op detector. Always returns `nil` so the worker passes through
 /// to engine auto-detect. Used by default until the user wires in a
 /// real implementation.
-public struct NullLanguageDetector: LanguageDetector {
-    public init() {}
-    public func detect(from audioURL: URL) async -> String? { nil }
+struct NullLanguageDetector: LanguageDetector {
+    init() {}
+    func detect(from audioURL: URL) async -> String? { nil }
 }
 
 /// ECAPA-TDNN VoxLingua107 language identification (MLXAudioLID, same

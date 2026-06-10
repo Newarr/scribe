@@ -2,8 +2,8 @@ import Foundation
 
 public struct CalendarEvent: Sendable, Equatable {
     public struct OccurrenceIdentity: Sendable, Equatable, Hashable {
-        public let eventIdentifier: String
-        public let occurrenceStartDate: Date
+        let eventIdentifier: String
+        let occurrenceStartDate: Date
 
         public init(eventIdentifier: String, occurrenceStartDate: Date) {
             self.eventIdentifier = eventIdentifier
@@ -19,8 +19,8 @@ public struct CalendarEvent: Sendable, Equatable {
 
     public struct Attendee: Sendable, Equatable {
         public let name: String
-        public let email: String?
-        public let isCurrentUser: Bool
+        let email: String?
+        let isCurrentUser: Bool
 
         public init(name: String, email: String? = nil, isCurrentUser: Bool) {
             self.name = name
@@ -37,11 +37,11 @@ public struct CalendarEvent: Sendable, Equatable {
     public let startDate: Date
     public let endDate: Date
     public let attendees: [Attendee]
-    public let isEligibleMeetingContext: Bool
-    public let eventIdentifier: String?
-    public let occurrenceStartDate: Date?
+    let isEligibleMeetingContext: Bool
+    let eventIdentifier: String?
+    let occurrenceStartDate: Date?
 
-    public init(
+    init(
         title: String,
         startDate: Date,
         endDate: Date,
@@ -73,18 +73,18 @@ public struct CalendarEvent: Sendable, Equatable {
 
     /// Returns the local user's display name (`isCurrentUser == true`) if the event
     /// has one; nil otherwise.
-    public var currentUser: String? {
+    var currentUser: String? {
         attendees.first(where: { $0.isCurrentUser })?.name
     }
 
     /// Returns the first non-current-user attendee. For 1:1 meetings this is the
     /// remote speaker. For group meetings, the caller decides what to do; slice 3
     /// only maps `speaker_1` for 1:1 events.
-    public var firstRemoteAttendee: String? {
+    var firstRemoteAttendee: String? {
         attendees.first(where: { !$0.isCurrentUser })?.name
     }
 
-    public var isOneOnOne: Bool {
+    var isOneOnOne: Bool {
         attendees.count == 2 && attendees.contains(where: { $0.isCurrentUser })
     }
 

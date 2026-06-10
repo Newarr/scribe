@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 public enum AudioMixer {
-    public enum MixerError: Error { case readFailed(URL), writeFailed(URL) }
+    enum MixerError: Error { case readFailed(URL), writeFailed(URL) }
 
     /// Mix two mono input files into a single mono PCM WAV at the target sample rate.
     /// Uses simple equal-gain sum with safe peak clipping at +/- 1.0. Output is 16-bit

@@ -30,11 +30,11 @@ public struct SessionDirectory: Equatable, Sendable {
         return SessionDirectory(url: targetUrl)
     }
 
-    public var micPartial: URL {
+    var micPartial: URL {
         url.appendingPathComponent("mic.m4a.partial")
     }
 
-    public var systemPartial: URL {
+    var systemPartial: URL {
         url.appendingPathComponent("system.m4a.partial")
     }
 
@@ -46,7 +46,7 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("system.m4a")
     }
 
-    public var ptsSidecar: URL {
+    var ptsSidecar: URL {
         url.appendingPathComponent("pts.json")
     }
 
@@ -55,7 +55,7 @@ public struct SessionDirectory: Equatable, Sendable {
     /// to align mic / system streams and insert silence for gaps. Distinct
     /// from `ptsSidecar`, which is a one-shot summary written at finalize
     /// time and used by metadata.json consumers.
-    public var ptsStreamingLog: URL {
+    var ptsStreamingLog: URL {
         url.appendingPathComponent("pts.jsonl")
     }
 
@@ -70,7 +70,7 @@ public struct SessionDirectory: Equatable, Sendable {
     /// Start-time durable session provenance written before capture starts.
     /// Recovery reads this when transcript.md does not exist yet (for
     /// active-capture crash/orphan sessions).
-    public var startManifest: URL {
+    var startManifest: URL {
         url.appendingPathComponent("session.json")
     }
 

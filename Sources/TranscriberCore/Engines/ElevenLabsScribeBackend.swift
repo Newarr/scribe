@@ -1,7 +1,7 @@
 import Foundation
 
-public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Sendable {
-    public enum BackendError: Error, Equatable {
+final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Sendable {
+    enum BackendError: Error, Equatable {
         case missingAPIKey
         case unauthorized
         case rateLimited
@@ -13,7 +13,7 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
     private let session: URLSession
     private let endpoint = URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
 
-    public init(apiKey: String, session: URLSession = .shared) {
+    init(apiKey: String, session: URLSession = .shared) {
         // Trim whitespace + newlines so users who store keys via `security
         // add-generic-password -w` (which preserves trailing newlines from
         // some shells) don't get confusing 401s or header rejections.
@@ -21,7 +21,7 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
         self.session = session
     }
 
-    public func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
+    func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
         guard !apiKey.isEmpty else { throw BackendError.missingAPIKey }
 
         let audioData = try Data(contentsOf: request.audioURL)
@@ -181,7 +181,7 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
 extension ElevenLabsScribeBackend.BackendError: RetryClassifiableError {
     /// Transient: rate-limited, HTTP 5xx. Terminal: auth failures,
     /// missing API key, malformed responses, 4xx.
-    public var isTransient: Bool {
+    var isTransient: Bool {
         switch self {
         case .rateLimited: return true
         case .httpError(let code): return (500...599).contains(code)
@@ -189,7 +189,7 @@ extension ElevenLabsScribeBackend.BackendError: RetryClassifiableError {
         }
     }
 
-    public var persistedErrorCode: String? {
+    var persistedErrorCode: String? {
         switch self {
         case .unauthorized: return "elevenlabs_unauthorized"
         case .rateLimited: return "rate_limited"

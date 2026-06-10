@@ -2,10 +2,10 @@ import Foundation
 
 public struct PTSMetadata: Codable, Equatable, Sendable {
     public struct Stream: Codable, Equatable, Sendable {
-        public let firstPTSSeconds: Double
+        let firstPTSSeconds: Double
         public let sampleRate: Int
         public let channelCount: Int
-        public let frameCount: Int64
+        let frameCount: Int64
 
         public init(firstPTSSeconds: Double, sampleRate: Int, channelCount: Int, frameCount: Int64) {
             self.firstPTSSeconds = firstPTSSeconds
@@ -23,7 +23,7 @@ public struct PTSMetadata: Codable, Equatable, Sendable {
         self.system = system
     }
 
-    public var systemLeadInMicSamples: Int64 {
+    var systemLeadInMicSamples: Int64 {
         let deltaSec = system.firstPTSSeconds - mic.firstPTSSeconds
         return Int64((deltaSec * Double(mic.sampleRate)).rounded())
     }

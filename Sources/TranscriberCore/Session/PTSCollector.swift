@@ -6,13 +6,13 @@ import CoreMedia
 /// align mic / system streams to a coherent timeline. AEC3 specifically can't
 /// recover from dropped buffers without per-chunk PTS, which is why this
 /// landed in Phase β rather than later (codex pass 2 P1 #17).
-public struct PTSLogEntry: Codable, Equatable, Sendable {
-    public let stream: String
-    public let ptsSeconds: Double
-    public let sampleCount: Int
-    public let sampleRate: Int
+struct PTSLogEntry: Codable, Equatable, Sendable {
+    let stream: String
+    let ptsSeconds: Double
+    let sampleCount: Int
+    let sampleRate: Int
 
-    public init(stream: String, ptsSeconds: Double, sampleCount: Int, sampleRate: Int) {
+    init(stream: String, ptsSeconds: Double, sampleCount: Int, sampleRate: Int) {
         self.stream = stream
         self.ptsSeconds = ptsSeconds
         self.sampleCount = sampleCount
@@ -42,7 +42,7 @@ public final class PTSCollector: @unchecked Sendable {
     private var logOpenAttempted = false
     private var logTerminallyClosed = false
 
-    public init(streamingLogURL: URL? = nil) {
+    init(streamingLogURL: URL? = nil) {
         self.streamingLogURL = streamingLogURL
     }
 
@@ -98,7 +98,7 @@ public final class PTSCollector: @unchecked Sendable {
         )
     }
 
-    public func writeSidecar(to url: URL) throws {
+    func writeSidecar(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot())
@@ -110,7 +110,7 @@ public final class PTSCollector: @unchecked Sendable {
     /// is safe to call repeatedly after capture has stopped. Mid-session
     /// readers use `synchronizeLogForRead()` instead so observing the log
     /// cannot disable future writes.
-    public func flushLog() {
+    func flushLog() {
         logQueue.sync {
             self.synchronizeAndCloseLog(markTerminal: true)
         }
@@ -121,7 +121,7 @@ public final class PTSCollector: @unchecked Sendable {
     /// Tolerates a malformed trailing line (process kill mid-write left a
     /// partial JSONL line) — codex Phase β review P1.6: the recovery path
     /// must not throw on the survivable case.
-    public func loggedEntries() throws -> [PTSLogEntry] {
+    func loggedEntries() throws -> [PTSLogEntry] {
         guard let url = streamingLogURL else { return [] }
         synchronizeLogForRead()
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }

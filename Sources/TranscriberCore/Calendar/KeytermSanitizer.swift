@@ -11,7 +11,7 @@ import Foundation
 /// Conservative by design: when in doubt, drop the token. Speech recognition
 /// keyterm hints are a quality nudge, not load-bearing — losing a few legitimate
 /// terms is far cheaper than leaking a passcode.
-public enum KeytermSanitizer {
+enum KeytermSanitizer {
   /// Tokens with 4+ consecutive digits are treated as PINs / conference IDs.
   /// Captures `123456`, `1234`, `phone-1234`, etc.
   private static let digitRunPattern = try! NSRegularExpression(
@@ -64,7 +64,7 @@ public enum KeytermSanitizer {
   ///   - "<label> NN..." patterns: "meeting id 123 456", "passcode
   ///     1234 5678", "dial in 555 1234" — the label + everything
   ///     after up to non-numeric word
-  public static func scrubTitle(_ title: String) -> String {
+  static func scrubTitle(_ title: String) -> String {
     var result = title
     // Strip "<label> <digits ...>" patterns first since they're
     // the most common dial-in shape. Use a word-boundary regex
@@ -97,7 +97,7 @@ public enum KeytermSanitizer {
 
   /// Sanitizes a list of candidate keyterms. Returns a (possibly shorter)
   /// list with privacy-violating tokens removed.
-  public static func sanitize(_ raw: [String]) -> [String] {
+  static func sanitize(_ raw: [String]) -> [String] {
     var output: [String] = []
     var skipNext = 0
     for term in raw {

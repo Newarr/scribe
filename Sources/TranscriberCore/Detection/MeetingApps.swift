@@ -16,7 +16,7 @@ public struct MeetingApp: Sendable, Equatable, Hashable {
         case browser
     }
 
-    public init(bundleID: String, displayName: String, kind: Kind) {
+    init(bundleID: String, displayName: String, kind: Kind) {
         self.bundleID = bundleID
         self.displayName = displayName
         self.kind = kind

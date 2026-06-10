@@ -137,7 +137,7 @@ public struct EngineSelectionAttempt: Sendable, Equatable {
     public let accepted: Bool
     public let repairReason: PreflightReason?
 
-    public init(selectedEngineMode: EngineMode, accepted: Bool, repairReason: PreflightReason?) {
+    init(selectedEngineMode: EngineMode, accepted: Bool, repairReason: PreflightReason?) {
         self.selectedEngineMode = selectedEngineMode
         self.accepted = accepted
         self.repairReason = repairReason
@@ -248,7 +248,7 @@ public actor SettingsStore {
         try? commit(current)
     }
 
-    public func setEngineMode(_ mode: EngineMode) {
+    func setEngineMode(_ mode: EngineMode) {
         var current = snapshot()
         current.engineMode = mode
         try? commit(current)
@@ -264,13 +264,13 @@ public actor SettingsStore {
         return attempt
     }
 
-    public func setKeepRawStreams(_ on: Bool) {
+    func setKeepRawStreams(_ on: Bool) {
         var current = snapshot()
         current.keepRawStreams = on
         try? commit(current)
     }
 
-    public func setAECEnabled(_ on: Bool) {
+    func setAECEnabled(_ on: Bool) {
         var current = snapshot()
         current.aecEnabled = on
         try? commit(current)
@@ -306,7 +306,7 @@ public actor SettingsStore {
         try? commit(current)
     }
 
-    public func setTranscriptionLanguage(_ code: String?) {
+    func setTranscriptionLanguage(_ code: String?) {
         var current = snapshot()
         current.transcriptionLanguage = code
         try? commit(current)
@@ -337,7 +337,7 @@ public actor SettingsStore {
         }
     }
 
-    public enum CommitError: Error {
+    enum CommitError: Error {
         case encodeFailed(Error)
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Outcome of a Cloud API key save or clear action.
-public enum CloudKeyCommitOutcome: Sendable, Equatable {
+enum CloudKeyCommitOutcome: Sendable, Equatable {
     /// Keychain write/delete succeeded. Readiness has been refreshed.
     case success
     /// Keychain write/delete failed. A non-secret error message is provided.
@@ -21,12 +21,12 @@ public enum CloudKeyCommitOutcome: Sendable, Equatable {
 /// - Close-guard remains active until the key change succeeds.
 ///
 /// Tested via `CloudKeyCommitCoordinatorTests` with a fake `KeychainPersisting`.
-public struct CloudKeyCommitCoordinator: Sendable {
-    public let keychain: any KeychainPersisting
-    public let settingsCommit: @Sendable (SessionSettings) async -> Void
-    public let readinessRefresh: @Sendable () async -> Void
+struct CloudKeyCommitCoordinator: Sendable {
+    let keychain: any KeychainPersisting
+    let settingsCommit: @Sendable (SessionSettings) async -> Void
+    let readinessRefresh: @Sendable () async -> Void
 
-    public init(
+    init(
         keychain: any KeychainPersisting,
         settingsCommit: @escaping @Sendable (SessionSettings) async -> Void,
         readinessRefresh: @escaping @Sendable () async -> Void
@@ -42,7 +42,7 @@ public struct CloudKeyCommitCoordinator: Sendable {
     /// - Returns: `.success` if Keychain write/delete succeeded (settings
     ///   commit and readiness refresh have run). `.keychainFailure` otherwise
     ///   (no settings commit, no readiness refresh).
-    public func saveKey(
+    func saveKey(
         candidate candidateKey: String,
         currentSettings: SessionSettings
     ) async -> CloudKeyCommitOutcome {
@@ -66,7 +66,7 @@ public struct CloudKeyCommitCoordinator: Sendable {
 
     /// Clears the Keychain item (same as `saveKey(candidate: "")`) and
     /// commits non-secret settings on success.
-    public func clearKey(currentSettings: SessionSettings) async -> CloudKeyCommitOutcome {
+    func clearKey(currentSettings: SessionSettings) async -> CloudKeyCommitOutcome {
         await saveKey(candidate: "", currentSettings: currentSettings)
     }
 }

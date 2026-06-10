@@ -118,11 +118,11 @@ public actor LocalModelManager {
         currentStatus = .notDownloaded(modelID: manifest.modelID)
     }
 
-    public func modelCacheURL() -> URL {
+    func modelCacheURL() -> URL {
         cacheRoot.appendingPathComponent(Self.cacheDirectoryName(for: manifest.modelID), isDirectory: true)
     }
 
-    public static func cacheDirectoryName(for modelID: String) -> String {
+    static func cacheDirectoryName(for modelID: String) -> String {
         modelID.replacingOccurrences(of: "/", with: "--")
     }
 

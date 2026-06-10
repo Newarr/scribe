@@ -23,7 +23,7 @@ public enum SessionRepairRouting {
         public let localRepairPayloads: [LocalRepairPayload]
     }
 
-    public enum RetryRoute: Sendable, Equatable {
+    enum RetryRoute: Sendable, Equatable {
         case startRetry(sessionDirectory: URL)
         case localSetupRequired(LocalRepairPayload)
         case unavailable(String)
@@ -79,7 +79,7 @@ public enum SessionRepairRouting {
         return RecoveryNotice(title: title, message: message, transcribingStarted: true, localRepairPayloads: payloads)
     }
 
-    public static func routeRetry(
+    static func routeRetry(
         sessionDirectory: URL?,
         error: FailedSessionRetryCoordinator.RetryError?,
         savedAudioExists: Bool,

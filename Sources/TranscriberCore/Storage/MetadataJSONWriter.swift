@@ -7,41 +7,41 @@ import Foundation
 ///
 /// Body utterances live in `transcript.md` and aren't duplicated here — the
 /// JSON is metadata only, not a transcript dump.
-public enum MetadataJSONWriter {
-    public struct Metadata: Codable, Sendable, Equatable {
-        public let schema: String
-        public let status: String
-        public let title: String
-        public let date: String
-        public let engine: String
-        public let language: String?
-        public let audio: String
-        public let scheduled_start: String?
-        public let scheduled_end: String?
-        public let actual_start: String
-        public let actual_end: String
-        public let started_at: String
-        public let ended_at: String
-        public let organizer: TranscriptPerson?
-        public let location: String?
-        public let calendar_event_id: String?
-        public let joined_late: Bool?
-        public let elapsed_at_start_seconds: Int?
-        public let attendees: [TranscriptPerson]
+enum MetadataJSONWriter {
+    struct Metadata: Codable, Sendable, Equatable {
+        let schema: String
+        let status: String
+        let title: String
+        let date: String
+        let engine: String
+        let language: String?
+        let audio: String
+        let scheduled_start: String?
+        let scheduled_end: String?
+        let actual_start: String
+        let actual_end: String
+        let started_at: String
+        let ended_at: String
+        let organizer: TranscriptPerson?
+        let location: String?
+        let calendar_event_id: String?
+        let joined_late: Bool?
+        let elapsed_at_start_seconds: Int?
+        let attendees: [TranscriptPerson]
         /// Spec line 117 / D2: `succeeded` when the AEC pre-pass
         /// produced a cleaned mic file, `failed` when AEC was attempted
         /// and failed, or absent (nil) when the session predates AEC
         /// integration. Codex rc1-final P1.3: rc1 always writes
         /// "failed" because the AEC backend is research-gated.
-        public let aec_status: String?
-        public let error_code: String?
-        public let error_message: String?
-        public let retry_count: Int?
-        public let attempt_count: Int?
-        public let audio_duration_seconds: Int?
-        public let audio_size_bytes: Int?
+        let aec_status: String?
+        let error_code: String?
+        let error_message: String?
+        let retry_count: Int?
+        let attempt_count: Int?
+        let audio_duration_seconds: Int?
+        let audio_size_bytes: Int?
 
-        public init(
+        init(
             status: TranscriptStatus,
             context: TranscriptContext,
             audio: String,
@@ -77,12 +77,12 @@ public enum MetadataJSONWriter {
         }
     }
 
-    public static func primaryAudioReference(context: TranscriptContext, preferredAudioPath: String = "") -> String {
+    static func primaryAudioReference(context: TranscriptContext, preferredAudioPath: String = "") -> String {
         if !preferredAudioPath.isEmpty { return preferredAudioPath }
         return context.audioRelativePaths.first ?? ""
     }
 
-    public static func write(at url: URL, metadata: Metadata) throws {
+    static func write(at url: URL, metadata: Metadata) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(metadata)

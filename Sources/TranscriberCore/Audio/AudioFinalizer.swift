@@ -22,7 +22,7 @@ import Foundation
 /// spec deviation; real BS.1770 lands in V1.1. See docs/spec/SPEC.md
 /// "Audio normalization" for the contract and the intentional gap.
 public enum AudioFinalizer {
-  public enum FinalizeError: Error, Equatable {
+  enum FinalizeError: Error, Equatable {
     case readFailed(URL)
     case writerSetupFailed
     case writerFailed(String?)
@@ -37,15 +37,15 @@ public enum AudioFinalizer {
   public struct Options: Sendable {
     /// Target frames produced per pull. 4800 @ 48kHz = 100ms — small
     /// enough to bound memory, large enough to keep the AAC encoder fed.
-    public var chunkFrames: AVAudioFrameCount
+    var chunkFrames: AVAudioFrameCount
 
     /// Backpressure poll interval when the AVAssetWriter input is full.
-    public var backpressureSleep: TimeInterval
+    var backpressureSleep: TimeInterval
 
     /// Maximum continuous time we'll wait for the writer to drain
     /// before giving up. Prevents an indefinite hang when the disk is
     /// full or the encoder has wedged.
-    public var backpressureTimeout: TimeInterval
+    var backpressureTimeout: TimeInterval
 
     /// Test seam for deterministic writer backpressure coverage. Production
     /// uses the real AVAssetWriterInput readiness; tests can force a

@@ -21,13 +21,13 @@ import Foundation
 /// state and emits `.recoveryDeferred(stream:)` when a `.partial` we
 /// tried to rename is still on disk — supervisor leaves the session
 /// pending so the next scan can retry.
-public enum OrphanRecoverer {
-    public enum Stream: String, Sendable, Equatable {
+enum OrphanRecoverer {
+    enum Stream: String, Sendable, Equatable {
         case mic
         case system
     }
 
-    public enum Result: Equatable {
+    enum Result: Equatable {
         /// Both `mic.m4a` and `system.m4a` already exist. No-op.
         case alreadyFinalized
         /// Both tracks present (potentially after renaming `.partial`).
@@ -53,7 +53,7 @@ public enum OrphanRecoverer {
         case activeCapture
     }
 
-    public static func recover(_ dir: SessionDirectory) -> Result {
+    static func recover(_ dir: SessionDirectory) -> Result {
         let fm = FileManager.default
 
         // Codex rc2-audit CAP-5: defer to live captures. The capture

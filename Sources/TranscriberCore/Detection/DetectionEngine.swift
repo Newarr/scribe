@@ -249,7 +249,7 @@ public actor DetectionEngine {
 }
 
 public enum DetectionTriggerIdentity {
-    public static let calendarPrefix = "calendar:"
+    static let calendarPrefix = "calendar:"
 
     public static func matchesEndedCandidate(
         pendingTriggerIdentity: String,

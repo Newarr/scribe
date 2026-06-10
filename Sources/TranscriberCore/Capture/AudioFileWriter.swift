@@ -1,8 +1,8 @@
 import AVFoundation
 import Foundation
 
-public final class AudioFileWriter: @unchecked Sendable {
-    public enum WriterError: Error {
+final class AudioFileWriter: @unchecked Sendable {
+    enum WriterError: Error {
         case notStarted
         case alreadyStarted
         case inputNotAcceptedByWriter
@@ -41,7 +41,7 @@ public final class AudioFileWriter: @unchecked Sendable {
     /// recorded.
     private var backpressureDropCount: Int = 0
 
-    public init(url: URL, sampleRate: Int, channelCount: Int) throws {
+    init(url: URL, sampleRate: Int, channelCount: Int) throws {
         try? FileManager.default.removeItem(at: url)
         writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
 
@@ -60,7 +60,7 @@ public final class AudioFileWriter: @unchecked Sendable {
         self.input = createdInput
     }
 
-    public func start() throws {
+    func start() throws {
         var thrown: WriterError?
         queue.sync {
             guard !started else { thrown = .alreadyStarted; return }
@@ -75,14 +75,14 @@ public final class AudioFileWriter: @unchecked Sendable {
     /// buffer didn't actually land in the m4a — codex Phase β review P1.4
     /// + P1.5 caught that v0 silently dropped backpressured buffers AND
     /// recorded their PTS, making the JSONL claim audio that didn't exist.
-    public enum AppendOutcome: Sendable, Equatable {
+    enum AppendOutcome: Sendable, Equatable {
         case appended
         case droppedBackpressure
         case droppedPostFinalize
     }
 
     @discardableResult
-    public func append(_ buffer: CMSampleBuffer) throws -> AppendOutcome {
+    func append(_ buffer: CMSampleBuffer) throws -> AppendOutcome {
         var thrown: WriterError?
         var outcome: AppendOutcome = .appended
         queue.sync {
@@ -115,7 +115,7 @@ public final class AudioFileWriter: @unchecked Sendable {
         return outcome
     }
 
-    public func finalize() async throws {
+    func finalize() async throws {
         // Codex rc2-audit P1 (audit 2): the v0 path set `finalized =
         // true` BEFORE awaiting `finishWriting()`, so a concurrent
         // `finalize()` would see `finalized == true`, return

@@ -62,11 +62,11 @@ public final class PermissionsService: Sendable {
         return after
     }
 
-    public static func currentCalendarStatus() -> PermissionStatus {
+    static func currentCalendarStatus() -> PermissionStatus {
         mapCalendarAuthorizationStatus(EKEventStore.authorizationStatus(for: .event))
     }
 
-    public static func mapCalendarAuthorizationStatus(_ status: EKAuthorizationStatus) -> PermissionStatus {
+    static func mapCalendarAuthorizationStatus(_ status: EKAuthorizationStatus) -> PermissionStatus {
         switch status {
         case .fullAccess, .authorized:
             return .granted

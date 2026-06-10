@@ -212,7 +212,7 @@ public struct DiagnosticsSnapshot: Codable, Sendable, Equatable {
 /// Pure encoder. Caller hands in a pre-redacted DiagnosticsSnapshot;
 /// we JSON-encode it. The encoder NEVER touches disk on its own.
 public enum DiagnosticsExporter {
-    public enum ExportError: Error {
+    enum ExportError: Error {
         case encodeFailed(Error)
     }
 

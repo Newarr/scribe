@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptPerson: Sendable, Codable, Equatable {
     public let name: String
-    public let email: String?
+    let email: String?
 
     public init(name: String, email: String? = nil) {
         self.name = name
@@ -12,12 +12,12 @@ public struct TranscriptPerson: Sendable, Codable, Equatable {
 
 
 public struct TranscriptFailureDetails: Sendable, Equatable {
-    public let errorCode: String
-    public let errorMessage: String
-    public let retryCount: Int
-    public let attemptCount: Int
-    public let audioDurationSeconds: Int?
-    public let audioSizeBytes: Int?
+    let errorCode: String
+    let errorMessage: String
+    let retryCount: Int
+    let attemptCount: Int
+    let audioDurationSeconds: Int?
+    let audioSizeBytes: Int?
 
     public init(
         errorCode: String = "transcription_failed",
@@ -35,7 +35,7 @@ public struct TranscriptFailureDetails: Sendable, Equatable {
         self.audioSizeBytes = audioSizeBytes
     }
 
-    public static func boundedCode(_ raw: String) -> String {
+    static func boundedCode(_ raw: String) -> String {
         let allowed = raw.lowercased().map { ch in
             (ch.isLetter || ch.isNumber || ch == "_" || ch == "-") ? ch : "_"
         }
@@ -43,7 +43,7 @@ public struct TranscriptFailureDetails: Sendable, Equatable {
         return String((collapsed.isEmpty ? "transcription_failed" : collapsed).prefix(80))
     }
 
-    public static func boundedMessage(_ raw: String) -> String {
+    static func boundedMessage(_ raw: String) -> String {
         PersistedErrorRedactor.redact(raw)
     }
 }
@@ -57,7 +57,7 @@ public struct TranscriptContext: Sendable {
     public let scheduledEnd: String?
     public let actualStart: String   // ISO8601
     public let actualEnd: String
-    public let organizer: TranscriptPerson?
+    let organizer: TranscriptPerson?
     public let location: String?
     public let calendarEventID: String?
     public let joinedLate: Bool?
@@ -117,7 +117,7 @@ public enum TranscriptWriter {
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    public static func writeComplete(
+    static func writeComplete(
         at url: URL,
         context c: TranscriptContext,
         utterances: [EngineResponse.Utterance],
@@ -140,7 +140,7 @@ public enum TranscriptWriter {
         try body.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    public static func writeFailed(
+    static func writeFailed(
         at url: URL,
         context c: TranscriptContext,
         errorMessage: String,
@@ -310,7 +310,7 @@ public enum TranscriptWriter {
         return String(format: "%02d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60)
     }
 
-    public static func yamlEscape(_ s: String) -> String {
+    static func yamlEscape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
          .replacingOccurrences(of: "\"", with: "\\\"")
          .replacingOccurrences(of: "\n", with: " ")

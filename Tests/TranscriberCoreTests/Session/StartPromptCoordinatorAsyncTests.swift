@@ -1,4 +1,4 @@
-import TranscriberCore
+@testable import TranscriberCore
 import XCTest
 
 final class StartPromptCoordinatorAsyncTests: XCTestCase {

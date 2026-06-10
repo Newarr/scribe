@@ -1,9 +1,9 @@
 import Foundation
 
 public struct LocalModelArtifact: Sendable, Equatable, Hashable {
-    public let relativePath: String
+    let relativePath: String
     public let byteCount: Int64
-    public let sha256Hex: String
+    let sha256Hex: String
 
     public init(relativePath: String, byteCount: Int64, sha256Hex: String) {
         self.relativePath = relativePath
@@ -11,14 +11,14 @@ public struct LocalModelArtifact: Sendable, Equatable, Hashable {
         self.sha256Hex = sha256Hex.lowercased()
     }
 
-    public var partialRelativePath: String {
+    var partialRelativePath: String {
         relativePath + ".partial"
     }
 }
 
 public struct LocalModelDownloadProgress: Sendable, Equatable {
-    public let completedBytes: Int64
-    public let totalBytes: Int64?
+    let completedBytes: Int64
+    let totalBytes: Int64?
 
     public init(completedBytes: Int64, totalBytes: Int64?) {
         self.completedBytes = completedBytes
