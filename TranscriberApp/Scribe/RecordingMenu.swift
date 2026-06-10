@@ -222,7 +222,8 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
     let entries = model.recents
     guard
       entries.contains(where: {
-        $0.status == .failed && $0.hasSavedAudio && $0.engineIdentifier?.lowercased() == "cohere"
+        $0.status == .failed && $0.hasSavedAudio
+          && EngineMode(persistedIdentifier: $0.engineIdentifier ?? "") == .local
       })
     else {
       model.localModelReadyForRetry = true
@@ -1429,11 +1430,17 @@ private struct MenuRow: View {
     }
   }
 
-  private var relativeTime: String {
+  // Formatter construction loads locale data; one shared instance instead
+  // of one per row per render of the popover. Only touched from MainActor
+  // view bodies.
+  private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
-    return
-      formatter
+    return formatter
+  }()
+
+  private var relativeTime: String {
+    Self.relativeTimeFormatter
       .localizedString(for: entry.createdAt, relativeTo: Date())
       .replacingOccurrences(of: ".", with: "")
       .uppercased()

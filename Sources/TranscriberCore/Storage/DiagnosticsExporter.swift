@@ -287,10 +287,10 @@ public enum DiagnosticsCollector {
                 continue
             }
             totalSessions += 1
-            switch result.engine {
-            case "elevenlabs": cloudEngineSessions += 1
-            case "cohere": localEngineSessions += 1
-            default: unknownEngineSessions += 1
+            switch EngineMode(persistedIdentifier: result.engine) {
+            case .cloud: cloudEngineSessions += 1
+            case .local: localEngineSessions += 1
+            case nil: unknownEngineSessions += 1
             }
             switch result.status {
             case .pending: pending += 1

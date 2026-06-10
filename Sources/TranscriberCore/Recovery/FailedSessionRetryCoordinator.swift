@@ -46,7 +46,7 @@ public enum FailedSessionRetryCoordinator {
             case .cloud, .localReady: throw RetryError.missingEngineProvenance
             }
         }
-        let context = replaceAudio(in: frontmatter.context, with: ["audio.m4a"])
+        let context = replaceAudio(in: frontmatter.context, with: [CanonicalAudio.fileName])
         return TranscriptionWorker(
             directory: dir,
             context: context,

@@ -177,3 +177,23 @@ public final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Send
         return EngineResponse(utterances: utterances, detectedLanguage: detectedLanguage, modelID: "scribe_v2")
     }
 }
+
+extension ElevenLabsScribeBackend.BackendError: RetryClassifiableError {
+    /// Transient: rate-limited, HTTP 5xx. Terminal: auth failures,
+    /// missing API key, malformed responses, 4xx.
+    public var isTransient: Bool {
+        switch self {
+        case .rateLimited: return true
+        case .httpError(let code): return (500...599).contains(code)
+        case .unauthorized, .missingAPIKey, .malformedResponse: return false
+        }
+    }
+
+    public var persistedErrorCode: String? {
+        switch self {
+        case .unauthorized: return "elevenlabs_unauthorized"
+        case .rateLimited: return "rate_limited"
+        case .httpError, .missingAPIKey, .malformedResponse: return nil
+        }
+    }
+}

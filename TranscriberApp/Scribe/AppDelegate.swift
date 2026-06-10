@@ -276,28 +276,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var outputRoot: URL { settings.outputRoot }
   private static let minimumFreeDiskBytes: Int64 = 1_000_000_000
 
+  /// Set once both legacy migrations reach a definitive state. This runs
+  /// synchronously in applicationDidFinishLaunching, so steady-state
+  /// launches must skip the securityd round-trips (up to five blocking
+  /// SecItem calls) instead of re-confirming a finished migration.
+  private static let keychainMigrationSettledKey = "KeychainLegacyMigrationSettled.v1"
+
   private static func migrateLegacyKeychainItemsIfNeeded() {
-    migrateLegacyKeychainItem(
+    let defaults = UserDefaults.standard
+    guard defaults.bool(forKey: keychainMigrationSettledKey) == false else { return }
+    let apiKeySettled = migrateLegacyKeychainItem(
       account: keychainAccount,
       currentService: keychainService,
       legacyService: legacyKeychainService,
       label: "ElevenLabs API key"
     )
-    migrateLegacyKeychainItem(
+    let diagnosticsSettled = migrateLegacyKeychainItem(
       account: diagnosticsInstanceAccount,
       currentService: diagnosticsInstanceService,
       legacyService: legacyDiagnosticsInstanceService,
       label: "diagnostics instance ID"
     )
+    if apiKeySettled && diagnosticsSettled {
+      defaults.set(true, forKey: keychainMigrationSettledKey)
+    }
   }
 
+  /// Returns true when the migration reached a definitive state (current
+  /// item already present, nothing legacy to migrate, or value migrated).
+  /// Returns false when the keychain was not silently readable or the write
+  /// failed, so the attempt repeats on the next launch.
   private static func migrateLegacyKeychainItem(
     account: String,
     currentService: String,
     legacyService: String,
     label: String
-  ) {
-    guard currentService != legacyService else { return }
+  ) -> Bool {
+    guard currentService != legacyService else { return true }
     let current = KeychainStore(service: currentService, account: account)
     let legacy = KeychainStore(service: legacyService, account: account)
 
@@ -305,11 +320,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if let value = try current.read(allowingUserInteraction: false),
         value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       {
-        return
+        return true
       }
     } catch {
       Log.lifecycle.info("Skipping \(label, privacy: .public) Keychain migration because the Scribe item is not silently readable")
-      return
+      return false
     }
 
     let legacyValue: String
@@ -317,12 +332,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       guard let value = try legacy.read(allowingUserInteraction: false),
         value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       else {
-        return
+        return true
       }
       legacyValue = value
     } catch {
       Log.lifecycle.info("Legacy \(label, privacy: .public) Keychain item is not silently readable; leaving it untouched")
-      return
+      return false
     }
 
     do {
@@ -331,10 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       do {
         try legacy.delete(allowingUserInteraction: false)
       } catch {
+        // The current item now exists, so the next launch settles on the
+        // early-return path even with the legacy item left behind.
         Log.lifecycle.info("Migrated \(label, privacy: .public), but could not silently delete the legacy Keychain item")
       }
+      return true
     } catch {
       Log.lifecycle.error("Failed to migrate \(label, privacy: .public) Keychain item to the Scribe service: \(String(describing: error), privacy: .public)")
+      return false
     }
   }
 
@@ -352,10 +371,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Log.lifecycle.info("App launched, version=\(BuildInfo.version, privacy: .public)")
     ScreenRecordingRelaunchAssist.disarm()
     Self.migrateLegacyKeychainItemsIfNeeded()
-    applyAppearanceTheme(settings.appearanceTheme)
+    // One settings read for the whole launch path: every consumer below
+    // sees the same snapshot.
+    let snap = settings
+    applyAppearanceTheme(snap.appearanceTheme)
     // Backfill VAD/LID models for users who completed local-engine setup
     // before aux models existed. No-op unless local mode is selected.
-    if settings.engineMode == .local {
+    if snap.engineMode == .local {
       stageAuxiliaryLocalModels()
     }
     FontRegistration.assertLoaded()
@@ -395,10 +417,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // they don't own, log it loudly so the eventual failed-to-record
     // / empty-recovery-scan symptoms have a breadcrumb.
     do {
-      try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+      try FileManager.default.createDirectory(at: snap.outputRoot, withIntermediateDirectories: true)
     } catch {
       Log.lifecycle.error(
-        "Failed to create outputRoot at \(self.outputRoot.path, privacy: .private): \(String(describing: error), privacy: .public). Recovery scan will skip this scan; please fix the path or grant permission and relaunch."
+        "Failed to create outputRoot at \(snap.outputRoot.path, privacy: .private): \(String(describing: error), privacy: .public). Recovery scan will skip this scan; please fix the path or grant permission and relaunch."
       )
     }
 
@@ -488,17 +510,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       menu.addItem(quitItem)
       return menu
     }
-    m.outputRoot = outputRoot
-    m.appearanceTheme = settings.appearanceTheme
+    m.outputRoot = snap.outputRoot
+    m.appearanceTheme = snap.appearanceTheme
     self.menu = m
-    if settings.showInMenuBar {
+    if snap.showInMenuBar {
       installStatusItemIfNeeded()
     }
 
     let hotKeyRegistrar = StartStopHotKeyRegistrar { [weak self] in
       Task { await self?.toggleRecordingFromShortcut() }
     }
-    hotKeyRegistrar.register(settings.startStopShortcut)
+    hotKeyRegistrar.register(snap.startStopShortcut)
     self.hotKeyRegistrar = hotKeyRegistrar
 
     // Codex Phase η P0.2: orphaned-session supervisor scan can
@@ -507,7 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // the privacy notice. If the flag is already set (returning
     // user), kick off recovery now; otherwise the ack callback
     // below schedules it after the user clicks "I understand".
-    if settings.privacyAcknowledged {
+    if snap.privacyAcknowledged {
       scheduleSupervisorRecovery()
     } else {
       Log.lifecycle.info("Supervisor recovery deferred until privacy ack")
@@ -727,15 +749,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let snap = settings
     let permissionProbe = DefaultPermissionStatusProbe(permissions: permissions)
     let keychain = KeychainStore(service: Self.keychainService, account: Self.keychainAccount)
+    // The probes are independent; run them concurrently so the resume
+    // snapshot costs max(probe latency), not the sum (the model status
+    // probe alone can dominate).
+    async let microphone = permissionProbe.microphone()
+    async let calendar = permissionProbe.calendar()
+    async let notifications = permissionProbe.notifications()
+    async let screenRecording = permissionProbe.screenRecording()
+    async let localModelStatus = localModelManager.status()
+    async let outputFolderReady = DefaultOutputFolderProbe().isWritable(snap.outputRoot)
     return OnboardingResumeSnapshot(
-      microphone: await permissionProbe.microphone(),
-      calendar: await permissionProbe.calendar(),
-      notifications: await permissionProbe.notifications(),
-      screenRecording: await permissionProbe.screenRecording(),
+      microphone: await microphone,
+      calendar: await calendar,
+      notifications: await notifications,
+      screenRecording: await screenRecording,
       cloudKeyAvailable: Self.probeCloudKey(keychain: keychain) == .configured,
-      localModelStatus: await localModelManager.status(),
+      localModelStatus: await localModelStatus,
       selectedEngine: snap.engineMode,
-      outputFolderReady: await DefaultOutputFolderProbe().isWritable(snap.outputRoot),
+      outputFolderReady: await outputFolderReady,
       testRecordingComplete: false
     )
   }
@@ -1167,14 +1198,14 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
 
   @MainActor
   private func retryFailedSession(at sessionURL: URL) async {
-    let savedAudioURL = sessionURL.appendingPathComponent("audio.m4a")
-    guard FileManager.default.fileExists(atPath: savedAudioURL.path) else {
+    // Same usability predicate FailedSessionRetryCoordinator enforces one
+    // call later, so this routing pre-check can't disagree with it.
+    guard CanonicalAudio.isUsable(in: sessionURL) else {
       Log.engine.error(
         "Failed-session retry unavailable: saved audio missing for selected failed session")
       if let frontmatter = TranscriptFrontmatterReader.read(
         at: sessionURL.appendingPathComponent("transcript.md")),
-        frontmatter.context.engine.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-          .lowercased() == "cohere"
+        EngineMode(persistedIdentifier: frontmatter.context.engine) == .local
       {
         markRecoverySetupRequired(
           payload: SessionRepairRouting.LocalRepairPayload(
@@ -1228,11 +1259,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
   @MainActor
   private func mostRecentFailedSessionURL() -> URL? {
     SessionFolderEnumerator.recents(under: outputRoot, limit: RecordingMenuModel.recentsLimit)
-      .first { entry in
-        entry.status == .failed
-          && FileManager.default.fileExists(
-            atPath: entry.directory.appendingPathComponent("audio.m4a").path)
-      }?
+      .first { $0.status == .failed && $0.hasSavedAudio }?
       .directory
   }
 
@@ -1766,12 +1793,16 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
     // Phase η spec line 348: recording is gated on privacy ack.
     // If the sheet was dismissed via cmd-q without acknowledging,
     // re-present it instead of starting the engine.
-    guard settings.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest else {
+    // One settings read for the whole start path: the privacy gate, the
+    // preflight audit, and the session-directory creation below must not
+    // see different snapshots (the audit await is a commit window).
+    let snapshot = settings
+    guard snapshot.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest else {
       Log.lifecycle.info("startRecording blocked: privacy acknowledgement pending")
       presentPrivacyAcknowledgementIfNeeded()
       return
     }
-    if allowPendingPrivacyAcknowledgementForOnboardingTest && !settings.privacyAcknowledged {
+    if allowPendingPrivacyAcknowledgementForOnboardingTest && !snapshot.privacyAcknowledged {
       Log.lifecycle.info(
         "startRecording proceeding for consented onboarding test recording before final privacy acknowledgement"
       )
@@ -1782,7 +1813,6 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
     applyTrustIcon()
 
     // Audit before capture so permission prompts stay inside Scribe UI.
-    let snapshot = settings
     let report = await preflightDoctor.audit(
       outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
     if let freeBytes = Self.availableDiskBytes(for: snapshot.outputRoot),
@@ -1796,7 +1826,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
 
     let id = SessionID(from: Date())
     do {
-      let dir = try SessionDirectory.create(under: outputRoot, id: id)
+      let dir = try SessionDirectory.create(under: snapshot.outputRoot, id: id)
       let sessionEngineMode = snapshot.engineMode
       let session = try makeCaptureSession(directory: dir, engineMode: sessionEngineMode)
       installStartingSession(session, directory: dir, engineMode: sessionEngineMode)
@@ -1879,7 +1909,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
       system: sys,
       sampleRate: 48000,
       channelCount: 1,
-      sessionEngineIdentifier: engineMode.sessionEngineIdentifier,
+      sessionEngineIdentifier: engineMode.persistedIdentifier,
       liveLevelHandler: { [weak self] stream, rms in
         Task { @MainActor [weak self] in
           self?.recordLiveAudioLevel(stream: stream, rms: rms)
@@ -2229,14 +2259,17 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
         return false
       }
     }
-    guard let transcript = try? String(contentsOf: dir.transcript, encoding: .utf8),
-      transcript.contains("status: pending"),
-      transcript.contains("mic.m4a"),
-      transcript.contains("system.m4a")
+    // Parse the frontmatter with the same reader recovery uses instead of
+    // substring-matching raw transcript bytes; a core serialization change
+    // (quoting, key order) must not turn every stop into noDurableAudio.
+    guard let frontmatter = TranscriptFrontmatterReader.read(at: dir.transcript),
+      frontmatter.status == .pending
     else {
       return false
     }
-    return true
+    let audio = frontmatter.context.audioRelativePaths
+    return audio.contains(dir.micFinal.lastPathComponent)
+      && audio.contains(dir.systemFinal.lastPathComponent)
   }
 
   @MainActor
@@ -2249,7 +2282,11 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
     let endedAt = Date()
     let started = currentSessionStartedAt ?? endedAt
     let event = currentCalendarEvent
-    let sessionEngineMode = currentSessionEngineMode ?? settings.engineMode
+    // One settings read for the whole stop path: session.stop() below is
+    // a commit window, and the worker must not mix engineMode from one
+    // snapshot with keepRawStreams/transcriptionLanguage from another.
+    let snap = settings
+    let sessionEngineMode = currentSessionEngineMode ?? snap.engineMode
 
     var stopSucceeded = false
     do {
@@ -2301,12 +2338,12 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
     }
 
     let worker = Self.makeWorker(
-      dir: dir, context: context, event: event, keepRawStreams: settings.keepRawStreams,
-      engineMode: sessionEngineMode, transcriptionLanguage: settings.transcriptionLanguage)
+      dir: dir, context: context, event: event, keepRawStreams: snap.keepRawStreams,
+      engineMode: sessionEngineMode, transcriptionLanguage: snap.transcriptionLanguage)
     // Source-order guard: reevaluateQueuedDetectionCandidateAfterStop() runs after worker creation below.
     let id = UUID()
     let durationSeconds = Int(endedAt.timeIntervalSince(started))
-    let engineLabel = sessionEngineMode == .cloud ? "ElevenLabs" : "Cohere"
+    let engineLabel = sessionEngineMode.displayName
     reevaluateQueuedDetectionCandidateAfterStop()
     let task = Task { [weak self] in
       let outcome = await worker.run()
@@ -2392,7 +2429,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
   /// for legacy or partially recovered sessions where canonical audio
   /// has not been published.
   private nonisolated func totalAudioBytes(in dir: SessionDirectory) -> Int64 {
-    if let canonicalSize = audioByteSize(at: dir.url.appendingPathComponent("audio.m4a")) {
+    if let canonicalSize = audioByteSize(at: dir.audioFinal) {
       return canonicalSize
     }
     return [dir.micFinal, dir.systemFinal].compactMap(audioByteSize(at:)).reduce(0, +)
@@ -2709,7 +2746,7 @@ extension AppDelegate {
     return TranscriptContext(
       title: title,
       date: dayFmt.string(from: startedAt),
-      engine: engineMode.sessionEngineIdentifier,
+      engine: engineMode.persistedIdentifier,
       audioRelativePaths: ["mic.m4a", "system.m4a"],
       scheduledStart: event.map { isoFmt.string(from: $0.startDate) },
       scheduledEnd: event.map { isoFmt.string(from: $0.endDate) },
@@ -2748,7 +2785,7 @@ extension AppDelegate {
     // streaming) and (b) was never deleted on .complete. Phase ε
     // already produces audio.m4a streaming, so use that directly as
     // the upload artifact.
-    let canonicalAudioURL = dir.url.appendingPathComponent("audio.m4a")
+    let canonicalAudioURL = dir.audioFinal
     let keychain = KeychainStore(service: keychainService, account: keychainAccount)
     // Codex rc1-final P1.4: dispatch through EngineSelector so a
     // future flip to local mode lands the Cohere subprocess
@@ -2886,19 +2923,3 @@ extension AppDelegate {
   }
 }
 
-extension EngineMode {
-  fileprivate var sessionEngineIdentifier: String {
-    switch self {
-    case .cloud: return "elevenlabs"
-    case .local: return "cohere"
-    }
-  }
-
-  fileprivate init?(sessionEngineIdentifier: String) {
-    switch sessionEngineIdentifier.lowercased() {
-    case "elevenlabs": self = .cloud
-    case "cohere": self = .local
-    default: return nil
-    }
-  }
-}

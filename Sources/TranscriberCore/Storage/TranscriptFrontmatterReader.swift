@@ -104,11 +104,8 @@ public enum TranscriptFrontmatterReader {
     }
 
     private static func normalizeDiagnosticsEngine(_ raw: String?) -> String {
-        switch raw?.lowercased() {
-        case "elevenlabs": return "elevenlabs"
-        case "cohere": return "cohere"
-        default: return "unknown"
-        }
+        guard let raw, let mode = EngineMode(persistedIdentifier: raw) else { return "unknown" }
+        return mode.persistedIdentifier
     }
 
     static func readFromString(_ content: String) -> Frontmatter? {

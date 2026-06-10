@@ -1095,16 +1095,28 @@ private struct FidelityGeneralPanel: View {
 }
 
 /// Display-name ↔ BCP-47 mapping for the transcription Language dropdown.
-/// Codes must stay within `CohereMLXBackend.supportedLanguageCodes`; the
-/// cloud engine always auto-detects and ignores this setting.
+/// Membership comes from `CohereMLXBackend.supportedLanguageCodes` so the
+/// picker can't drift from what the tokenizer accepts; this table only
+/// supplies stable display names. The cloud engine always auto-detects and
+/// ignores this setting.
 enum TranscriptionLanguageOption {
   static let autoLabel = "Auto (detect)"
-  static let named: [(label: String, code: String)] = [
-    ("Arabic", "ar"), ("Chinese", "zh"), ("Dutch", "nl"), ("English", "en"),
-    ("French", "fr"), ("German", "de"), ("Greek", "el"), ("Italian", "it"),
-    ("Japanese", "ja"), ("Korean", "ko"), ("Polish", "pl"), ("Portuguese", "pt"),
-    ("Spanish", "es"), ("Vietnamese", "vi"),
+  private static let displayNames: [String: String] = [
+    "ar": "Arabic", "zh": "Chinese", "nl": "Dutch", "en": "English",
+    "fr": "French", "de": "German", "el": "Greek", "it": "Italian",
+    "ja": "Japanese", "ko": "Korean", "pl": "Polish", "pt": "Portuguese",
+    "es": "Spanish", "vi": "Vietnamese",
   ]
+  static let named: [(label: String, code: String)] =
+    CohereMLXBackend.supportedLanguageCodes
+      .map { code in
+        (
+          label: displayNames[code]
+            ?? Locale.current.localizedString(forLanguageCode: code) ?? code,
+          code: code
+        )
+      }
+      .sorted { $0.label < $1.label }
   static var labels: [String] { [autoLabel] + named.map(\.label) }
   static func code(forLabel label: String) -> String? {
     named.first { $0.label == label }?.code
@@ -1156,17 +1168,15 @@ private struct FidelityAudioPanel: View {
                 "\(model.engineViewState.local.modelName) · \(model.engineViewState.local.diskUsageText)\n\(model.engineViewState.local.privacyCopy)",
               selected: model.engineMode == .local,
               enabled: model.engineViewState.local.isSelectionEnabled,
-              actions: model.engineViewState.local.availableActions.map { action in
-                action == .retry ? "Retry" : "Remove"
-              },
+              actions: model.engineViewState.local.availableActions,
               focused: focusedEngineCard == .local
             ) {
               selectEngine(.local)
-            } actionHandler: { title in
+            } actionHandler: { action in
               Task {
-                if title == "Retry" { _ = await model.handleEngineAction(.retryLocalSetup) }
-                if title == "Remove" {
-                  _ = await model.handleEngineAction(.requestRemoveLocalModel)
+                switch action {
+                case .retry: _ = await model.handleEngineAction(.retryLocalSetup)
+                case .remove: _ = await model.handleEngineAction(.requestRemoveLocalModel)
                 }
               }
             }
@@ -1371,10 +1381,10 @@ private struct FidelityEngineCard: View {
   let detail: String
   let selected: Bool
   let enabled: Bool
-  let actions: [String]
+  let actions: [EngineSettingsLocalAction]
   let focused: Bool
   let select: () -> Void
-  let actionHandler: (String) -> Void
+  let actionHandler: (EngineSettingsLocalAction) -> Void
 
   init(
     title: String,
@@ -1382,10 +1392,10 @@ private struct FidelityEngineCard: View {
     detail: String,
     selected: Bool,
     enabled: Bool,
-    actions: [String],
+    actions: [EngineSettingsLocalAction],
     focused: Bool = false,
     select: @escaping () -> Void,
-    actionHandler: @escaping (String) -> Void = { _ in }
+    actionHandler: @escaping (EngineSettingsLocalAction) -> Void = { _ in }
   ) {
     self.title = title
     self.status = status
@@ -1444,16 +1454,24 @@ private struct FidelityEngineCard: View {
       if actions.isEmpty == false {
         HStack(spacing: 8) {
           ForEach(actions, id: \.self) { action in
-            if action == "Remove" {
-              FidelityDangerButton(action) { actionHandler(action) }
-            } else {
-              FidelitySecondaryButton(action) { actionHandler(action) }
+            switch action {
+            case .remove:
+              FidelityDangerButton(Self.title(for: action)) { actionHandler(action) }
+            case .retry:
+              FidelitySecondaryButton(Self.title(for: action)) { actionHandler(action) }
             }
           }
         }
       }
     }
     .frame(maxWidth: .infinity, alignment: .topLeading)
+  }
+
+  private static func title(for action: EngineSettingsLocalAction) -> String {
+    switch action {
+    case .retry: return "Retry"
+    case .remove: return "Remove"
+    }
   }
 }
 
@@ -2375,9 +2393,12 @@ private struct FidelityPathField: View {
 
 private struct FidelityStorageStat: View {
   let url: URL
+  // The recursive output-folder walk stats thousands of files; running it
+  // inside body blocked the main actor on every render of the storage tab.
+  // Compute once per output root off the main thread instead.
+  @State private var stat: (transcriptCount: Int, byteCount: String) = (0, "0 KB")
 
   var body: some View {
-    let stat = storageStat
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text("\(stat.transcriptCount)")
         .font(SwiftUI.Font.custom(FidelitySettings.font, size: 15).weight(.semibold))
@@ -2394,9 +2415,15 @@ private struct FidelityStorageStat: View {
         .foregroundStyle(FidelitySettings.ink)
         .monospacedDigit()
     }
+    .task(id: url) {
+      let target = url
+      stat = await Task.detached(priority: .utility) {
+        Self.computeStorageStat(at: target)
+      }.value
+    }
   }
 
-  private var storageStat: (transcriptCount: Int, byteCount: String) {
+  private nonisolated static func computeStorageStat(at url: URL) -> (transcriptCount: Int, byteCount: String) {
     let manager = FileManager.default
     guard
       let enumerator = manager.enumerator(

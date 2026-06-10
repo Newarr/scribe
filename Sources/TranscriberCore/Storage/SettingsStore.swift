@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Sendable wrapper around `UserDefaults`. Apple documents UserDefaults
 /// as thread-safe but doesn't (yet) carry a formal Sendable conformance
@@ -233,13 +234,10 @@ public actor SettingsStore {
     }
 
     /// Returns an immutable view of all settings. Use this at session
-    /// start; do not re-read mid-session.
+    /// start; do not re-read mid-session. Shares the reader's decode
+    /// cache; both read the same JSON-blob key.
     public func snapshot() -> SessionSettings {
-        if let data = box.defaults.data(forKey: Key.storage.rawValue),
-           let decoded = try? JSONDecoder().decode(SessionSettings.self, from: data) {
-            return decoded
-        }
-        return fallback.toSnapshot()
+        SettingsSnapshotReader.read(from: box, fallback: fallback)
     }
 
     // MARK: - typed setters (read-modify-write — actor serializes)
@@ -370,25 +368,29 @@ private extension SettingsStore.Defaults {
 /// session-start path, but multi-key inconsistency is impossible
 /// because the blob is the unit of commit.
 public enum SettingsSnapshotReader {
+    /// Decode cache keyed on the raw blob bytes. The decoded value is a
+    /// pure function of the data, so equal bytes reuse the last decode
+    /// regardless of which UserDefaults instance supplied them. Keying on
+    /// bytes (not a commit hook) keeps the reader observably consistent
+    /// with the actor: a fresh write is new bytes, so it always re-decodes.
+    private static let lastDecode = Mutex<(data: Data, settings: SessionSettings)?>(nil)
+
     public static func read(
         from box: UserDefaultsBox = .standard,
         fallback: SettingsStore.Defaults
     ) -> SessionSettings {
-        if let data = box.defaults.data(forKey: SettingsStore.Key.storage.rawValue),
-           let decoded = try? JSONDecoder().decode(SessionSettings.self, from: data) {
+        guard let data = box.defaults.data(forKey: SettingsStore.Key.storage.rawValue) else {
+            return fallback.toSnapshot()
+        }
+        return lastDecode.withLock { cached in
+            if let hit = cached, hit.data == data {
+                return hit.settings
+            }
+            guard let decoded = try? JSONDecoder().decode(SessionSettings.self, from: data) else {
+                return fallback.toSnapshot()
+            }
+            cached = (data, decoded)
             return decoded
         }
-        return SessionSettings(
-            outputRoot: fallback.outputRoot,
-            engineMode: fallback.engineMode,
-            keepRawStreams: fallback.keepRawStreams,
-            aecEnabled: fallback.aecEnabled,
-            privacyAcknowledged: fallback.privacyAcknowledged,
-            appearanceTheme: fallback.appearanceTheme,
-            launchAtLogin: fallback.launchAtLogin,
-            showInMenuBar: fallback.showInMenuBar,
-            startStopShortcut: fallback.startStopShortcut,
-            transcriptionLanguage: fallback.transcriptionLanguage
-        )
     }
 }

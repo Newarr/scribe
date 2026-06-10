@@ -84,6 +84,20 @@ public enum CohereMLXBackendError: Error, Sendable, Equatable {
     case degenerateOutput(reason: String)
 }
 
+extension CohereMLXBackendError: RetryClassifiableError {
+    /// Deterministic local inference would just loop into the same
+    /// degenerate decode, so nothing here is worth a retry.
+    public var isTransient: Bool { false }
+
+    /// Without a typed code, the worker's reason-string sniff would see
+    /// "rate" inside "degenerateOutput" and persist "rate_limited".
+    public var persistedErrorCode: String? {
+        switch self {
+        case .degenerateOutput: return "degenerate_output"
+        }
+    }
+}
+
 /// Heuristic guard against decode-loop output (model emits the same phrase
 /// repeatedly instead of transcribing). Tri-gram density + unique-word
 /// fraction are both cheap and either firing means the output is unusable.

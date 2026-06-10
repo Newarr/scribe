@@ -15,12 +15,12 @@ public enum RecoveryEngineProvenance: Sendable, Equatable {
     }
 
     public static func resolve(sessionEngineIdentifier: String, localModelStatus: LocalModelCacheStatus) -> RecoveryEngineProvenance {
-        switch sessionEngineIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "elevenlabs":
+        switch EngineMode(persistedIdentifier: sessionEngineIdentifier) {
+        case .cloud:
             return .cloud
-        case "cohere":
+        case .local:
             return localModelStatus.isReady ? .localReady : .localSetupRequired
-        default:
+        case nil:
             return .missingOrInvalid
         }
     }

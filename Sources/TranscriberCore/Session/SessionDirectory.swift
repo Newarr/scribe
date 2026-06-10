@@ -78,6 +78,13 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("transcript.md")
     }
 
+    /// Canonical saved recording produced by finalization and consumed by
+    /// transcription, retry, and repair flows. Single source for the
+    /// "audio.m4a" name; eligibility checks live on `CanonicalAudio`.
+    public var audioFinal: URL {
+        CanonicalAudio.url(in: url)
+    }
+
     public func finalize() throws {
         let fileManager = FileManager.default
 

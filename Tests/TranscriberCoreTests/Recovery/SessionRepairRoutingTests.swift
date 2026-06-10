@@ -277,7 +277,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
         XCTAssertTrue(source.contains("currentSessionEngineMode"), "AppDelegate must snapshot session engine at start")
         XCTAssertTrue(source.contains("menu?.sessionEngineMode = sessionEngineMode"), "active menu must be labelled from session snapshot")
-        XCTAssertTrue(source.contains(#"let engineLabel = sessionEngineMode == .cloud ? "ElevenLabs" : "Cohere""#), "saved notification must use Cohere label for Local sessions")
+        XCTAssertTrue(source.contains("let engineLabel = sessionEngineMode.displayName"), "saved notification must use the canonical engine display name (Cohere for Local sessions)")
         XCTAssertFalse(source.contains(#"engineLabel = "Local""#), "saved notification must not use generic Local label")
     }
 
@@ -287,7 +287,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let notificationSource = try String(contentsOfFile: appSourcePath("SavedNotificationWindow.swift"), encoding: .utf8)
 
         XCTAssertTrue(appSource.contains(#"title: "\(title) · transcript saved""#), "saved notification payload title must include transcript saved suffix")
-        XCTAssertTrue(appSource.contains(#"let engineLabel = sessionEngineMode == .cloud ? "ElevenLabs" : "Cohere""#), "Local saved notification body must use Cohere label")
+        XCTAssertTrue(appSource.contains("let engineLabel = sessionEngineMode.displayName"), "Local saved notification body must use the canonical engine display name")
         XCTAssertTrue(notificationSource.contains("currentModel.summary = summary"), "visible saved notification panel must refresh its model when a newer transcript is saved")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.folderURL"), "visible panel actions must read the refreshed model, not stale captured summary")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.transcriptURL"), "visible panel transcript action must read the refreshed model")
@@ -310,13 +310,13 @@ final class SessionRepairRoutingTests: XCTestCase {
         let source = try String(contentsOfFile: appSourcePath("AppDelegate.swift"), encoding: .utf8)
 
         XCTAssertTrue(source.contains("FileManager.default.fileExists(atPath: dir.transcript.path)"), "Saved notification must be suppressed until durable transcript exists.")
-        XCTAssertTrue(source.contains("audioByteSize(at: dir.url.appendingPathComponent(\"audio.m4a\"))"), "Saved notification size must prefer canonical audio.m4a.")
+        XCTAssertTrue(source.contains("audioByteSize(at: dir.audioFinal)"), "Saved notification size must prefer canonical audio.m4a.")
         guard let sizeRange = source.range(of: "private nonisolated func totalAudioBytes") else {
             return XCTFail("AppDelegate must calculate saved notification audio size in one helper")
         }
         let sizeBody = String(source[sizeRange.lowerBound..<source.index(sizeRange.lowerBound, offsetBy: min(900, source.distance(from: sizeRange.lowerBound, to: source.endIndex)))])
         XCTAssertLessThan(
-            sizeBody.distance(from: sizeBody.startIndex, to: sizeBody.range(of: "audio.m4a")?.lowerBound ?? sizeBody.endIndex),
+            sizeBody.distance(from: sizeBody.startIndex, to: sizeBody.range(of: "dir.audioFinal")?.lowerBound ?? sizeBody.endIndex),
             sizeBody.distance(from: sizeBody.startIndex, to: sizeBody.range(of: "dir.micFinal")?.lowerBound ?? sizeBody.endIndex),
             "Canonical audio.m4a must be checked before raw stream fallback."
         )

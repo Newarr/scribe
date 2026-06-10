@@ -334,7 +334,15 @@ public actor LocalModelManager {
             return currentStatus
         }
         do {
-            if try verifyCachedArtifacts() {
+            // Once verified, skip re-hashing on later probes: status() sits on
+            // record-start, popover-open, and Settings paths, and a full
+            // SHA-256 of the 4 GB weights blocks them for seconds. Existence +
+            // byte-size revalidation still catches deletion and truncation;
+            // the full hash runs on first verification, after clearCache(),
+            // and whenever the quick check fails.
+            let wasVerified: Bool
+            if case .verified = currentStatus { wasVerified = true } else { wasVerified = false }
+            if try verifyCachedArtifacts(fullHash: !wasVerified) {
                 let info = try cacheInfo()
                 currentStatus = .verified(info)
             } else if hasPartialArtifacts() {
@@ -432,21 +440,22 @@ public actor LocalModelManager {
         }
     }
 
-    private func verifyCachedArtifacts() throws -> Bool {
+    private func verifyCachedArtifacts(fullHash: Bool = true) throws -> Bool {
         for artifact in manifest.artifacts {
             let url = artifactURL(artifact)
             guard fileManager.fileExists(atPath: url.path) else { return false }
-            try verify(artifact: artifact, at: url)
+            try verify(artifact: artifact, at: url, fullHash: fullHash)
         }
         return true
     }
 
-    private func verify(artifact: LocalModelArtifact, at url: URL) throws {
+    private func verify(artifact: LocalModelArtifact, at url: URL, fullHash: Bool = true) throws {
         let attrs = try fileManager.attributesOfItem(atPath: url.path)
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
         guard size == artifact.byteCount else {
             throw LocalModelManagerError.verificationFailed("Expected \(artifact.relativePath) to be \(artifact.byteCount) bytes, got \(size).")
         }
+        guard fullHash else { return }
         let digest = try Self.sha256Hex(of: url)
         guard digest == artifact.sha256Hex else {
             throw LocalModelManagerError.verificationFailed("Checksum mismatch for \(artifact.relativePath).")

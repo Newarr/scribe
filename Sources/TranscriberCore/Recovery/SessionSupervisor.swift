@@ -164,13 +164,13 @@ public actor SessionSupervisor {
             // placeholder factory.
             let context = Self.recoveryContext(existing: existing, dir: dir, contextFactory: contextFactory)
             guard let worker = workerFactory(dir, context) else {
-                switch context.engine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-                case "cohere":
+                switch EngineMode(persistedIdentifier: context.engine) {
+                case .local:
                     result.localSetupRequired += 1
                     result.localSetupRequiredSessions.append(dir.url)
-                case "elevenlabs":
+                case .cloud:
                     break
-                default:
+                case nil:
                     result.missingEngineProvenance += 1
                 }
                 result.skipped += 1
@@ -201,7 +201,7 @@ public actor SessionSupervisor {
     /// NEVER sweeps for failed-status sessions — those raws are the
     /// user's only path to manual recovery.
     private func sweepStrandedRawStreams(in dir: SessionDirectory) {
-        let canonicalAudio = dir.url.appendingPathComponent("audio.m4a")
+        let canonicalAudio = dir.audioFinal
         guard FileManager.default.fileExists(atPath: canonicalAudio.path) else { return }
         for url in [dir.micFinal, dir.systemFinal] {
             if FileManager.default.fileExists(atPath: url.path) {

@@ -237,7 +237,7 @@ public enum TranscriptWriter {
         if c.audioRelativePaths.isEmpty {
             return "No usable audio was captured for this session, so Scribe cannot retry transcription from saved audio."
         }
-        if c.audioRelativePaths == ["audio.m4a"] {
+        if c.audioRelativePaths == [CanonicalAudio.fileName] {
             return "Audio is saved at \(audioRef)\(audioSummary). The recording itself is intact and complete; only transcription failed."
         }
         if c.audioRelativePaths.count == 1 {
@@ -253,7 +253,7 @@ public enum TranscriptWriter {
             - Keep this transcript as the failure record; there is no saved audio file for Scribe to retry.
             """
         }
-        if c.audioRelativePaths == ["audio.m4a"] {
+        if c.audioRelativePaths == [CanonicalAudio.fileName] {
             return """
             - Retry from the Scribe menu bar: click the icon, then `Retry` next to this session.
             - Or transcribe locally: Settings → Engine → Cohere (local), then retry.
@@ -291,11 +291,7 @@ public enum TranscriptWriter {
     }
 
     private static func engineDisplayName(_ engine: String) -> String {
-        switch engine {
-        case "elevenlabs": return "ElevenLabs"
-        case "cohere": return "Cohere"
-        default: return "The transcription engine"
-        }
+        EngineMode(persistedIdentifier: engine)?.displayName ?? "The transcription engine"
     }
 
     private static func audioReferenceList(_ paths: [String]) -> String {

@@ -51,7 +51,7 @@ public actor CaptureSession {
         system: AudioCaptureSource,
         sampleRate: Int,
         channelCount: Int,
-        sessionEngineIdentifier: String = "elevenlabs",
+        sessionEngineIdentifier: String = EngineMode.cloud.persistedIdentifier,
         liveLevelHandler: (@Sendable (PTSCollector.StreamID, Float) -> Void)? = nil
     ) throws {
         self.directory = directory

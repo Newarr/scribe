@@ -30,9 +30,6 @@ public struct SessionStartManifest: Codable, Equatable, Sendable {
     }
 
     public static func isValidEngineIdentifier(_ engine: String) -> Bool {
-        switch engine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "elevenlabs", "cohere": return true
-        default: return false
-        }
+        EngineMode(persistedIdentifier: engine) != nil
     }
 }

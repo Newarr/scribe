@@ -110,7 +110,7 @@ public enum SessionRepairRouting {
     ) -> RecentAction {
         guard entry.status == .failed else { return .none }
         if entry.hasSavedAudio {
-            guard entry.engineIdentifier?.lowercased() == "cohere" else {
+            guard EngineMode(persistedIdentifier: entry.engineIdentifier ?? "") == .local else {
                 return .retry(sessionDirectory: entry.directory)
             }
             guard let localModelReady else {

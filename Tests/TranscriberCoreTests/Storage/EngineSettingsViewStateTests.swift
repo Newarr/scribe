@@ -216,7 +216,7 @@ final class EngineSettingsViewStateTests: XCTestCase {
         let clearBody = String(source[clearRange.lowerBound..<source.index(clearRange.lowerBound, offsetBy: min(360, source.distance(from: clearRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(clearBody.contains("try await onClearLocalModelCache()"), "Remove confirmation must invoke clear cache only after confirmation")
 
-        guard let removeButton = source.range(of: "if title == \"Remove\"") else { return XCTFail("Visible Remove action must exist") }
+        guard let removeButton = source.range(of: "case .remove:") else { return XCTFail("Visible Remove action must exist") }
         let removeSnippet = String(source[removeButton.lowerBound..<source.index(removeButton.lowerBound, offsetBy: min(220, source.distance(from: removeButton.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(removeSnippet.contains("requestRemoveLocalModel"), "Visible Remove should first request confirmation")
         XCTAssertFalse(removeSnippet.contains("clearLocalModelCache"), "Visible Remove must not clear cache before confirmation")

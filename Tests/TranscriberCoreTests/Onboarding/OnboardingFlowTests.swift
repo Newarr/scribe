@@ -36,7 +36,7 @@ final class OnboardingFlowTests: XCTestCase {
             return XCTFail("AppDelegate must keep a scoped startRecording privacy parameter defaulted to normal Record Now behavior")
         }
         let startBody = String(appDelegate[startRange.lowerBound..<appDelegate.index(startRange.lowerBound, offsetBy: min(1600, appDelegate.distance(from: startRange.lowerBound, to: appDelegate.endIndex)))])
-        XCTAssertTrue(startBody.contains("settings.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest"), "only the scoped onboarding test seam may satisfy the privacy gate before final acknowledgement")
+        XCTAssertTrue(startBody.contains("snapshot.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest"), "only the scoped onboarding test seam may satisfy the privacy gate before final acknowledgement")
         XCTAssertTrue(startBody.contains("presentPrivacyAcknowledgementIfNeeded()"), "normal Record Now must still present privacy acknowledgement instead of starting capture")
 
         guard let menuRecordRange = appDelegate.range(of: "case .record: await startRecording()") else {

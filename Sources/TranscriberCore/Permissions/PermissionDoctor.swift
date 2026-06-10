@@ -8,6 +8,37 @@ public enum EngineMode: String, Sendable, Codable {
     case local
 }
 
+public extension EngineMode {
+    /// Canonical identifier persisted in transcript frontmatter,
+    /// session.json, and metadata ("elevenlabs" | "cohere"). Every
+    /// reader and writer must round-trip through this pair so the
+    /// recovery, repair, and diagnostics layers can't drift apart.
+    var persistedIdentifier: String {
+        switch self {
+        case .cloud: return "elevenlabs"
+        case .local: return "cohere"
+        }
+    }
+
+    /// Parses a persisted engine identifier. Tolerates surrounding
+    /// whitespace and any casing, matching the recovery readers.
+    init?(persistedIdentifier: String) {
+        switch persistedIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case EngineMode.cloud.persistedIdentifier: self = .cloud
+        case EngineMode.local.persistedIdentifier: self = .local
+        default: return nil
+        }
+    }
+
+    /// User-facing engine name for notifications and transcripts.
+    var displayName: String {
+        switch self {
+        case .cloud: return "ElevenLabs"
+        case .local: return "Cohere"
+        }
+    }
+}
+
 /// One reason `RecordRequestGate.audit` returns deny or warn. Each reason is
 /// individually addressable so `PermissionRecoveryView` can deep-link to the
 /// matching System Settings pane (Phase η).

@@ -141,6 +141,10 @@ public enum AudioFinalizer {
 
     let micChunk = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
     let sysChunk = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
+    // Reused across chunks: makeSampleBuffer copies the PCM bytes into its
+    // own CMBlockBuffer, so mutating `mixed` on the next iteration is safe.
+    let mixed = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
+    let formatDescription = try makeFormatDescription(for: monoFormat)
     var cumulativeFrames: Int64 = 0
 
     // Power-preserving mix coefficients. Single active side stays at
@@ -190,7 +194,6 @@ public enum AudioFinalizer {
         let frames = max(micFrames, sysFrames)
         if frames == 0 { break }
 
-        let mixed = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frames)!
         mixed.frameLength = frames
         let mixPtr = mixed.floatChannelData![0]
         let micPtr = micChunk.floatChannelData![0]
@@ -214,7 +217,8 @@ public enum AudioFinalizer {
 
         let pts = CMTime(value: cumulativeFrames, timescale: Int32(sampleRate))
         cumulativeFrames += Int64(frames)
-        let sample = try Self.makeSampleBuffer(from: mixed, presentationTimeStamp: pts)
+        let sample = try Self.makeSampleBuffer(
+          from: mixed, presentationTimeStamp: pts, format: formatDescription)
 
         // Bounded backpressure. Without the timeout + writer-status
         // check, a wedged writer (disk full, sandbox revoked,
@@ -555,6 +559,10 @@ public enum AudioFinalizer {
 
     let micChunk = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
     let sysChunk = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
+    // Reused across chunks: makeSampleBuffer copies the PCM bytes into its
+    // own CMBlockBuffer, so mutating `mixed` on the next iteration is safe.
+    let mixed = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: options.chunkFrames)!
+    let formatDescription = try makeFormatDescription(for: monoFormat)
     let invSqrt2 = Float(1.0 / 2.0.squareRoot())
     let peakLimit: Float = 0.891
     var outputCursor = 0
@@ -572,8 +580,6 @@ public enum AudioFinalizer {
         let remaining = max(micReader.endFrame, sysReader.endFrame) - outputCursor
         let outFrames = min(frames, max(0, remaining))
         if outFrames == 0 { break }
-        let mixed = AVAudioPCMBuffer(
-          pcmFormat: monoFormat, frameCapacity: AVAudioFrameCount(outFrames))!
         mixed.frameLength = AVAudioFrameCount(outFrames)
         let mixPtr = mixed.floatChannelData![0]
         for i in 0..<outFrames {
@@ -589,7 +595,8 @@ public enum AudioFinalizer {
         }
 
         let pts = CMTime(value: Int64(outputCursor), timescale: Int32(sampleRate))
-        let sample = try Self.makeSampleBuffer(from: mixed, presentationTimeStamp: pts)
+        let sample = try Self.makeSampleBuffer(
+          from: mixed, presentationTimeStamp: pts, format: formatDescription)
         let waitStart = Date()
         while !(options.forceWriterInputNotReady ? false : input.isReadyForMoreMediaData) {
           if Task.isCancelled { throw CancellationError() }
@@ -792,13 +799,12 @@ public enum AudioFinalizer {
     var error: Error?
   }
 
-  private static func makeSampleBuffer(
-    from buffer: AVAudioPCMBuffer,
-    presentationTimeStamp: CMTime
-  ) throws -> CMSampleBuffer {
-    let asbd = buffer.format.streamDescription.pointee
+  /// The PCM format never changes within a finalize pass; build the
+  /// CoreMedia description once per pass instead of once per chunk
+  /// (~36k creations per hour of audio at 100 ms chunks).
+  private static func makeFormatDescription(for format: AVAudioFormat) throws -> CMAudioFormatDescription {
+    var asbdCopy = format.streamDescription.pointee
     var formatDesc: CMFormatDescription?
-    var asbdCopy = asbd
     let formatStatus = CMAudioFormatDescriptionCreate(
       allocator: kCFAllocatorDefault,
       asbd: &asbdCopy,
@@ -807,10 +813,18 @@ public enum AudioFinalizer {
       extensions: nil,
       formatDescriptionOut: &formatDesc
     )
-    guard formatStatus == noErr, let format = formatDesc else {
+    guard formatStatus == noErr, let formatDesc else {
       throw FinalizeError.writerSetupFailed
     }
+    return formatDesc
+  }
 
+  private static func makeSampleBuffer(
+    from buffer: AVAudioPCMBuffer,
+    presentationTimeStamp: CMTime,
+    format: CMAudioFormatDescription
+  ) throws -> CMSampleBuffer {
+    let asbd = buffer.format.streamDescription.pointee
     let bytesPerFrame = Int(asbd.mBytesPerFrame)
     let frameCount = Int(buffer.frameLength)
     let totalBytes = bytesPerFrame * frameCount

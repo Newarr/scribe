@@ -115,7 +115,7 @@ public actor TranscriptionWorker {
             return .cancelled
         } catch {
             let reason = "Audio preparation failed: \(error)"
-            await writeFailed(reason: reason)
+            await writeFailed(reason: reason, underlying: error)
             return .failed(reason: reason)
         }
 
@@ -131,7 +131,7 @@ public actor TranscriptionWorker {
         // metadata sidecar was missing. Do not downgrade retrying/failed retry
         // frontmatter here because persisted attempts/provenance are meaningful.
         if existing == nil || existing?.status == .pending {
-            writePendingRecoveryState(audioPath: canonicalAudioPath)
+            writePendingRecoveryState()
         }
 
         // Codex rc1-final P0.2: with mixed.wav removed, the engine
@@ -141,7 +141,7 @@ public actor TranscriptionWorker {
         // failure rather than letting the engine retry against a
         // missing file.
         if canonicalAudioPath.isEmpty
-            && request.audioURL.lastPathComponent == "audio.m4a"
+            && request.audioURL.lastPathComponent == CanonicalAudio.fileName
             && !FileManager.default.fileExists(atPath: request.audioURL.path) {
             let reason = "AudioFinalizer did not produce audio.m4a; cannot upload (raw streams remain on disk for manual recovery)"
             await writeFailed(reason: reason)
@@ -168,31 +168,7 @@ public actor TranscriptionWorker {
                     await writeFailed(reason: msg, failedAttempts: failedAttempts + 1)
                     return .failed(reason: msg)
                 }
-                // Build the completed transcript context using whatever audio
-                // path the up-front finalizer produced. canonicalAudioPath is
-                // either "audio.m4a" (success) or empty (fall back to raw
-                // streams). The metadata.json + transcript.md must agree so
-                // JSON consumers and humans see the same canonical asset
-                // (codex slice-9a review P2.2).
-                let completedContext = TranscriptContext(
-                    title: context.title,
-                    date: context.date,
-                    engine: context.engine,
-                    audioRelativePaths: canonicalAudioPath.isEmpty
-                        ? context.audioRelativePaths
-                        : [canonicalAudioPath],
-                    scheduledStart: context.scheduledStart,
-                    scheduledEnd: context.scheduledEnd,
-                    actualStart: context.actualStart,
-                    actualEnd: context.actualEnd,
-                    organizer: context.organizer,
-                    location: context.location,
-                    calendarEventID: context.calendarEventID,
-                    joinedLate: context.joinedLate,
-                    elapsedAtStartSeconds: context.elapsedAtStartSeconds,
-                    attendees: context.attendees,
-                    language: response.detectedLanguage
-                )
+                let completedContext = contextForPersistence(language: response.detectedLanguage)
                 do {
                     try TranscriptWriter.writeComplete(
                         at: directory.transcript,
@@ -224,13 +200,13 @@ public actor TranscriptionWorker {
             } catch {
                 if !Self.isTransient(error) {
                     let reason = String(describing: error)
-                    await writeFailed(reason: reason, failedAttempts: failedAttempts + 1)
+                    await writeFailed(reason: reason, failedAttempts: failedAttempts + 1, underlying: error)
                     return .failed(reason: reason)
                 }
                 failedAttempts += 1
                 guard let delay = policy.nextDelay(afterFailedAttempts: failedAttempts - 1) else {
                     let reason = "retry budget exhausted: \(error)"
-                    await writeFailed(reason: reason, failedAttempts: failedAttempts)
+                    await writeFailed(reason: reason, failedAttempts: failedAttempts, underlying: error)
                     return .failed(reason: reason)
                 }
                 // Codex rc2-audit CAP-6: a writeRetrying failure that
@@ -242,7 +218,7 @@ public actor TranscriptionWorker {
                 // terminal: the session can't be retried safely.
                 if !writeRetrying(failedAttempts: failedAttempts, lastError: error) {
                     let reason = "retry persistence failed; terminating to avoid unbounded relaunch retries (last engine error: \(error))"
-                    await writeFailed(reason: reason, failedAttempts: failedAttempts)
+                    await writeFailed(reason: reason, failedAttempts: failedAttempts, underlying: error)
                     return .failed(reason: reason)
                 }
                 Log.engine.info("Transcription transient failure, attempt=\(failedAttempts, privacy: .public), nextDelay=\(delay, privacy: .public)s")
@@ -293,20 +269,49 @@ public actor TranscriptionWorker {
         }
     }
 
-    private func writeFailed(reason: String, failedAttempts: Int = 0) async {
-        // Failure transcripts reference whatever audio actually exists on
-        // disk: audio.m4a if the finalizer ran successfully (slice 9a),
-        // otherwise the raw mic + system streams from capture finalization.
-        // Metadata.json mirrors the same audio reference for consistency
-        // (codex slice-9a P2.2).
-        let audioPaths: [String] = canonicalAudioPath.isEmpty
-            ? context.audioRelativePaths
-            : [canonicalAudioPath]
-        let failedContext = TranscriptContext(
+    private func writeFailed(reason: String, failedAttempts: Int = 0, underlying: Error? = nil) async {
+        let failedContext = contextForPersistence(language: context.language)
+        let failureDetails = await makeFailureDetails(reason: reason, failedAttempts: failedAttempts, underlying: underlying)
+        do {
+            try TranscriptWriter.writeFailed(at: directory.transcript, context: failedContext, errorMessage: reason, details: failureDetails)
+        } catch {
+            Log.engine.error("writeFailed failed: \(String(describing: error), privacy: .public)")
+        }
+        writeMetadata(status: .failed, context: failedContext, audioPath: canonicalAudioPath, failureDetails: failureDetails)
+    }
+
+    private func makeFailureDetails(reason: String, failedAttempts: Int, underlying: Error?) async -> TranscriptFailureDetails {
+        let audioURL = canonicalAudioPath.isEmpty ? context.audioRelativePaths.first.map { directory.url.appendingPathComponent($0) } : directory.url.appendingPathComponent(canonicalAudioPath)
+        let size = audioURL.flatMap { Self.fileSizeBytes(at: $0) }
+        let duration = await audioURL.asyncFlatMap { await Self.audioDurationSeconds(at: $0) }
+        let attemptCount = max(1, failedAttempts)
+        let retryCount = min(policy.delays.count, max(0, attemptCount - 1))
+        return TranscriptFailureDetails(
+            errorCode: Self.errorCode(for: reason, underlying: underlying),
+            errorMessage: reason,
+            retryCount: retryCount,
+            attemptCount: attemptCount,
+            audioDurationSeconds: duration,
+            audioSizeBytes: size
+        )
+    }
+
+    /// Audio references for every persisted state: the canonical audio.m4a
+    /// when the finalizer produced it, otherwise the raw capture streams.
+    /// transcript.md and metadata.json must agree on the same canonical
+    /// asset across pending / complete / failed (codex slice-9a P2.2).
+    private var persistedAudioPaths: [String] {
+        canonicalAudioPath.isEmpty ? context.audioRelativePaths : [canonicalAudioPath]
+    }
+
+    /// Rebuilds the construction-time context with only the audio reference
+    /// list (derived from `persistedAudioPaths`) and language replaced.
+    private func contextForPersistence(language: String?) -> TranscriptContext {
+        TranscriptContext(
             title: context.title,
             date: context.date,
             engine: context.engine,
-            audioRelativePaths: audioPaths,
+            audioRelativePaths: persistedAudioPaths,
             scheduledStart: context.scheduledStart,
             scheduledEnd: context.scheduledEnd,
             actualStart: context.actualStart,
@@ -317,30 +322,7 @@ public actor TranscriptionWorker {
             joinedLate: context.joinedLate,
             elapsedAtStartSeconds: context.elapsedAtStartSeconds,
             attendees: context.attendees,
-            language: context.language
-        )
-        let failureDetails = await makeFailureDetails(reason: reason, failedAttempts: failedAttempts)
-        do {
-            try TranscriptWriter.writeFailed(at: directory.transcript, context: failedContext, errorMessage: reason, details: failureDetails)
-        } catch {
-            Log.engine.error("writeFailed failed: \(String(describing: error), privacy: .public)")
-        }
-        writeMetadata(status: .failed, context: failedContext, audioPath: canonicalAudioPath, failureDetails: failureDetails)
-    }
-
-    private func makeFailureDetails(reason: String, failedAttempts: Int) async -> TranscriptFailureDetails {
-        let audioURL = canonicalAudioPath.isEmpty ? context.audioRelativePaths.first.map { directory.url.appendingPathComponent($0) } : directory.url.appendingPathComponent(canonicalAudioPath)
-        let size = audioURL.flatMap { Self.fileSizeBytes(at: $0) }
-        let duration = await audioURL.asyncFlatMap { await Self.audioDurationSeconds(at: $0) }
-        let attemptCount = max(1, failedAttempts)
-        let retryCount = min(policy.delays.count, max(0, attemptCount - 1))
-        return TranscriptFailureDetails(
-            errorCode: Self.errorCode(for: reason),
-            errorMessage: reason,
-            retryCount: retryCount,
-            attemptCount: attemptCount,
-            audioDurationSeconds: duration,
-            audioSizeBytes: size
+            language: language
         )
     }
 
@@ -362,7 +344,20 @@ public actor TranscriptionWorker {
         return Int(seconds.rounded())
     }
 
-    private static func errorCode(for reason: String) -> String {
+    private static func errorCode(for reason: String, underlying: Error?) -> String {
+        // Prefer the typed error over sniffing its rendered description:
+        // an enum case rename or interpolation change must not silently
+        // degrade the persisted code, and bare "rate" also matches
+        // unrelated text like "sample rate". The string sniff remains for
+        // the reason-only paths (no speech, retry budget) that carry no
+        // Error value.
+        if let classified = underlying as? RetryClassifiableError,
+           let code = classified.persistedErrorCode {
+            return code
+        }
+        if let urlErr = underlying as? URLError, urlErr.code == .timedOut {
+            return "network_timeout"
+        }
         let lower = reason.lowercased()
         if lower.contains("unauthorized") { return "elevenlabs_unauthorized" }
         if lower.contains("rate") { return "rate_limited" }
@@ -378,9 +373,9 @@ public actor TranscriptionWorker {
     /// the raw stream list). Result is also stored on the actor so failure
     /// paths can stamp the same canonical path into metadata.
     private func prepareCanonicalAudio() async -> String {
-        let audioFinalURL = directory.url.appendingPathComponent("audio.m4a")
+        let audioFinalURL = directory.audioFinal
         if FileManager.default.fileExists(atPath: audioFinalURL.path) {
-            canonicalAudioPath = "audio.m4a"
+            canonicalAudioPath = CanonicalAudio.fileName
             return canonicalAudioPath
         }
         do {
@@ -395,7 +390,7 @@ public actor TranscriptionWorker {
                 sampleRate: 48000,
                 ptsLogURL: directory.ptsStreamingLog
             )
-            canonicalAudioPath = "audio.m4a"
+            canonicalAudioPath = CanonicalAudio.fileName
             return canonicalAudioPath
         } catch {
             Log.engine.error("AudioFinalizer failed; output will reference raw streams: \(String(describing: error), privacy: .public)")
@@ -410,33 +405,14 @@ public actor TranscriptionWorker {
     /// the worker can still proceed to a terminal success/failure, but a task
     /// cancellation at the engine boundary leaves relaunch recovery with valid
     /// transcript.md + metadata.json and the original session engine.
-    private func writePendingRecoveryState(audioPath: String) {
-        let audioPaths: [String] = audioPath.isEmpty
-            ? context.audioRelativePaths
-            : [audioPath]
-        let pendingContext = TranscriptContext(
-            title: context.title,
-            date: context.date,
-            engine: context.engine,
-            audioRelativePaths: audioPaths,
-            scheduledStart: context.scheduledStart,
-            scheduledEnd: context.scheduledEnd,
-            actualStart: context.actualStart,
-            actualEnd: context.actualEnd,
-            organizer: context.organizer,
-            location: context.location,
-            calendarEventID: context.calendarEventID,
-            joinedLate: context.joinedLate,
-            elapsedAtStartSeconds: context.elapsedAtStartSeconds,
-            attendees: context.attendees,
-            language: context.language
-        )
+    private func writePendingRecoveryState() {
+        let pendingContext = contextForPersistence(language: context.language)
         do {
             try TranscriptWriter.writePending(at: directory.transcript, context: pendingContext)
         } catch {
             Log.engine.error("writePending recovery state failed: \(String(describing: error), privacy: .public)")
         }
-        writeMetadata(status: .pending, context: pendingContext, audioPath: audioPath)
+        writeMetadata(status: .pending, context: pendingContext, audioPath: canonicalAudioPath)
     }
 
     /// Writes metadata.json mirroring the transcript frontmatter. Called from
@@ -487,7 +463,7 @@ public actor TranscriptionWorker {
             Log.engine.info("keepRawStreams=true: preserving mic.m4a + system.m4a")
             return
         }
-        let canonicalAudio = directory.url.appendingPathComponent("audio.m4a")
+        let canonicalAudio = directory.audioFinal
         guard FileManager.default.fileExists(atPath: canonicalAudio.path) else {
             Log.engine.warning("Skipping raw-stream cleanup: audio.m4a missing — preserving mic.m4a + system.m4a as fallback")
             return
@@ -548,16 +524,14 @@ public actor TranscriptionWorker {
         }
     }
 
-    /// Classifies whether an error from the engine should retry. Transient:
-    /// rate-limited, HTTP 5xx, network/timeout. Terminal: auth failures,
-    /// missing API key, malformed responses, unknown errors.
+    /// Classifies whether an error from the engine should retry.
+    /// Engine errors carry their own classification via
+    /// `RetryClassifiableError`; network transience stays mapped here
+    /// because URLError is Foundation's type and a retroactive
+    /// conformance would be a footgun. Unknown errors are terminal.
     public static func isTransient(_ error: Error) -> Bool {
-        if let backendErr = error as? ElevenLabsScribeBackend.BackendError {
-            switch backendErr {
-            case .rateLimited: return true
-            case .httpError(let code): return (500...599).contains(code)
-            case .unauthorized, .missingAPIKey, .malformedResponse: return false
-            }
+        if let classified = error as? RetryClassifiableError {
+            return classified.isTransient
         }
         if let urlErr = error as? URLError {
             switch urlErr.code {
