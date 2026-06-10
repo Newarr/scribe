@@ -1606,8 +1606,24 @@ final class StatusItemClickTarget: NSObject {
   /// popover takes the click. Return `true` to consume the click.
   var priorityHandler: (@MainActor (NSStatusBarButton) -> Bool)?
 
+  /// AppDelegate supplies the right-click system menu (Settings,
+  /// transcripts folder, Quit). Built fresh per click so item state
+  /// never goes stale.
+  var contextMenuProvider: (@MainActor () -> NSMenu)?
+
   @objc func statusItemClicked(_ sender: Any?) {
     guard let button = sender as? NSStatusBarButton else { return }
+    let event = NSApp.currentEvent
+    let isRightClick = event?.type == .rightMouseUp || event?.type == .rightMouseDown
+      || (event?.modifierFlags.contains(.control) ?? false)
+    if isRightClick, let menu = contextMenuProvider?() {
+      delegate?.close()
+      menu.popUp(
+        positioning: nil,
+        at: NSPoint(x: 0, y: button.bounds.height + 4),
+        in: button)
+      return
+    }
     if priorityHandler?(button) == true { return }
     delegate?.show(from: button)
   }

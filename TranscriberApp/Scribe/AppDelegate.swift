@@ -465,6 +465,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
       return false
     }
+    StatusItemClickTarget.shared.contextMenuProvider = { [weak self] in
+      let menu = NSMenu()
+      let settingsItem = NSMenuItem(
+        title: "Settings…",
+        action: #selector(AppDelegate.statusContextOpenSettings),
+        keyEquivalent: ",")
+      settingsItem.target = self
+      menu.addItem(settingsItem)
+      let folderItem = NSMenuItem(
+        title: "Open Transcripts Folder",
+        action: #selector(AppDelegate.statusContextOpenTranscripts),
+        keyEquivalent: "")
+      folderItem.target = self
+      menu.addItem(folderItem)
+      menu.addItem(.separator())
+      let quitItem = NSMenuItem(
+        title: "Quit Scribe",
+        action: #selector(NSApplication.terminate(_:)),
+        keyEquivalent: "q")
+      quitItem.target = NSApp
+      menu.addItem(quitItem)
+      return menu
+    }
     m.outputRoot = outputRoot
     m.appearanceTheme = settings.appearanceTheme
     self.menu = m
@@ -907,9 +930,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     item.button?.target = StatusItemClickTarget.shared
     item.button?.action = #selector(StatusItemClickTarget.statusItemClicked(_:))
+    // Status buttons only deliver left clicks by default; without
+    // rightMouseUp here the right-click context menu can never fire.
+    item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
     statusItem = item
     menu?.outputRoot = outputRoot
     applyTrustIcon()
+  }
+
+  @MainActor
+  @objc fileprivate func statusContextOpenSettings() {
+    NSApp.activate(ignoringOtherApps: true)
+    settingsWindowController?.show()
+  }
+
+  @MainActor
+  @objc fileprivate func statusContextOpenTranscripts() {
+    NSWorkspace.shared.open(settings.outputRoot)
   }
 
   @MainActor
