@@ -1227,30 +1227,16 @@ private struct FidelityCloudAPIKeyEditor: View {
       Text("ElevenLabs API key")
         .font(FidelitySettings.controlFont)
         .foregroundStyle(FidelitySettings.ink)
-      SecureField(
-        "Paste API key",
+      FidelitySecureAPIKeyField(
+        placeholder: "Paste API key",
         text: Binding(
           get: { model.apiKey },
           set: { value in
             model.apiKey = value
             model.apiKeyEditedFromInitial = true
           }
-        )
-      )
-      .textFieldStyle(.plain)
-      .font(FidelitySettings.rowValueFont)
-      .foregroundStyle(FidelitySettings.ink)
-      .padding(.horizontal, 10)
-      .frame(height: 32)
-      .background(
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(FidelitySettings.fieldFill)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .stroke(
-            focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke,
-            lineWidth: focused ? 2 : 1)
+        ),
+        focused: focused
       )
       .accessibilityLabel("ElevenLabs API key")
       .accessibilityHint(
@@ -1310,6 +1296,93 @@ private struct FidelityCloudAPIKeyEditor: View {
           focused ? FidelitySettings.accentFocus : FidelitySettings.controlStroke,
           lineWidth: focused ? 2 : 1)
     )
+  }
+}
+
+private struct FidelitySecureAPIKeyField: View {
+  let placeholder: String
+  @Binding var text: String
+  let focused: Bool
+
+  var body: some View {
+    ZStack(alignment: .leading) {
+      if text.isEmpty {
+        Text(placeholder)
+          .font(FidelitySettings.rowValueFont)
+          .foregroundStyle(FidelitySettings.ink3)
+          .padding(.horizontal, 10)
+          .allowsHitTesting(false)
+      } else {
+        Text(String(repeating: "•", count: min(text.count, 18)))
+          .font(FidelitySettings.rowValueFont)
+          .foregroundStyle(FidelitySettings.ink)
+          .padding(.horizontal, 10)
+          .allowsHitTesting(false)
+      }
+      FidelitySecureAPIKeyTextField(text: $text, placeholder: placeholder)
+        .padding(.horizontal, 8)
+        .opacity(0)
+    }
+    .frame(height: 32)
+    .background(
+      RoundedRectangle(cornerRadius: 7, style: .continuous)
+        .fill(FidelitySettings.keyFill)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 7, style: .continuous)
+        .stroke(
+          focused ? FidelitySettings.accentFocus : FidelitySettings.keyStroke,
+          lineWidth: focused ? 2 : 1)
+    )
+  }
+}
+
+private struct FidelitySecureAPIKeyTextField: NSViewRepresentable {
+  @Binding var text: String
+  let placeholder: String
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(text: $text)
+  }
+
+  func makeNSView(context: Context) -> NSSecureTextField {
+    let field = NSSecureTextField(frame: .zero)
+    field.isBordered = false
+    field.drawsBackground = false
+    field.backgroundColor = .clear
+    field.focusRingType = .none
+    field.placeholderString = placeholder
+    field.font = NSFont(name: FidelitySettings.font, size: 13) ?? .systemFont(ofSize: 13)
+    field.delegate = context.coordinator
+    field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    return field
+  }
+
+  func updateNSView(_ field: NSSecureTextField, context: Context) {
+    if field.stringValue != text {
+      field.stringValue = text
+    }
+    field.textColor = NSColor.labelColor
+    field.placeholderAttributedString = NSAttributedString(
+      string: placeholder,
+      attributes: [
+        .foregroundColor: NSColor.placeholderTextColor,
+        .font: NSFont(name: FidelitySettings.font, size: 13) ?? .systemFont(ofSize: 13),
+      ])
+  }
+
+  final class Coordinator: NSObject, NSTextFieldDelegate {
+    @Binding var text: String
+
+    init(text: Binding<String>) {
+      self._text = text
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+      guard let field = notification.object as? NSSecureTextField else { return }
+      text = field.stringValue
+    }
   }
 }
 
@@ -1494,24 +1567,20 @@ private struct FidelityVaultPanel: View {
       )
 
       FidelitySection(title: "Location") {
-        FidelityRow(label: "Save transcripts to") {
-          HStack(spacing: 8) {
-            FidelityPathField(path: shortenedPath)
-              .frame(maxWidth: .infinity)
-            FidelitySecondaryButton("Choose…") { pickFolder() }
-            FidelityGhostButton("Reveal") { revealFolder(model.outputRoot) }
-          }
-        }
+        FidelityVaultLocationRow(
+          path: shortenedPath,
+          onChoose: { pickFolder() },
+          onReveal: { revealFolder(model.outputRoot) }
+        )
         if let warning = syncedStorageWarning {
           FidelityRowDivider()
           FidelityVaultWarning(message: warning)
         }
         FidelityRowDivider()
-        FidelityRow(label: "On disk") {
-          FidelityStorageStat(url: model.outputRoot)
-        }
+        FidelityVaultStorageRow(url: model.outputRoot)
       }
     }
+    .frame(maxWidth: 560, alignment: .leading)
   }
 
   private var shortenedPath: String {
@@ -1523,7 +1592,7 @@ private struct FidelityVaultPanel: View {
     guard model.outputRootIsInSyncedStorage else { return nil }
     let provider = model.outputRootSyncedStorageProviderHint ?? "synced storage"
     return
-      "Heads up: this Vault is in \(provider). Sync races can corrupt durable meeting audio while Scribe is recording. Local storage such as ~/Scribe is recommended; Permission Doctor will show the same non-blocking warning before recording."
+      "\(provider) can change files while Scribe records. Use a local folder such as ~/Scribe for durable meeting audio."
   }
 
   private func pickFolder() {
@@ -2021,15 +2090,21 @@ private struct FidelityVaultWarning: View {
       Image(systemName: "exclamationmark.triangle.fill")
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(FidelitySettings.amber)
-        .padding(.top, 2)
-      Text(message)
-        .font(FidelitySettings.rowValueFont)
-        .foregroundStyle(FidelitySettings.ink2)
-        .lineSpacing(3)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 1)
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Synced folder")
+          .font(FidelitySettings.controlFont)
+          .foregroundStyle(FidelitySettings.ink)
+        Text(message)
+          .font(SwiftUI.Font.custom(FidelitySettings.font, size: 12).weight(.regular))
+          .foregroundStyle(FidelitySettings.ink2)
+          .lineSpacing(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       Spacer(minLength: 0)
     }
-    .padding(12)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
     .background(
       RoundedRectangle(cornerRadius: 8, style: .continuous)
         .fill(FidelitySettings.amber.opacity(0.10))
@@ -2041,6 +2116,49 @@ private struct FidelityVaultWarning: View {
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Vault synced-storage warning")
     .accessibilityValue(message)
+  }
+}
+
+private struct FidelityVaultLocationRow: View {
+  let path: String
+  let onChoose: () -> Void
+  let onReveal: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        Text("Save transcripts to")
+          .font(FidelitySettings.rowFont)
+          .foregroundStyle(FidelitySettings.ink2)
+          .tracking(-0.13)
+        Spacer(minLength: 0)
+        HStack(spacing: 8) {
+          FidelitySecondaryButton("Choose…", action: onChoose)
+          FidelityGhostButton("Reveal", action: onReveal)
+        }
+      }
+      FidelityPathField(path: path)
+        .frame(maxWidth: .infinity)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 13)
+  }
+}
+
+private struct FidelityVaultStorageRow: View {
+  let url: URL
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Text("On disk")
+        .font(FidelitySettings.rowFont)
+        .foregroundStyle(FidelitySettings.ink2)
+        .tracking(-0.13)
+      Spacer(minLength: 0)
+      FidelityStorageStat(url: url)
+    }
+    .padding(.horizontal, 14)
+    .frame(minHeight: 48)
   }
 }
 
@@ -2651,6 +2769,7 @@ private struct FidelityGhostButton: View {
 private struct FidelityDangerButton: View {
   let title: String
   let action: () -> Void
+  @Environment(\.isEnabled) private var isEnabled
 
   init(_ title: String, action: @escaping () -> Void = {}) {
     self.title = title
@@ -2661,12 +2780,18 @@ private struct FidelityDangerButton: View {
     Button(action: action) {
       Text(title)
         .font(FidelitySettings.controlFont)
-        .foregroundStyle(SwiftUI.Color.white)
+        .foregroundStyle(isEnabled ? SwiftUI.Color.white : FidelitySettings.ink3)
         .frame(height: 28)
         .padding(.horizontal, 11)
         .background(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(FidelitySettings.rust)
+            .fill(isEnabled ? FidelitySettings.rust : FidelitySettings.secondaryButtonFill)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .stroke(
+              isEnabled ? FidelitySettings.rust.opacity(0.35) : FidelitySettings.secondaryButtonStroke,
+              lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
@@ -2678,6 +2803,7 @@ private struct FidelityDangerButton: View {
 private struct FidelitySecondaryButton: View {
   let title: String
   let action: () -> Void
+  @Environment(\.isEnabled) private var isEnabled
 
   init(_ title: String, action: @escaping () -> Void = {}) {
     self.title = title
@@ -2688,7 +2814,7 @@ private struct FidelitySecondaryButton: View {
     Button(action: action) {
       Text(title)
         .font(FidelitySettings.controlFont)
-        .foregroundStyle(FidelitySettings.ink)
+        .foregroundStyle(isEnabled ? FidelitySettings.ink : FidelitySettings.ink3)
         .frame(height: 28)
         .padding(.horizontal, 11)
         .background(
@@ -3054,29 +3180,19 @@ private struct PermissionsOnboardingView: View {
 @MainActor
 private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
   let title: String
+  let selectedPage: SettingsPage?
   let content: Content
 
-  init(title: String, @ViewBuilder content: () -> Content) {
+  init(title: String, selectedPage: SettingsPage? = nil, @ViewBuilder content: () -> Content) {
     self.title = title
+    self.selectedPage = selectedPage
     self.content = content()
   }
 
   var body: some View {
     HStack(spacing: 0) {
-      VStack(spacing: 0) {
-        HStack(spacing: 9) {
-          Circle().fill(SwiftUI.Color(red: 1.0, green: 0.31, blue: 0.29)).frame(
-            width: 12, height: 12)
-          Circle().fill(SwiftUI.Color(red: 1.0, green: 0.75, blue: 0.13)).frame(
-            width: 12, height: 12)
-          Circle().fill(SwiftUI.Color(red: 0.19, green: 0.80, blue: 0.30)).frame(
-            width: 12, height: 12)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: FidelitySettings.headerHeight)
-        .padding(.leading, 15)
-        Spacer(minLength: 0)
-      }
+      FidelitySmokeSidebar(
+        selectedPage: selectedPage ?? SettingsPage.allCases.first(where: { $0.title == title }))
       .frame(width: FidelitySettings.sideWidth)
       .background(FidelitySettings.sidebarFill)
       FidelityDivider()
@@ -3100,6 +3216,40 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
   }
 }
 
+private struct FidelitySmokeSidebar: View {
+  let selectedPage: SettingsPage?
+
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: 9) {
+        Circle().fill(SwiftUI.Color(red: 1.0, green: 0.31, blue: 0.29)).frame(
+          width: 12, height: 12)
+        Circle().fill(SwiftUI.Color(red: 1.0, green: 0.75, blue: 0.13)).frame(
+          width: 12, height: 12)
+        Circle().fill(SwiftUI.Color(red: 0.19, green: 0.80, blue: 0.30)).frame(
+          width: 12, height: 12)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(height: FidelitySettings.headerHeight)
+      .padding(.leading, 15)
+
+      VStack(spacing: 1) {
+        ForEach(SettingsPage.allCases) { page in
+          FidelitySidebarItem(
+            symbol: page.symbol,
+            title: page.title,
+            selected: selectedPage == page
+          ) {}
+        }
+      }
+      .padding(8)
+      .allowsHitTesting(false)
+
+      Spacer(minLength: 0)
+    }
+  }
+}
+
 #if DEBUG
   @MainActor
   enum SettingsInstalledAppSmokeSnapshotRenderer {
@@ -3107,12 +3257,8 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
       let audioModel = smokeModel(
         outputRoot: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Scribe")
       )
-      let audioView = InstalledAppSmokeSettingsFrame(title: "Audio") {
-        FidelityAudioPanel(
-          model: audioModel,
-          onSettingsChange: { _ in },
-          focusedEngineCard: nil
-        )
+      let audioView = InstalledAppSmokeSettingsFrame(title: "Audio", selectedPage: .audio) {
+        FidelityAudioEngineSmokePanel(model: audioModel)
       }
       .environment(\.colorScheme, ColorScheme.light)
       .preferredColorScheme(.light)
@@ -3125,7 +3271,7 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
       let vaultRoot = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/CloudStorage/Dropbox/ScribeInstalledSmoke")
       let vaultModel = smokeModel(outputRoot: vaultRoot)
-      let vaultView = InstalledAppSmokeSettingsFrame(title: "Vault") {
+      let vaultView = InstalledAppSmokeSettingsFrame(title: "Vault", selectedPage: .vault) {
         FidelityVaultPanel(model: vaultModel, onSettingsChange: { _ in })
       }
       .environment(\.colorScheme, ColorScheme.light)
@@ -3135,6 +3281,19 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
         named: "installed-smoke-settings-vault-warning-light",
         to: directory
       )
+
+      let onboardingCases: [(name: String, step: OnboardingFlowStep, localPath: Bool, scheme: ColorScheme)] = [
+        ("onboarding-elevenlabs-key-entry-light", .elevenLabsAPIKey, false, .light),
+        ("onboarding-elevenlabs-key-entry-dark", .elevenLabsAPIKey, false, .dark),
+        ("onboarding-skip-to-local-readiness-light", .chooseEngine, true, .light),
+        ("onboarding-skip-to-local-readiness-dark", .chooseEngine, true, .dark),
+      ]
+      for item in onboardingCases {
+        let view = OnboardingSmokeStepView(step: item.step, localPath: item.localPath)
+          .environment(\.colorScheme, item.scheme)
+          .preferredColorScheme(item.scheme)
+        try DebugVisualSnapshotWriter.write(view, named: item.name, to: directory)
+      }
     }
 
     private static func smokeModel(outputRoot: URL) -> SettingsFormModel {
@@ -3154,6 +3313,140 @@ private struct InstalledAppSmokeSettingsFrame<Content: View>: View {
         keychainAccount: "redacted-ui-only-key",
         engineReadiness: InstalledAppSmokeEngineReadiness()
       )
+    }
+  }
+
+  private struct FidelityAudioEngineSmokePanel: View {
+    @ObservedObject var model: SettingsFormModel
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 0) {
+        FidelityPanelIntro(
+          title: "Audio",
+          subtitle: "Configure how Scribe captures and transcribes voice."
+        )
+
+        FidelitySection(title: "Engine") {
+          HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+              FidelityEngineCard(
+                title: "ElevenLabs (cloud)",
+                status: model.engineViewState.cloud.statusText,
+                detail: model.engineViewState.cloud.detailText,
+                selected: true,
+                enabled: model.engineViewState.cloud.isSelectionEnabled,
+                actions: [],
+                focused: true
+              ) {}
+              FidelityCloudAPIKeyEditor(
+                model: model,
+                focused: true,
+                onCommitSettings: { _ in }
+              )
+            }
+
+            FidelityEngineCard(
+              title: "Cohere (local)",
+              status: model.engineViewState.local.statusText,
+              detail:
+                "\(model.engineViewState.local.modelName) · \(model.engineViewState.local.diskUsageText)\n\(model.engineViewState.local.privacyCopy)",
+              selected: false,
+              enabled: model.engineViewState.local.isSelectionEnabled,
+              actions: ["Retry"],
+              focused: false
+            ) {}
+          }
+          .padding(14)
+          .task { await model.refreshEngineViewState() }
+        }
+      }
+    }
+  }
+
+  private struct OnboardingSmokeStepView: View {
+    let step: OnboardingFlowStep
+    let localPath: Bool
+    @State private var pendingKey = ""
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 22) {
+        HStack {
+          Indicator(state: .ready, label: "ONBOARD")
+          Spacer()
+          Text(localPath ? "Skip to Local" : "Key entry")
+            .font(DS.Font.monoSmall)
+            .foregroundStyle(DS.Color.foregroundTertiary)
+        }
+        Text(title)
+          .font(DS.Font.title)
+          .foregroundStyle(DS.Color.foreground)
+        Text(detail)
+          .font(DS.Font.body)
+          .foregroundStyle(DS.Color.foregroundSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        bodyContent
+        Spacer()
+        HStack {
+          Button("Skip") {}
+            .buttonStyle(SecondaryButtonStyle())
+          Spacer()
+          Button(localPath ? "Continue with Local" : primaryTitle) {}
+            .buttonStyle(PrimaryButtonStyle())
+        }
+      }
+      .padding(40)
+      .frame(width: 720, height: 620)
+      .background(DS.Color.background)
+    }
+
+    @ViewBuilder private var bodyContent: some View {
+      if step == .elevenLabsAPIKey {
+        VStack(alignment: .leading, spacing: 12) {
+          FidelitySecureAPIKeyField(
+            placeholder: "Paste ElevenLabs API key…",
+            text: $pendingKey,
+            focused: false
+          )
+            .accessibilityLabel("ElevenLabs API key")
+          Text("The key is stored securely in macOS Keychain and is not saved to any file.")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.foregroundSecondary)
+        }
+      } else {
+        VStack(alignment: .leading, spacing: 12) {
+          engineSnapshotRow(title: "ElevenLabs (Cloud)", status: "API key required", ready: false)
+          engineSnapshotRow(title: "Cohere (local)", status: "Local setup continues", ready: false)
+          Text("Skipping the Cloud key keeps setup moving toward Cohere local transcription.")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.foregroundSecondary)
+        }
+      }
+    }
+
+    private func engineSnapshotRow(title: String, status: String, ready: Bool) -> some View {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title).font(DS.Font.bodyEmphasis)
+          Text(status).font(DS.Font.caption)
+        }
+        Spacer()
+        Text(ready ? "READY" : "WAIT")
+          .font(DS.Font.monoSmall)
+      }
+      .padding(12)
+      .background(RoundedRectangle(cornerRadius: 10).fill(DS.Color.backgroundCard))
+      .overlay(RoundedRectangle(cornerRadius: 10).stroke(DS.Color.border, lineWidth: 1))
+    }
+
+    private var title: String { localPath ? "Cohere local setup" : "ElevenLabs API key" }
+    private var detail: String {
+      localPath
+        ? "Scribe will keep working without a Cloud key and use Cohere local once the model verifies."
+        : "Cloud transcription is optional. Enter a key for ElevenLabs, or skip to use Cohere local once it verifies."
+    }
+    private var primaryTitle: String {
+      pendingKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? "Skip (use Local)" : "Save key"
     }
   }
 

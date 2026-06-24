@@ -358,15 +358,18 @@ struct BrandWordmark: View {
 /// Primary action. `.btn-primary` from index.html: white bg, dark
 /// text. 28pt height, 11pt horizontal padding, 6pt radius.
 struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var colorScheme
+
     func makeBody(configuration: Configuration) -> some View {
+        let isDark = colorScheme == .dark
         configuration.label
             .font(DS.Font.button)
             .padding(.horizontal, 11)
             .frame(height: 28)
-            .foregroundStyle(SwiftUI.Color(red: 0.04, green: 0.04, blue: 0.04))
+            .foregroundStyle(isDark ? SwiftUI.Color(red: 0.04, green: 0.04, blue: 0.04) : SwiftUI.Color.white)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(SwiftUI.Color.white)
+                    .fill(isDark ? SwiftUI.Color.white : SwiftUI.Color(red: 0.04, green: 0.04, blue: 0.04))
                     .opacity(configuration.isPressed ? 0.85 : 1.0)
             )
             .clipShape(RoundedRectangle(cornerRadius: 6))

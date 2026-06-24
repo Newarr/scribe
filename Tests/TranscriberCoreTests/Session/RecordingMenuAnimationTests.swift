@@ -72,6 +72,34 @@ final class RecordingMenuAnimationTests: XCTestCase {
         XCTAssertFalse(source.localizedCaseInsensitiveContains("search transcripts"), "Menu must not become a transcript history/search UI.")
     }
 
+    func testVisualSnapshotRecordingFixtureUsesObviousNonzeroMeterLevels() throws {
+        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+
+        XCTAssertTrue(source.contains("model.micLevel = 0.72"), "recording visual fixture must show an obvious nonzero MIC meter")
+        XCTAssertTrue(source.contains("model.systemLevel = 0.58"), "recording visual fixture must show an obvious nonzero SYS meter")
+        XCTAssertTrue(source.contains("max(model.micLevel, 0.72)"), "debug recording menu fixture should also force visible MIC activity")
+        XCTAssertTrue(source.contains("max(model.systemLevel, 0.58)"), "debug recording menu fixture should also force visible SYS activity")
+    }
+
+    func testSetupAndFinalizedMenuActionsMatchVisibleState() throws {
+        let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
+
+        guard let idleRange = source.range(of: "private func idleLayout") else {
+            return XCTFail("Recording menu must keep a dedicated idle layout")
+        }
+        let idleEnd = source[idleRange.upperBound...].range(of: "private func recordingLayout")?.lowerBound ?? source.endIndex
+        let idleLayout = String(source[idleRange.lowerBound..<idleEnd])
+        guard let setupRange = idleLayout.range(of: "if model.setupNeedsAttention {") else {
+            return XCTFail("Setup attention branch must be explicit in the idle menu layout")
+        }
+        let setupBranchEnd = idleLayout[setupRange.upperBound...].range(of: "} else {")?.lowerBound ?? idleLayout.endIndex
+        let setupBranch = String(idleLayout[setupRange.lowerBound..<setupBranchEnd])
+
+        XCTAssertTrue(setupBranch.contains("Button(\"Check setup\") { onAction(.openSetupRequired) }"), "setup-blocked menu must route its primary action to setup")
+        XCTAssertFalse(setupBranch.contains("onAction(.record)"), "setup-blocked menu must not offer a misleading Record now action")
+        XCTAssertTrue(source.contains("case .finalized:\n            return \"Transcribing…\""), "finalized/transcribing menu action must describe progress instead of saying Stop now")
+    }
+
     private func appSourcePath(_ file: String) -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let repoRoot = testFile

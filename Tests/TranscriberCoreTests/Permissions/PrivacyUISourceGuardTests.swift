@@ -104,6 +104,19 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         }
     }
 
+    func testPrimaryButtonStyleAdaptsForLightAndDarkModeContrast() throws {
+        let source = try appSource("DesignSystem.swift")
+        guard let range = source.range(of: "struct PrimaryButtonStyle") else {
+            return XCTFail("DesignSystem must keep a shared primary button style")
+        }
+        let block = String(source[range.lowerBound...].prefix(900))
+
+        XCTAssertTrue(block.contains("@Environment(\\.colorScheme)"), "primary buttons must read the current color scheme")
+        XCTAssertTrue(block.contains("let isDark = colorScheme == .dark"), "primary buttons must branch by appearance")
+        XCTAssertTrue(block.contains("isDark ? SwiftUI.Color.white : SwiftUI.Color(red: 0.04"), "light mode primary buttons must use a dark fill instead of disappearing on white")
+        XCTAssertTrue(block.contains("isDark ? SwiftUI.Color(red: 0.04"), "dark mode primary buttons must keep dark text on the white fill")
+    }
+
     // MARK: - VAL-PRIVACY-003
 
     /// No app UI source file may expose live transcript content, transcript history,
@@ -208,8 +221,8 @@ final class PrivacyUISourceGuardTests: XCTestCase {
         XCTAssertTrue(source.contains("outputRootIsInICloudDrive"))
         XCTAssertTrue(source.contains("outputRootIsInSyncedStorage"))
         XCTAssertTrue(source.contains("FidelityVaultWarning"))
-        XCTAssertTrue(source.contains("Permission Doctor will show the same non-blocking warning before recording"))
-        XCTAssertTrue(source.contains("Sync races can corrupt durable meeting audio"))
+        XCTAssertTrue(source.contains("Use a local folder such as ~/Scribe"))
+        XCTAssertTrue(source.contains("durable meeting audio"))
     }
 
     // MARK: - VAL-A11Y-001
@@ -730,6 +743,15 @@ final class PrivacyUISourceGuardTests: XCTestCase {
             .prefix(4)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Manual QA visual snapshot follow-up
+
+    func testPrivacyVisualSnapshotRendererCoversLightAndDarkAppearances() throws {
+        let source = try appSource("PrivacyAcknowledgementSheet.swift")
+        XCTAssertTrue(source.contains("installed-smoke-privacy-acknowledgement-light"))
+        XCTAssertTrue(source.contains("installed-smoke-privacy-acknowledgement-dark"))
+        XCTAssertTrue(source.contains("PrivacyAcknowledgementSnapshotFrame"), "Privacy snapshots must render against an explicit readable surface.")
     }
 
     // MARK: - Helpers

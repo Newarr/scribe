@@ -19,6 +19,8 @@
 #   scripts/dev-install.sh path/to/Scribe.app
 #       e.g. scripts/dev-install.sh build/Debug/Scribe.app
 #   scripts/dev-install.sh --build          # xcodebuild Debug, then install + sign
+#   SCRIBE_REGENERATE_XCODEPROJ=1 scripts/dev-install.sh --build
+#       # regenerate Scribe.xcodeproj first when project.yml changed
 
 set -euo pipefail
 
@@ -150,8 +152,11 @@ SOURCE=""
 if [[ $# -gt 0 ]]; then
     case "$1" in
         --build)
-            echo "==> xcodegen + xcodebuild Debug"
-            (cd "${PROJECT_DIR}/TranscriberApp" && xcodegen)
+            if [[ "${SCRIBE_REGENERATE_XCODEPROJ:-0}" == "1" || ! -d "${PROJECT_DIR}/TranscriberApp/Scribe.xcodeproj" ]]; then
+                echo "==> xcodegen"
+                (cd "${PROJECT_DIR}/TranscriberApp" && xcodegen)
+            fi
+            echo "==> xcodebuild Debug"
             BUILD_DIR="${PROJECT_DIR}/build/dev"
             rm -rf "${BUILD_DIR}"
             mkdir -p "${BUILD_DIR}"

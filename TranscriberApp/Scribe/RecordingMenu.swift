@@ -288,6 +288,8 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
         case "recording":
             model.status = .recording
             model.elapsedSeconds = max(model.elapsedSeconds, 261)
+            model.micLevel = max(model.micLevel, 0.72)
+            model.systemLevel = max(model.systemLevel, 0.58)
             model.recordingSourceLabel = model.recordingSourceLabel == "Recording" ? "Zoom · Design review" : model.recordingSourceLabel
             model.outcomeFolderName = model.outcomeFolderName ?? "2026-05-07 09:41 - Design review"
         case "stopping":
@@ -401,17 +403,16 @@ private struct RecordingPopoverContent: View {
         switch model.status {
         case .idle:
             if model.pendingPrompt != nil { return 244 }
-            if model.setupNeedsAttention { return 167 }
+            if model.setupNeedsAttention { return 176 }
             return model.recents.isEmpty ? nil : 336
         case .starting:
-            return 365
+            return nil
         case .recording:
-            if model.endPrompt != nil { return model.queuedNextMeeting == nil ? 485 : 521 }
-            return model.queuedNextMeeting == nil ? 409 : 445
+            return nil
         case .stopping:
-            return model.queuedNextMeeting == nil ? 431 : 467
+            return nil
         case .finalized:
-            return model.queuedNextMeeting == nil ? 411 : 447
+            return nil
         case .failed:
             return 196
         }
@@ -549,13 +550,16 @@ private struct RecordingPopoverContent: View {
             HStack(spacing: 8) {
                 settingsGear(palette: palette)
                 if model.setupNeedsAttention {
+                    Spacer()
                     Button("Check setup") { onAction(.openSetupRequired) }
-                        .buttonStyle(GhostPopoverButtonStyle(palette: palette))
+                        .keyboardShortcut("r", modifiers: [.command])
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
+                } else {
+                    Spacer()
+                    Button("Record now") { onAction(.record) }
+                        .keyboardShortcut("r", modifiers: [.command])
+                        .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
                 }
-                Spacer()
-                Button("Record now") { onAction(.record) }
-                    .keyboardShortcut("r", modifiers: [.command])
-                    .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
             }
         }
         .padding(.horizontal, 16)
@@ -589,11 +593,13 @@ private struct RecordingPopoverContent: View {
             )
                 .frame(height: 72)
                 .accessibilityHidden(true)
-            privacyStatusBlock(palette: palette)
-            Text(activeStatusCopy)
-                .font(activeStatusFont)
-                .foregroundStyle(palette.secondaryText)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            compactOperationalLine(palette: palette)
+            if let activeStatusCopy {
+                Text(activeStatusCopy)
+                    .font(DS.Font.body)
+                    .foregroundStyle(palette.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if let endPrompt = model.endPrompt {
                 endPromptBlock(endPrompt, palette: palette)
             }
@@ -703,17 +709,15 @@ private struct RecordingPopoverContent: View {
         .accessibilityLabel("Stopping soon, \(max(0, prompt.secondsRemaining)) seconds remaining, \(prompt.reason)")
     }
 
-    private func privacyStatusBlock(palette: RecordingPopoverPalette) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Audio: local · \(model.outcomeFolderName ?? "Scribe session")")
-            Text("Captured: mic + system audio · no video, no screenshots")
-            Text("Engine: \(activeEngineLabel)")
-        }
+    private func compactOperationalLine(palette: RecordingPopoverPalette) -> some View {
+        Text(activeOperationalMetadata)
         .font(DS.Font.monoSmall)
         .foregroundStyle(palette.metaText)
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .frame(height: 30)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(1)
+        .truncationMode(.tail)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(palette.controlFill)
@@ -724,41 +728,28 @@ private struct RecordingPopoverContent: View {
         )
     }
 
-    private var activeEngineLabel: String {
-        switch model.sessionEngineMode {
-        case .local: return "Cohere (local)"
-        case .cloud: return "ElevenLabs (cloud)"
+    private var activeOperationalMetadata: String {
+        switch (model.status, model.sessionEngineMode) {
+        case (.stopping, .local):
+            return "Local audio saved · MIC + SYS · Cohere finishing"
+        case (.stopping, .cloud):
+            return "Local audio saved · MIC + SYS · ElevenLabs next"
+        case (.finalized, .local):
+            return "Local audio saved · MIC + SYS · Cohere transcribing"
+        case (.finalized, .cloud):
+            return "Local audio saved · MIC + SYS · ElevenLabs transcribing"
+        case (_, .local):
+            return "Local audio · MIC + SYS · Cohere on this Mac"
+        case (_, .cloud):
+            return "Local audio · MIC + SYS · ElevenLabs after stop"
         }
     }
 
-    private var activeStatusCopy: String {
+    private var activeStatusCopy: String? {
         if let endPrompt = model.endPrompt {
             return "Stopping soon · \(endPrompt.reason). Capture is still live."
         }
-        switch (model.status, model.sessionEngineMode) {
-        case (.stopping, _):
-            return "Saving the recording. Finishing the last few seconds of capture."
-        case (.finalized, .local):
-            return "Finalizing audio for Cohere transcription on this Mac."
-        case (.finalized, .cloud):
-            return "Finalizing audio for ElevenLabs transcription."
-        case (_, .local):
-            return "Recording locally · Cohere will transcribe on this Mac."
-        case (_, .cloud):
-            return "Recording locally · ElevenLabs will transcribe after you stop."
-        }
-    }
-
-    private var activeStatusFont: SwiftUI.Font {
-        if model.endPrompt != nil {
-            return DS.Font.body
-        }
-        switch model.status {
-        case .recording, .starting:
-            return SwiftUI.Font.custom(DS.sansFamily, size: 13).weight(.regular)
-        case .stopping, .finalized, .idle, .failed:
-            return DS.Font.body
-        }
+        return nil
     }
 
     private var shouldShowOutcomeFolder: Bool {
@@ -769,6 +760,8 @@ private struct RecordingPopoverContent: View {
         switch model.status {
         case .stopping:
             return "Stopping…"
+        case .finalized:
+            return "Transcribing…"
         default:
             return "Stop now"
         }
@@ -957,7 +950,7 @@ private struct RecordingPopoverPalette {
 
     var metaText: SwiftUI.Color {
         isDark
-            ? SwiftUI.Color(red: 122 / 255, green: 122 / 255, blue: 122 / 255)
+            ? SwiftUI.Color(red: 168 / 255, green: 162 / 255, blue: 160 / 255)
             : SwiftUI.Color(red: 140 / 255, green: 135 / 255, blue: 129 / 255)
     }
 
@@ -1436,6 +1429,8 @@ enum RecordingMenuVisualSnapshotRenderer {
         model.recordingSourceLabel = source
         model.elapsedSeconds = elapsed
         model.sessionEngineMode = .cloud
+        model.micLevel = 0.72
+        model.systemLevel = 0.58
         model.outcomeFolderName = folderName
         if let folderName {
             model.outcomeFolderURL = URL(fileURLWithPath: "/tmp/\(folderName)", isDirectory: true)

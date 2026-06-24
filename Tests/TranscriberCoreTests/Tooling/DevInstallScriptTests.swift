@@ -81,6 +81,13 @@ final class DevInstallScriptTests: XCTestCase {
     )
   }
 
+  func testBuildInstallDoesNotRegenerateXcodeProjectByDefault() throws {
+    let source = try String(contentsOf: scriptURL, encoding: .utf8)
+    XCTAssertTrue(source.contains("SCRIBE_REGENERATE_XCODEPROJ"), "dev install must expose an explicit opt-in for project regeneration")
+    XCTAssertTrue(source.contains("! -d \"${PROJECT_DIR}/TranscriberApp/Scribe.xcodeproj\""), "dev install may generate a missing project")
+    XCTAssertFalse(source.contains("echo \"==> xcodegen + xcodebuild Debug\""), "dev install --build must not always run xcodegen and dirty worktrees")
+  }
+
   private func assertNoTempEntitlementLeak(exitMode: String, expectedExitCode: Int32) throws {
     let temp = try TemporaryDirectory()
     let env = [

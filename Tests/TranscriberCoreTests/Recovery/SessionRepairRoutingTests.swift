@@ -238,11 +238,14 @@ final class SessionRepairRoutingTests: XCTestCase {
     func testRecordingMenuActiveLocalPrivacyBlockAndSnapshotStableEngineCopy() throws {
         let source = try String(contentsOfFile: appSourcePath("RecordingMenu.swift"), encoding: .utf8)
 
-        XCTAssertTrue(source.contains("Audio: local"), "active privacy block must name local audio storage")
-        XCTAssertTrue(source.contains("Captured: mic + system audio · no video, no screenshots"), "active privacy block must state captured sources and exclusions")
-        XCTAssertTrue(source.contains("Engine:"), "active privacy block must include a full engine line")
-        XCTAssertTrue(source.contains("Cohere (local)"), "Local sessions must display Cohere (local)")
-        XCTAssertTrue(source.contains("ElevenLabs (cloud)"), "Cloud sessions must display ElevenLabs (cloud)")
+        XCTAssertTrue(source.contains("Local audio · MIC + SYS"), "active metadata must compactly name local audio and captured channels")
+        XCTAssertTrue(source.contains("Cohere on this Mac"), "Local sessions must display compact Cohere-on-device copy")
+        XCTAssertTrue(source.contains("ElevenLabs after stop"), "Cloud sessions must display compact post-stop ElevenLabs copy")
+        XCTAssertFalse(source.contains("Audio: local"), "dense labelled disclosure copy must not return to the active menu")
+        XCTAssertFalse(source.contains("Captured:"), "dense captured-source disclosure copy must not return to the active menu")
+        XCTAssertFalse(source.contains("Engine:"), "dense engine disclosure copy must not return to the active menu")
+        XCTAssertFalse(source.contains("Recording locally ·"), "active menu must not add a second explanatory sentence below compact metadata")
+        XCTAssertFalse(source.contains("Finalizing audio for"), "finalizing menu must keep transcription status in compact metadata")
         XCTAssertTrue(source.contains("sessionEngineMode"), "menu model must use a session-start engine snapshot")
 
         guard let localCopyRange = source.range(of: "case (_, .local):") else {

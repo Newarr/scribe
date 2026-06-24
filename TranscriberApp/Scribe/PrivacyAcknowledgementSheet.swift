@@ -42,7 +42,7 @@ class PrivacyAcknowledgementController {
     // even though the app is menu-bar-only (no main window).
     // No `.closable`; see class-level note (codex P1.4).
     let host = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+      contentRect: NSRect(x: 0, y: 0, width: 640, height: 620),
       styleMask: [.titled, .fullSizeContentView],
       backing: .buffered,
       defer: false
@@ -155,7 +155,7 @@ private struct PrivacyAcknowledgementView: View {
     .padding(.horizontal, 40)
     .padding(.top, 44)
     .padding(.bottom, 32)
-    .frame(width: 600, height: 560)
+    .frame(width: 640, height: 620)
     .glassBackground()
   }
 
@@ -183,17 +183,32 @@ private struct PrivacyAcknowledgementView: View {
 }
 
 #if DEBUG
+  private struct PrivacyAcknowledgementSnapshotFrame<Content: View>: View {
+    let colorScheme: ColorScheme
+    @ViewBuilder var content: Content
+
+    var body: some View {
+      content
+        .background(DS.Color.background)
+        .environment(\.colorScheme, colorScheme)
+        .preferredColorScheme(colorScheme)
+    }
+  }
+
   @MainActor
   enum PrivacyAcknowledgementVisualSnapshotRenderer {
     static func renderAll(to directory: URL) throws {
-      let view = PrivacyAcknowledgementView(onAcknowledged: {})
-        .environment(\.colorScheme, ColorScheme.light)
-        .preferredColorScheme(.light)
-      try DebugVisualSnapshotWriter.write(
-        view,
-        named: "installed-smoke-privacy-acknowledgement-light",
-        to: directory
-      )
+      let cases: [(name: String, scheme: ColorScheme)] = [
+        ("installed-smoke-privacy-acknowledgement-light", .light),
+        ("installed-smoke-privacy-acknowledgement-dark", .dark),
+      ]
+
+      for item in cases {
+        let view = PrivacyAcknowledgementSnapshotFrame(colorScheme: item.scheme) {
+          PrivacyAcknowledgementView(onAcknowledged: {})
+        }
+        try DebugVisualSnapshotWriter.write(view, named: item.name, to: directory)
+      }
     }
   }
 #endif

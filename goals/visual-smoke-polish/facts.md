@@ -1,0 +1,10 @@
+- The installed smoke menu popover snapshots for starting, recording, stopping, and finalized states show the full bottom content and primary action row without clipping.
+- The active recording menu reads as a compact menu-bar control with status, timer, MIC/SYS levels, Stop/Settings controls, and tiny metadata.
+- The active recording menu does not show bulky disclosure lines such as `Audio:`, `Captured:`, or `Engine:`.
+- The privacy acknowledgement light snapshot has readable text contrast and a polished surface/background pairing.
+- The ElevenLabs Settings API key field looks like a normal secure input in light snapshots, without a bright yellow strip or no-entry glyph.
+- The installed smoke snapshot set includes onboarding evidence for the ElevenLabs API key step.
+- The installed smoke snapshot set includes onboarding evidence for the Skip-to-Local path.
+- The installed app snapshot invocation works through a documented reliable command; if LaunchServices cannot be made reliable, the docs/scripts use the direct executable invocation.
+- Running the dev install/build smoke flow does not leave checkout-path churn in `TranscriberApp/Scribe.xcodeproj/project.pbxproj`.
+- The relevant snapshots are regenerated into `/tmp/scribe-installed-smoke` and visually inspected after the fixes.
