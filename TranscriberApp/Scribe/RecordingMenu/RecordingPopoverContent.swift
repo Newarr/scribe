@@ -56,7 +56,6 @@ struct RecordingPopoverContent: View {
   private var minimumSurfaceHeight: CGFloat? {
     switch model.status {
     case .idle:
-      if model.pendingPrompt != nil { return 244 }
       if model.setupNeedsAttention { return 167 }
       return model.recents.isEmpty ? nil : 336
     case .starting:
@@ -99,70 +98,8 @@ struct RecordingPopoverContent: View {
     case .failed:
       failedLayout(palette: palette)
     case .idle:
-      if model.pendingPrompt != nil {
-        pendingPromptLayout(palette: palette)
-      } else {
-        idleLayout(palette: palette)
-      }
+      idleLayout(palette: palette)
     }
-  }
-
-  private func pendingPromptLayout(palette: RecordingPopoverPalette) -> some View {
-    let prompt = model.pendingPrompt
-    return VStack(alignment: .leading, spacing: 14) {
-      VStack(alignment: .leading, spacing: 5) {
-        Text("Meeting detected")
-          .font(menuHeadingFont)
-          .foregroundStyle(palette.text)
-          .frame(maxWidth: .infinity, alignment: .leading)
-        Text(prompt?.subtitle ?? "Scribe detected an active call. Choose whether to record.")
-          .font(DS.Font.bodySmall)
-          .foregroundStyle(palette.secondaryText)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      HStack(spacing: 8) {
-        LucideIcon(glyph: .info)
-          .frame(width: 12, height: 12)
-          .foregroundStyle(palette.warning)
-        Text(prompt?.title ?? "Pending meeting")
-          .font(DS.Font.monoSmall)
-          .foregroundStyle(palette.metaText)
-          .lineLimit(1)
-          .truncationMode(.tail)
-      }
-      .padding(.horizontal, 10)
-      .frame(height: 30)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(palette.controlFill)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .stroke(palette.controlStroke, lineWidth: 1)
-      )
-      VStack(alignment: .leading, spacing: 6) {
-        DisclosureGroup("More options ▾") {
-          Button("Stop detecting \(prompt?.appDisplayName ?? "this app") for 30 minutes") {
-            onAction(.promptSuppressApp)
-          }
-          .buttonStyle(GhostPopoverButtonStyle(palette: palette))
-        }
-        .font(DS.Font.bodySmall)
-        .foregroundStyle(palette.secondaryText)
-      }
-      HStack(spacing: 8) {
-        settingsGear(palette: palette)
-        Spacer()
-        Button("Not now") { onAction(.promptNotNow) }
-          .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
-        Button("Start Recording") { onAction(.promptStartRecording) }
-          .keyboardShortcut("r", modifiers: [.command])
-          .buttonStyle(PrimaryPopoverButtonStyle(palette: palette))
-      }
-    }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 16)
   }
 
   private func idleLayout(palette: RecordingPopoverPalette) -> some View {
@@ -175,7 +112,7 @@ struct RecordingPopoverContent: View {
         Text(
           model.setupNeedsAttention
             ? "Open setup to finish permissions. The setup window will reopen even if you closed it."
-            : "Scribe will prompt for meetings, or you can start now."
+            : "Scribe records detected calls automatically. You can also start now."
         )
         .font(DS.Font.bodySmall)
         .foregroundStyle(palette.secondaryText)
@@ -216,6 +153,9 @@ struct RecordingPopoverContent: View {
               },
               onRepair: { sessionURL in
                 onAction(.repairRecentFailedSession(sessionURL))
+              },
+              onDiscard: { sessionURL in
+                onAction(.discardSession(sessionURL))
               },
               localModelReadyForRetry: model.localModelReadyForRetry
             )
@@ -317,6 +257,8 @@ struct RecordingPopoverContent: View {
         settingsGear(palette: palette)
         Spacer()
         if let endPrompt = model.endPrompt {
+          Button("Discard") { onAction(.endPromptDiscard(generation: endPrompt.generation)) }
+            .buttonStyle(GhostPopoverButtonStyle(palette: palette))
           Button("Stop now") { onAction(.endPromptStopNow(generation: endPrompt.generation)) }
             .buttonStyle(SecondaryPopoverButtonStyle(palette: palette))
           Button("Keep recording") {
@@ -531,7 +473,6 @@ struct RecordingPopoverContent: View {
     case .finalized: return "TRANSCRIBING"
     case .failed: return "FAILED"
     case .idle:
-      if model.pendingPrompt != nil { return "DETECTED" }
       return model.setupNeedsAttention ? "SETUP" : "READY"
     }
   }
@@ -544,8 +485,7 @@ struct RecordingPopoverContent: View {
     case .recording, .stopping: return palette.live
     case .failed: return palette.warning
     case .idle:
-      return (model.pendingPrompt != nil || model.setupNeedsAttention)
-        ? palette.warning : palette.ready
+      return model.setupNeedsAttention ? palette.warning : palette.ready
     default: return palette.neutralStatus
     }
   }

@@ -32,10 +32,10 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(testBody.contains("await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)"), "ready onboarding Test Recording must use the consented onboarding seam before final privacyAcknowledged is written")
         XCTAssertFalse(testBody.contains("await self.startRecording()"), "onboarding Test Recording must not call normal privacy-gated Record Now and return before capture")
 
-        guard let startRange = appDelegate.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
-            return XCTFail("AppDelegate must keep a scoped startRecording privacy parameter defaulted to normal Record Now behavior")
+        guard let startRange = appDelegate.range(of: "func performStart(") else {
+            return XCTFail("the factored start path must keep a scoped privacy-bypass parameter defaulted to normal behavior")
         }
-        let startBody = String(appDelegate[startRange.lowerBound..<appDelegate.index(startRange.lowerBound, offsetBy: min(1600, appDelegate.distance(from: startRange.lowerBound, to: appDelegate.endIndex)))])
+        let startBody = String(appDelegate[startRange.lowerBound..<appDelegate.index(startRange.lowerBound, offsetBy: min(2000, appDelegate.distance(from: startRange.lowerBound, to: appDelegate.endIndex)))])
         XCTAssertTrue(startBody.contains("snapshot.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest"), "only the scoped onboarding test seam may satisfy the privacy gate before final acknowledgement")
         XCTAssertTrue(startBody.contains("presentPrivacyAcknowledgementIfNeeded()"), "normal Record Now must still present privacy acknowledgement instead of starting capture")
 
@@ -44,11 +44,9 @@ final class OnboardingFlowTests: XCTestCase {
         }
         XCTAssertFalse(String(appDelegate[menuRecordRange.lowerBound..<appDelegate.index(menuRecordRange.lowerBound, offsetBy: min(120, appDelegate.distance(from: menuRecordRange.lowerBound, to: appDelegate.endIndex)))]).contains("allowPendingPrivacyAcknowledgementForOnboardingTest: true"))
 
-        guard let promptRange = appDelegate.range(of: "case .start:") else {
-            return XCTFail("meeting prompt start route must exist")
-        }
-        let promptBody = String(appDelegate[promptRange.lowerBound..<appDelegate.index(promptRange.lowerBound, offsetBy: min(220, appDelegate.distance(from: promptRange.lowerBound, to: appDelegate.endIndex)))])
-        XCTAssertTrue(promptBody.contains("await startRecording()"), "meeting prompt Start Recording must keep the normal privacy-gated path")
+        // Auto-record cutover: detection starts use the silent path with
+        // the manual interactive default untouched.
+        XCTAssertTrue(appDelegate.contains("origin: .detected, presentation: .silent"), "detection candidates must auto-start through the silent path")
     }
 
     func testRequiredOrderAndSkipSemanticsMatchSpec() {

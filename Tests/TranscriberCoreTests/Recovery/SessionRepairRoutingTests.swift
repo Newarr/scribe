@@ -163,21 +163,18 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertFalse(denialBody.contains("popover.show("), "manual/meeting preflight denial must not show Setup Required before deriving focus")
     }
 
-    func testVisibleMeetingPromptStartSharesManualPreflightFocusRouting() throws {
+    func testDetectionStartSharesManualPreflightPath() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
-        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
-            return XCTFail("meeting detection prompt handler must exist")
-        }
-        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(promptBody.contains("await startRecording()"), "meeting prompt Start Recording must enter the same startRecording preflight denial path as manual Record Now")
+        XCTAssertTrue(source.contains("func performStart("), "both start origins must funnel through one start path")
+        XCTAssertTrue(source.contains("origin: .detected, presentation: .silent"), "the detection start uses the silent presentation")
 
-        guard let startRange = source.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
-            return XCTFail("startRecording must exist")
+        guard let startRange = source.range(of: "func performStart(") else {
+            return XCTFail("performStart must exist")
         }
-        let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(5200, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
+        let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(6000, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(startBody.contains("let report = await preflightDoctor.audit"), "startRecording must derive a fresh current preflight report")
-        XCTAssertTrue(startBody.contains("showSetupRequiredPopover(report: report, sessionRepairPayload: nil)"), "meeting/manual denial must pass the exact current preflight report into setup routing")
+        XCTAssertTrue(startBody.contains("showSetupRequiredPopover(report: report, sessionRepairPayload: nil)"), "interactive denial must pass the exact current preflight report into setup routing")
     }
 
     func testSetupReportForSessionRepairPayloadUsesCohereBeforeCurrentSettings() {
@@ -258,18 +255,11 @@ final class SessionRepairRoutingTests: XCTestCase {
     }
 
 
-    func testPromptStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
+    func testDetectionStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
-        XCTAssertTrue(source.contains("var pendingPromptCalendarEventForStart: CalendarEvent?"))
-        XCTAssertTrue(source.contains("pendingPromptCalendarEventForStart = event"))
-        XCTAssertTrue(source.contains("let promptedEvent = pendingPromptCalendarEventForStart"), "prompt Start Recording must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
-    }
-
-    func testPendingPromptRecoveryUsesLateJoinCopyAndAppleCalendarSource() throws {
-        let source = try CombinedAppSources.appSource("AppDelegate.swift")
-        XCTAssertTrue(source.contains("Self.promptRecoveryTitle(for: app, event: event)"))
-        XCTAssertTrue(source.contains("Recording will capture from now onward."))
-        XCTAssertTrue(source.contains("From Apple Calendar · \\(app.displayName)."))
+        XCTAssertTrue(source.contains("var pendingStartEvent: CalendarEvent?"))
+        XCTAssertTrue(source.contains("pendingStartEvent = event"))
+        XCTAssertTrue(source.contains("let stagedEvent = pendingStartEvent"), "the staged start must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
     }
 
     func testAppDelegatePassesSessionEngineSnapshotToMenuAndSavedNotification() throws {
@@ -277,7 +267,7 @@ final class SessionRepairRoutingTests: XCTestCase {
 
         XCTAssertTrue(source.contains("currentSessionEngineMode"), "AppDelegate must snapshot session engine at start")
         XCTAssertTrue(source.contains("menu?.sessionEngineMode = sessionEngineMode"), "active menu must be labelled from session snapshot")
-        XCTAssertTrue(source.contains("let engineLabel = sessionEngineMode.displayName"), "saved notification must use the canonical engine display name (Cohere for Local sessions)")
+        XCTAssertTrue(source.contains("let engineLabel = engineMode.displayName"), "saved notification must use the canonical engine display name (Cohere for Local sessions)")
         XCTAssertFalse(source.contains(#"engineLabel = "Local""#), "saved notification must not use generic Local label")
     }
 
@@ -287,7 +277,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let notificationSource = try CombinedAppSources.appSource("SavedNotificationWindow.swift")
 
         XCTAssertTrue(appSource.contains(#"title: "\(title) · transcript saved""#), "saved notification payload title must include transcript saved suffix")
-        XCTAssertTrue(appSource.contains("let engineLabel = sessionEngineMode.displayName"), "Local saved notification body must use the canonical engine display name")
+        XCTAssertTrue(appSource.contains("let engineLabel = engineMode.displayName"), "Local saved notification body must use the canonical engine display name")
         XCTAssertTrue(notificationSource.contains("currentModel.summary = summary"), "visible saved notification panel must refresh its model when a newer transcript is saved")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.folderURL"), "visible panel actions must read the refreshed model, not stale captured summary")
         XCTAssertTrue(notificationSource.contains("self?.currentModel?.summary.transcriptURL"), "visible panel transcript action must read the refreshed model")
@@ -369,10 +359,9 @@ final class SessionRepairRoutingTests: XCTestCase {
         }
     }
 
-    func testEndedCallsInvalidatePendingPromptBeforeStaleActionsCanStartRecording() throws {
+    func testEndedCallsClearPassiveDetectionStateOrRouteEndGuard() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
-        XCTAssertTrue(source.contains("var pendingPromptAppBundleID: String?"), "AppDelegate must track which prompt can be expired by recognition stale-state signals")
         XCTAssertTrue(source.contains("onCandidateEnded:"), "DetectionEngine stale-candidate callback must be wired into AppDelegate")
         XCTAssertTrue(source.contains("handleEndedDetectionCandidate"), "AppDelegate must handle ended-call notifications from recognition")
         XCTAssertTrue(source.contains("DetectionTriggerIdentity.matchesEndedCandidate"), "only the current trigger identity or the explicit calendar-to-app transition may be invalidated by an ended-call signal")
@@ -381,20 +370,10 @@ final class SessionRepairRoutingTests: XCTestCase {
             return XCTFail("ended candidate handler must exist")
         }
         let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(1400, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(endedBody.contains("startPromptCoordinator.expireActivePrompt(for: candidate)"), "ended calls must invalidate modal/notification/menu prompt workflow instead of leaving stale actions live")
-        XCTAssertFalse(endedBody.contains("pendingPromptAppBundleID == candidate.app.bundleID"), "same-app candidates from a different meeting must not expire the active prompt")
-        XCTAssertTrue(endedBody.contains("detectionPromptActive = false"), "ended calls must clear retained setup-blocked Meeting detected trust state")
-        XCTAssertTrue(endedBody.contains("pendingPromptAppBundleID = nil"), "ended calls must clear the stale invalidation marker so later actions require fresh recognition")
-        XCTAssertTrue(endedBody.contains("pendingPromptCalendarEventForStart = nil"), "ended calls must clear retained setup-blocked calendar context before stale menu Start Recording can retry")
-        XCTAssertTrue(endedBody.contains("menu?.pendingPrompt = nil"), "ended calls must remove stale menu Start Recording / Not now recovery actions")
-        XCTAssertTrue(endedBody.contains("applyTrustIcon()"), "ended calls must refresh the menu-bar trust surface after clearing retained recovery")
-
-        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
-            return XCTFail("prompt presentation route must exist")
-        }
-        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = app.bundleID"), "prompt presentation must mark the active app for stale invalidation")
-        XCTAssertTrue(promptBody.contains("pendingPromptAppBundleID = nil"), "any terminal prompt resolution must clear the stale invalidation marker")
+        XCTAssertTrue(endedBody.contains("await endGuard?.suspectCallEnded(at: Date())"), "an ended call during its own recording must route into the EndGuard stop flow")
+        XCTAssertTrue(endedBody.contains("detectionAwaitingAction = false"), "ended calls must clear the passive Meeting detected trust state")
+        XCTAssertTrue(endedBody.contains("pendingStartCandidate = nil"), "ended calls must clear the staged candidate so stale manual starts cannot attach it")
+        XCTAssertTrue(endedBody.contains("applyTrustIcon()"), "ended calls must refresh the menu-bar trust surface after clearing the passive state")
     }
 
     func testEndedCurrentRecordingRoutesToEndGuardStopPrompt() throws {
@@ -425,26 +404,20 @@ final class SessionRepairRoutingTests: XCTestCase {
         XCTAssertFalse(actionBody.contains("activeEndPromptGeneration"), "menu actions must not read the live prompt generation at click handling time")
     }
 
-    func testPromptStartClearsRecoveryAndUsesExactlyOneManualStartRoute() throws {
+    func testExactlyOneStartPathServesBothOrigins() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
-        guard let promptRange = source.range(of: "private func presentStartPrompt") else {
-            return XCTFail("prompt Start Recording handler must be factored for source-inspection")
-        }
-        let promptBody = String(source[promptRange.lowerBound..<source.index(promptRange.lowerBound, offsetBy: min(2600, source.distance(from: promptRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(promptBody.contains("case .start:"), "prompt handler must handle Start Recording decisions")
-        XCTAssertTrue(promptBody.contains("await startRecording()"), "prompt Start Recording must enter the normal manual Record Now startRecording route")
-        XCTAssertEqual(promptBody.components(separatedBy: "await startRecording()").count - 1, 1, "one prompt decision must invoke the normal start route exactly once")
-        XCTAssertTrue(promptBody.contains("detectionPromptActive = false"), "explicit prompt resolution must clear Meeting detected trust state before recording starts")
-        XCTAssertTrue(promptBody.contains("menu?.pendingPrompt = nil"), "explicit prompt resolution must clear stale menu recovery actions")
+        XCTAssertTrue(source.contains("func performStart("), "one factored start path must serve manual and detected origins")
+        XCTAssertTrue(source.contains("origin: .detected, presentation: .silent"), "the detected origin uses the silent presentation")
+        XCTAssertTrue(source.contains("case .record: await startRecording()"), "manual Record Now keeps the interactive default presentation")
 
-        guard let startRange = source.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
-            return XCTFail("normal startRecording route must exist")
+        guard let startRange = source.range(of: "func performStart(") else {
+            return XCTFail("performStart must exist for source-inspection")
         }
         let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(7600, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(startBody.contains("guard status != .recording, status != .starting"), "normal start route must guard against duplicate capture sessions")
-        XCTAssertTrue(startBody.contains("let report = await preflightDoctor.audit"), "normal start route must surface preflight blockers for prompt and manual starts")
-        XCTAssertTrue(startBody.contains("try await session.start()"), "normal start route must be the capture session start point")
+        XCTAssertTrue(startBody.contains("guard status != .recording, status != .starting"), "the start path must guard against duplicate capture sessions")
+        XCTAssertTrue(startBody.contains("let report = await preflightDoctor.audit"), "the start path must surface preflight blockers for both origins")
+        XCTAssertTrue(startBody.contains("try await session.start()"), "the start path must be the capture session start point")
     }
 
     func testActiveRecordingQueuesCandidateAndReevaluatesAfterStop() throws {
@@ -469,18 +442,18 @@ final class SessionRepairRoutingTests: XCTestCase {
 
     func testPromptStopPathWritesPendingTranscriptBeforeQueueReevaluation() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
-        guard let stopRange = source.range(of: "func stopRecording() async") else {
+        guard let stopRange = source.range(of: "func stopRecording(") else {
             return XCTFail("stopRecording route must exist")
         }
         let stopBody = String(source[stopRange.lowerBound..<source.index(stopRange.lowerBound, offsetBy: min(5200, source.distance(from: stopRange.lowerBound, to: source.endIndex)))])
         guard let stopCall = stopBody.range(of: "try await session.stop()"),
               let pendingWrite = stopBody.range(of: "TranscriptWriter.writePending"),
-              let workerCreation = stopBody.range(of: "let worker = Self.makeWorker"),
+              let workerCreation = stopBody.range(of: "dispatchWorker("),
               let queueReeval = stopBody.range(of: "reevaluateQueuedDetectionCandidateAfterStop()") else {
-            return XCTFail("stopRecording must stop capture, write pending transcript, create worker, and then re-evaluate queue")
+            return XCTFail("stopRecording must stop capture, write pending transcript, dispatch the worker, and then re-evaluate queue")
         }
         XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: stopCall.lowerBound), stopBody.distance(from: stopBody.startIndex, to: pendingWrite.lowerBound), "durable capture stop/finalize must precede transcript state writes")
-        XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: pendingWrite.lowerBound), stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), "pending transcript must be written before transcription worker runs")
+        XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: pendingWrite.lowerBound), stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), "pending transcript must be written before the transcription worker is dispatched")
         XCTAssertLessThan(stopBody.distance(from: stopBody.startIndex, to: workerCreation.lowerBound), stopBody.distance(from: stopBody.startIndex, to: queueReeval.lowerBound), "queued prompt re-evaluation must wait until the stopped recording has a durable worker path")
     }
 

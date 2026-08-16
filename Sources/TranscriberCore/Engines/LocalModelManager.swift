@@ -235,7 +235,12 @@ public actor LocalModelManager {
     }
 }
 
-private struct LocalModelDownloadWorker {
+/// Sendable so the manager's download Task can hand the worker to its
+/// nonisolated `run()`. All stored fields are Sendable protocols or
+/// value types; `FileManager` is documented thread-safe, same rationale
+/// as `UserDefaultsBox`. Swift 6.3 rejects the implicit region transfer
+/// that 6.2 accepted here.
+private struct LocalModelDownloadWorker: @unchecked Sendable {
     let cacheRoot: URL
     let manifest: LocalModelManifest
     let downloader: any LocalModelDownloading

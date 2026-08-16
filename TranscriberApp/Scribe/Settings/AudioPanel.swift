@@ -34,6 +34,24 @@ private enum TranscriptionLanguageOption {
   }
 }
 
+/// Display options for the auto-discard threshold picker.
+private enum AutoDiscardOption {
+  static let choices: [(label: String, seconds: Int)] = [
+    ("30 seconds", 30),
+    ("1 minute", 60),
+    ("2 minutes", 120),
+    ("3 minutes", 180),
+    ("5 minutes", 300),
+  ]
+  static var labels: [String] { choices.map(\.label) }
+  static func seconds(forLabel label: String) -> Int {
+    choices.first { $0.label == label }?.seconds ?? 120
+  }
+  static func label(forSeconds seconds: Int) -> String {
+    choices.first { $0.seconds == seconds }?.label ?? "\(seconds) seconds"
+  }
+}
+
 struct FidelityAudioPanel: View {
   @ObservedObject var model: SettingsFormModel
   let onSettingsChange: @MainActor (SessionSettings) async -> Void
@@ -91,16 +109,68 @@ struct FidelityAudioPanel: View {
           if case .confirmRemoveLocalModel(let modelName) = model.pendingLocalModelRemoval {
             FidelityInlineConfirmation(
               title: "Remove \(modelName)?",
-              message:
+               message:
                 "Local transcription will be unavailable until the Cohere model is downloaded and verified again.",
-              confirmTitle: "Remove",
-              onCancel: { Task { _ = await model.handleEngineAction(.cancelRemoveLocalModel) } },
-              onConfirm: { Task { _ = await model.handleEngineAction(.confirmRemoveLocalModel) } }
-            )
+               confirmTitle: "Remove",
+               onCancel: { Task { _ = await model.handleEngineAction(.cancelRemoveLocalModel) } },
+               onConfirm: { Task { _ = await model.handleEngineAction(.confirmRemoveLocalModel) } }
+             )
           }
+          Text(
+            "With automatic recording on, every detected call transcribes with the selected engine. Cloud uploads that audio to ElevenLabs; Local keeps it on this Mac."
+          )
+          .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+          .foregroundStyle(FidelitySettings.ink3)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 460, alignment: .leading)
         }
         .padding(14)
         .task { await model.refreshEngineViewState() }
+      }
+      .padding(.bottom, 22)
+
+      FidelitySection(title: "Auto-record") {
+        FidelityRow(label: "Record detected calls automatically") {
+          HStack(spacing: 10) {
+            FidelityToggle(
+              isOn: Binding(
+                get: { model.autoRecordEnabled },
+                set: { enabled in
+                  guard model.autoRecordEnabled != enabled else { return }
+                  model.autoRecordEnabled = enabled
+                  persistSettings()
+                }
+              ))
+            FidelityHelpText("Off: detections park in the menu bar and you record manually.")
+          }
+        }
+        FidelityRowDivider()
+        FidelityRow(label: "Discard recordings under") {
+          HStack(spacing: 10) {
+            FidelitySelectLike(
+              selection: Binding(
+                get: { AutoDiscardOption.label(forSeconds: model.autoDiscardThresholdSeconds) },
+                set: { label in
+                  let seconds = AutoDiscardOption.seconds(forLabel: label)
+                  guard model.autoDiscardThresholdSeconds != seconds else { return }
+                  model.autoDiscardThresholdSeconds = seconds
+                  persistSettings()
+                }
+              ),
+              options: AutoDiscardOption.labels,
+              minWidth: 160
+            )
+            FidelityHelpText("Short false positives go to the Trash unseen.")
+          }
+        }
+        FidelityRowDivider()
+        FidelityRow(label: "") {
+          Text("Some places require everyone's consent to record a call. Check your local rules.")
+            .font(SwiftUI.Font.custom(FidelitySettings.font, size: 11.5))
+            .foregroundStyle(FidelitySettings.ink3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 440, alignment: .leading)
+        }
       }
       .padding(.bottom, 22)
 

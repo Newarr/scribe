@@ -18,12 +18,6 @@ import TranscriberCore
 /// `menu: NSMenu` and an `Action` enum) is preserved as the public
 /// surface so AppDelegate's call sites don't change. The popover hosts
 /// a SwiftUI body backed by `RecordingMenuModel`.
-struct PendingPromptRecovery: Equatable {
-  let title: String
-  let subtitle: String
-  let appDisplayName: String
-}
-
 struct RecordingMenuQueuedMeeting: Equatable {
   let title: String
   let time: String
@@ -42,16 +36,15 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
     case retryFailedSession
     case retryRecentFailedSession(URL)
     case repairRecentFailedSession(URL)
+    case discardSession(URL)
     case stop
     case quit
     case openSettings
     case openSetupRequired
     case openDiagnostics
-    case promptStartRecording
-    case promptNotNow
-    case promptSuppressApp
     case endPromptKeepRecording(generation: Int)
     case endPromptStopNow(generation: Int)
+    case endPromptDiscard(generation: Int)
   }
 
   /// Codex PM-review UX-7 (preserved): "Setup Required…" vs
@@ -59,10 +52,6 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
   /// now folds it into a single SETUP indicator.
   var setupNeedsAttention: Bool = false {
     didSet { model.setupNeedsAttention = setupNeedsAttention }
-  }
-
-  var pendingPrompt: PendingPromptRecovery? {
-    didSet { model.pendingPrompt = pendingPrompt }
   }
 
   var queuedNextMeeting: RecordingMenuQueuedMeeting? {
@@ -78,6 +67,12 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
   /// any settings change.
   var outputRoot: URL? {
     didSet { model.refreshRecents(under: outputRoot) }
+  }
+
+  /// Re-enumerates the recents list from the current outputRoot.
+  /// Called after out-of-band folder changes (Recents Discard).
+  func refreshRecents() {
+    model.refreshRecents(under: outputRoot)
   }
 
   /// Elapsed seconds since recording started. AppDelegate ticks

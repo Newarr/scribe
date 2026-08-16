@@ -30,6 +30,12 @@ public struct SessionDirectory: Equatable, Sendable {
         return SessionDirectory(url: targetUrl)
     }
 
+    /// Wraps an already-existing session directory (Recents rows carry
+    /// plain URLs). Performs no filesystem work.
+    public static func existing(at url: URL) -> SessionDirectory {
+        SessionDirectory(url: url)
+    }
+
     var micPartial: URL {
         url.appendingPathComponent("mic.m4a.partial")
     }
@@ -83,6 +89,17 @@ public struct SessionDirectory: Equatable, Sendable {
     /// "audio.m4a" name; eligibility checks live on `CanonicalAudio`.
     public var audioFinal: URL {
         CanonicalAudio.url(in: url)
+    }
+
+    /// Moves the whole session folder to the macOS Trash and returns the
+    /// trashed location. Throws on volumes with no Trash folder; the
+    /// caller then keeps the session at its current status and logs.
+    /// A discard never hard-deletes and never silently no-ops.
+    @discardableResult
+    public func moveToTrash() throws -> URL? {
+        var trashed: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
+        return trashed as URL?
     }
 
     public func finalize() throws {

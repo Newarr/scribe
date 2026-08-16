@@ -91,7 +91,7 @@ extension AppDelegate {
     TrustState.Inputs(
       status: status,
       setupNeedsAttention: setupNeedsAttention,
-      detectionPromptActive: detectionPromptActive,
+      detectionAwaitingAction: detectionAwaitingAction,
       endPromptActive: activeEndPromptGeneration != nil,
       lastSavedAt: lastSavedAt,
       lastFailureAt: lastFailureAt,

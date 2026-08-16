@@ -12,8 +12,8 @@ public enum TrustState: String, Sendable, Equatable, CaseIterable {
     case idle
     /// Preflight failed (any blocker). Bars + amber dot.
     case setupRequired
-    /// Detection candidate fired; prompt is on screen awaiting a
-    /// response. Bars + concentric ring (Swift drives the pulse).
+    /// Detection candidate fired but no recording started (auto-record
+    /// off). Bars + concentric ring (Swift drives the pulse).
     case detected
     /// Capture active.
     case recording
@@ -33,7 +33,7 @@ extension TrustState {
     public struct Inputs: Sendable, Equatable {
         public var status: SessionStatus
         public var setupNeedsAttention: Bool
-        public var detectionPromptActive: Bool
+        public var detectionAwaitingAction: Bool
         public var endPromptActive: Bool
         public var lastSavedAt: Date?
         public var lastFailureAt: Date?
@@ -45,7 +45,7 @@ extension TrustState {
         public init(
             status: SessionStatus,
             setupNeedsAttention: Bool,
-            detectionPromptActive: Bool,
+            detectionAwaitingAction: Bool,
             endPromptActive: Bool = false,
             lastSavedAt: Date? = nil,
             lastFailureAt: Date? = nil,
@@ -54,7 +54,7 @@ extension TrustState {
         ) {
             self.status = status
             self.setupNeedsAttention = setupNeedsAttention
-            self.detectionPromptActive = detectionPromptActive
+            self.detectionAwaitingAction = detectionAwaitingAction
             self.endPromptActive = endPromptActive
             self.lastSavedAt = lastSavedAt
             self.lastFailureAt = lastFailureAt
@@ -86,11 +86,10 @@ extension TrustState {
         //    should communicate that recording cannot proceed yet.
         if inputs.setupNeedsAttention { return .setupRequired }
 
-        // 3. Mid-flight detection prompt is the next-strongest
-        //    signal: it's awaiting a user decision, so the icon
-        //    should pulse to draw the eye when recording is otherwise
-        //    allowed.
-        if inputs.detectionPromptActive { return .detected }
+        // 3. A passive detection candidate is the next-strongest
+        //    signal: a meeting is live but not being recorded, so the
+        //    icon pulses to draw the eye.
+        if inputs.detectionAwaitingAction { return .detected }
 
         // 4. A terminal failure outranks the transient saved flash because
         //    the user just tried to record and it failed — that needs

@@ -24,16 +24,19 @@ final class EndCountdownWindowController {
 
     /// Builds the panel if needed and shows it. Subsequent calls
     /// just refresh the model (no flicker on countdown ticks).
+    /// `onDiscard` stops the capture and trashes the session folder.
     func present(
         reason: EndGuard.Reason,
         secondsRemaining: Int,
         onKeep: @escaping @MainActor () -> Void,
-        onStopNow: @escaping @MainActor () -> Void
+        onStopNow: @escaping @MainActor () -> Void,
+        onDiscard: @escaping @MainActor () -> Void = {}
     ) {
         model.eyebrow = Self.eyebrow(for: reason)
         model.secondsRemaining = secondsRemaining
         model.onKeep = onKeep
         model.onStopNow = onStopNow
+        model.onDiscard = onDiscard
 
         if panel != nil {
             panel?.makeKeyAndOrderFront(nil)
@@ -41,7 +44,7 @@ final class EndCountdownWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 270),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 270),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -94,6 +97,7 @@ final class EndCountdownModel: ObservableObject {
     @Published var secondsRemaining: Int = 0
     var onKeep: @MainActor () -> Void = {}
     var onStopNow: @MainActor () -> Void = {}
+    var onDiscard: @MainActor () -> Void = {}
 }
 
 private struct EndCountdownView: View {
@@ -142,10 +146,17 @@ private struct EndCountdownView: View {
                     Text("Stop now").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryButtonStyle())
+
+                // Trash is recoverable, and Keep stays the Enter-bound
+                // primary, so Discard needs no confirmation step.
+                Button(action: model.onDiscard) {
+                    Text("Discard").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryButtonStyle())
             }
         }
         .padding(20)
-        .frame(width: 380, height: 270)
+        .frame(width: 440, height: 270)
         .glassBackground()
         .opacity(didAppear ? 1 : 0)
         .offset(y: didAppear ? 0 : -8)

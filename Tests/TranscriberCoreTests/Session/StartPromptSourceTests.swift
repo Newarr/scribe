@@ -1,173 +1,39 @@
 import XCTest
 
+/// Source guards for the auto-record cutover (plans/auto-record.md).
+/// The pre-call start prompt is gone: detection records directly. What
+/// survives is the EndGuard stop-prompt notification channel, the
+/// silent start path, and the discard machinery.
 final class StartPromptSourceTests: XCTestCase {
     private var source: String {
         get throws {
-            let path = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("TranscriberApp/Scribe/StartPromptCoordinator.swift")
-            return try String(contentsOf: path, encoding: .utf8)
+            try CombinedAppSources.appSource("StartPromptCoordinator.swift")
         }
     }
 
-    func testModalFirstPromptActivatesScribeAndIsConfidential() throws {
+    // MARK: - Pre-call machinery is gone
+
+    func testPreCallPromptMachineryIsDeleted() throws {
         let source = try source
-        XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
-        XCTAssertTrue(source.contains("PromptModalWindow.run"))
-        XCTAssertTrue(source.contains("onWindowReady"))
+        XCTAssertFalse(source.contains("func prompt(for candidate:"), "no pre-call prompt entry point")
+        XCTAssertFalse(source.contains("PromptModalWindow.run"), "no pre-call modal")
+        XCTAssertFalse(source.contains("scheduleRecoveryTimers"), "no reminder/expiry timers")
+        XCTAssertFalse(source.contains("var reminderDelay"), "no ignored-prompt policy")
+        XCTAssertFalse(source.contains("final class Pending:"), "no pending start-prompt state")
+        XCTAssertFalse(source.contains("chooseStartFromRecovery"), "no menu recovery for a prompt that cannot exist")
+        XCTAssertFalse(source.contains("expireActivePrompt"), "no stale-call expiry for a prompt that cannot exist")
     }
 
-    func testPrimaryChoicesAreStartRecordingAndNotNowOnly() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("primaryTitle: \"Start Recording\""))
-        XCTAssertTrue(source.contains("secondaryTitle: \"Not now\""))
-        XCTAssertFalse(source.contains("alert.addButton(withTitle: \"Stop detecting"))
+    func testPopoverPromptRecoverySurfaceIsDeleted() throws {
+        let menuSource = try CombinedAppSources.recordingMenu()
+        XCTAssertFalse(menuSource.contains("PendingPromptRecovery"), "popover recovery model is gone")
+        XCTAssertFalse(menuSource.contains("promptStartRecording"), "prompt menu action is gone")
+        XCTAssertFalse(menuSource.contains("promptNotNow"), "prompt menu action is gone")
+        XCTAssertFalse(menuSource.contains("promptSuppressApp"), "prompt menu action is gone")
+        XCTAssertFalse(menuSource.contains("More options ▾"), "suppression disclosure is gone")
     }
 
-    func testStartRecordingIsNotImplicitDefaultButtonAction() throws {
-        let path = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("TranscriberApp/Scribe/PromptModalWindow.swift")
-        let source = try String(contentsOf: path, encoding: .utf8)
-        XCTAssertTrue(source.contains("panel.defaultButtonCell = nil"), "the prompt window must not install a default button cell that can start capture on focus/activation")
-        XCTAssertFalse(source.contains(".keyboardShortcut"), "Start Recording must not be invokable by an implicit keyboard shortcut")
-    }
-
-    func testBackupNotificationUsesMatchingActionsWithoutSuppressionAction() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("title: \"Start Recording\""))
-        XCTAssertTrue(source.contains("title: \"Not now\""))
-        XCTAssertFalse(source.contains("UNNotificationAction(\n                    identifier: Action.suppress"))
-        XCTAssertTrue(source.contains("modal/menu recovery remain active"))
-        XCTAssertTrue(source.contains("UNNotificationDismissActionIdentifier"))
-    }
-
-    func testModalPromptDoesNotExposeSuppressionDisclosure() throws {
-        let source = try source
-        XCTAssertFalse(source.contains("More options ▾"))
-        XCTAssertFalse(source.contains("Stop detecting \\(appDisplayName) for 30 minutes"))
-    }
-
-    func testMenuRecoveryStillExposesSuppressionBehindDisclosure() throws {
-        let source = try CombinedAppSources.recordingMenu()
-        XCTAssertTrue(source.contains("DisclosureGroup(\"More options ▾\")"))
-        XCTAssertTrue(source.contains("Stop detecting \\(prompt?.appDisplayName ?? \"this app\") for 30 minutes"))
-    }
-
-    func testDismissalKeepsPromptSessionRecoverableUntilResolutionOrExpiry() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("A close/Esc/dismissal is not an implicit decline"))
-        XCTAssertTrue(source.contains("menu recovery remains active"))
-        XCTAssertTrue(source.contains("scheduleRecoveryTimers(for: entry)"))
-    }
-
-    func testIgnoredPromptReminderAndExpiryTimersExist() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("var reminderDelay: TimeInterval = 60"))
-        XCTAssertTrue(source.contains("var expiryDelay: TimeInterval = 180"))
-        XCTAssertTrue(source.contains("kind: .reminder"))
-        XCTAssertTrue(source.contains("handleIgnoredPromptExpiry(promptID: promptID)"))
-    }
-
-    func testNotificationDismissalDoesNotResolvePrompt() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("Start prompt notification dismissed without decision"))
-        XCTAssertFalse(source.contains("UNNotificationDismissActionIdentifier:\n                self.resolve"))
-    }
-
-    func testMenuRecoveryActionsResolveActivePrompt() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("chooseStartFromRecovery"))
-        XCTAssertTrue(source.contains("chooseNotNowFromRecovery"))
-        XCTAssertTrue(source.contains("chooseSuppressAppFromRecovery"))
-        XCTAssertTrue(source.contains("Ignoring stale start-prompt menu recovery"))
-    }
-
-    func testEndedCallExpiryResolvesPendingPromptWithoutStartingRecording() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("func expireActivePrompt(for candidate: DetectionCandidate)"), "prompt coordinator must expose a trigger-scoped stale-call expiry seam")
-        XCTAssertTrue(source.contains("DetectionTriggerIdentity.matchesEndedCandidate"), "stale-call expiry must use the shared trigger-scoped matcher")
-        XCTAssertFalse(source.contains("entry.candidate.triggerIdentity == candidate.triggerIdentity || entry.app.bundleID == candidate.app.bundleID"), "stale-call expiry must not fall back to broad same-app matching")
-        XCTAssertTrue(source.contains("resolve(identifier: identifier, with: .skipForNow, removeNotifications: true)"), "ended calls should clear recovery like Not now rather than starting capture")
-        XCTAssertTrue(source.contains("Ignoring stale start-prompt action"), "late modal/notification actions for expired prompt IDs must be inert")
-    }
-
-    func testPendingStateInstallsBeforeAsynchronousBackupNotification() throws {
-        let source = try source
-        let pendingRange = try XCTUnwrap(source.range(of: "pending[identifier] = entry"))
-        let notificationRange = try XCTUnwrap(source.range(of: "postNotificationIfPossible("))
-        let modalRange = try XCTUnwrap(source.range(of: "presentModalPrompt(identifier: identifier"))
-        XCTAssertLessThan(pendingRange.lowerBound, notificationRange.lowerBound)
-        XCTAssertLessThan(notificationRange.lowerBound, modalRange.lowerBound)
-        XCTAssertTrue(source.contains("Task { @MainActor [weak self] in"), "backup notification posting should be asynchronous relative to modal presentation")
-    }
-
-    func testResolvedPromptDismissesVisibleModalRunLoop() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("weak var modalWindow: NSWindow?"))
-        XCTAssertTrue(source.contains("var isModalVisible = false"))
-        XCTAssertTrue(source.contains("dismissModalIfVisible(for: entry)"))
-        XCTAssertTrue(source.contains("entry.modalWindow?.orderOut(nil)"))
-        XCTAssertTrue(source.contains("NSApp.stopModal(withCode: NSApplication.ModalResponse.abort)"))
-        XCTAssertTrue(source.contains("Stopped visible start prompt modal after non-modal resolution"))
-    }
-
-    func testStaleAsyncNotificationCompletionCannotPostAfterPromptResolved() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("guard pending[promptID] != nil else"))
-        XCTAssertTrue(source.contains(#"Skipping stale start prompt \(kind.rawValue, privacy: .public) notification after authorization completed"#))
-    }
-
-    func testIgnoredPromptExpiryUsesCallActivitySeamForFinalReminder() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("var callActivityChecker: @MainActor (MeetingApp) async -> Bool"), "expiry must use an injectable call-activity seam instead of untestable wall-clock/UI behavior")
-        XCTAssertTrue(source.contains("CoreAudioInputProbe().isActive(bundleID: app.bundleID) == true"), "production seam should require a positive active-call signal")
-        XCTAssertTrue(source.contains("await self?.handleIgnoredPromptExpiry(promptID: promptID)"), "expiry timer should route through a deterministic policy method")
-        XCTAssertTrue(source.contains("guard callStillActive else"), "inactive or ended calls should take the safe expiry path")
-        XCTAssertTrue(source.contains("kind: .finalReminder"), "still-active calls should get a distinct one-time final reminder")
-        XCTAssertTrue(source.contains("entry.expiryTimer = nil"), "active-call final reminder must not schedule repeated expiry spam")
-        XCTAssertTrue(source.contains("does not start recording, does not auto-decline"), "source should document that final reminder leaves the decision user-controlled")
-    }
-
-    func testInactiveExpiryClearsStaleActionsWithoutStartRecording() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("Start prompt expired for inactive or ended call"))
-        XCTAssertTrue(source.contains("clearing stale recovery actions"))
-        XCTAssertTrue(source.contains("resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)"))
-        XCTAssertFalse(source.contains("resolve(identifier: promptID, with: .start"), "expiry must never auto-start recording")
-    }
-
-    func testFinalReminderNotificationCopyIsDistinctFromSixtySecondReminder() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("case finalReminder"))
-        XCTAssertTrue(source.contains(#"content.body = "Still want to start recording?""#))
-        XCTAssertTrue(source.contains(#"content.body = "Last reminder while this call appears active.""#))
-    }
-
-    func testDuplicatePromptCoalescesAwaitersWithoutReplacingPendingEntry() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("if let entry = pending[identifier]"), "duplicate prompt path must look up the existing pending prompt")
-        XCTAssertTrue(source.contains("entry.addAwaiter(continuation)"), "duplicate prompt path must append the new awaiter")
-        XCTAssertTrue(source.contains("return\n            }\n\n            let entry = Pending"), "duplicate prompt path must return before creating a replacement Pending")
-        XCTAssertTrue(source.contains("appending awaiter without replacing prompt state"))
-        XCTAssertTrue(source.contains("func resumeAll(returning choice: Choice)"), "resolution must complete every coalesced awaiter")
-        XCTAssertTrue(source.contains("entry.resumeAll(returning: choice)"), "resolve must resume all awaiters rather than a single overwritten continuation")
-    }
-
-    func testNotificationAuthorizationIsRequeriedForEveryPrompt() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("Re-query every time instead of caching process-lifetime denial or"))
-        XCTAssertFalse(source.contains("authorizationKnown"), "denied/granted notification authorization must not be cached for the app lifetime")
-        XCTAssertFalse(source.contains("authorizationGranted"), "notification grant state must be re-read after System Settings changes")
-        XCTAssertTrue(source.contains("let settings = await center.notificationSettings()"))
-        XCTAssertTrue(source.contains("return try await center.requestAuthorization(options: [.alert, .sound])"))
-    }
+    // MARK: - End-prompt notification channel survives
 
     func testEndPromptNotificationActionsAreGenerationGuardedAndClearSurfaces() throws {
         let source = try source
@@ -190,12 +56,13 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertFalse(source.contains("Summary"))
     }
 
-
-    func testLateJoinCalendarPromptCopyStatesCaptureFromNowOnward() throws {
+    func testNotificationAuthorizationIsRequeriedForEveryPrompt() throws {
         let source = try source
-        XCTAssertTrue(source.contains("Record '\\(event.title)'? This event started"))
-        XCTAssertTrue(source.contains("Recording will capture from now onward."))
-        XCTAssertTrue(source.contains("event.endDate.timeIntervalSince(Date()) >= 10 * 60"))
+        XCTAssertTrue(source.contains("Re-query every time instead of caching process-lifetime denial or"))
+        XCTAssertFalse(source.contains("authorizationKnown"), "denied/granted notification authorization must not be cached for the app lifetime")
+        XCTAssertFalse(source.contains("authorizationGranted"), "notification grant state must be re-read after System Settings changes")
+        XCTAssertTrue(source.contains("let settings = await center.notificationSettings()"))
+        XCTAssertTrue(source.contains("return try await center.requestAuthorization(options: [.alert, .sound])"))
     }
 
     func testNotificationPayloadDoesNotIncludeUnsafeCalendarContext() throws {
@@ -207,22 +74,10 @@ final class StartPromptSourceTests: XCTestCase {
         XCTAssertFalse(body.contains("keyterms"))
         XCTAssertFalse(body.contains("attendees"))
     }
-
-    func testPromptIdentifierUsesTriggerIdentity() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("func prompt(for candidate: DetectionCandidate"), "prompt coordinator should accept the detection candidate with trigger identity")
-        XCTAssertTrue(source.contains("let identifier = candidate.triggerIdentity"), "prompt ID must use calendar occurrence identity when DetectionEngine provides it")
-        XCTAssertTrue(source.contains(#""triggerIdentity": promptID"#), "notification payload should carry the same trigger identity for stale action de-dupe")
-    }
-
-    func testPromptPlacementUsesActiveMeetingWindowScreen() throws {
-        let source = try source
-        XCTAssertTrue(source.contains("self?.place(window: window, nearActiveWindowFor: app)"))
-        XCTAssertTrue(source.contains("CGWindowListCopyWindowInfo"))
-        XCTAssertTrue(source.contains("NSScreen.screens.max"))
-    }
 }
 
+/// Source guards for the silent-start path and the auto-record stop
+/// flow, replacing the old prompt-preflight recovery guards.
 final class PromptPreflightRecoverySourceTests: XCTestCase {
     private var appDelegateSource: String {
         get throws {
@@ -230,40 +85,41 @@ final class PromptPreflightRecoverySourceTests: XCTestCase {
         }
     }
 
-    private var startPromptSource: String {
-        get throws {
-            let path = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("TranscriberApp/Scribe/StartPromptCoordinator.swift")
-            return try String(contentsOf: path, encoding: .utf8)
-        }
-    }
-
-    func testPromptStartPreflightDenialKeepsPendingRecoveryActions() throws {
+    func testDetectionCandidateAutoRecordsThroughTheSilentStartPath() throws {
         let source = try appDelegateSource
-        XCTAssertTrue(source.contains("let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention"), "prompt start should not unconditionally clear pending recovery before preflight outcome is known")
-        XCTAssertTrue(source.contains("if setupNeedsAttention {\n                pendingPromptCalendarEventForStart = event"), "preflight denial should preserve prompt calendar context for a later recovery retry")
-        XCTAssertTrue(source.contains("Fix setup, then start recording."), "setup-required pending prompt copy should keep meeting recovery actionable")
-        XCTAssertTrue(source.contains("menu?.pendingPrompt = PendingPromptRecovery"), "AppDelegate should restore menu-bar Start/Not now recovery after a blocked prompt start")
+        XCTAssertFalse(source.contains("private func presentStartPrompt"), "the pre-call prompt handler is deleted")
+        XCTAssertTrue(source.contains("performStart(origin: .detected, presentation: .silent)"), "detection candidates start recording silently")
+        XCTAssertTrue(source.contains("guard settings.autoRecordEnabled else"), "auto-record off parks the candidate instead of starting")
+        XCTAssertTrue(source.contains("detectionAwaitingAction = true"), "parked candidates surface the passive Meeting detected state")
     }
 
-    func testMenuRecoveryCanRetryAfterPromptCoordinatorResolved() throws {
-        let appDelegate = try appDelegateSource
-        let coordinator = try startPromptSource
-        XCTAssertTrue(coordinator.contains("var hasActivePrompt: Bool { activePromptIdentifier != nil }"), "AppDelegate needs to distinguish live modal/notification prompts from retained setup-blocked recovery")
-        XCTAssertTrue(appDelegate.contains("if startPromptCoordinator.hasActivePrompt"))
-        XCTAssertTrue(appDelegate.contains("} else if detectionPromptActive {\n                let event = pendingPromptCalendarEventForStart"), "retained pending prompt recovery should keep the saved calendar context")
-        XCTAssertTrue(appDelegate.contains("pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: triggerIdentity)"), "retained pending prompt recovery should preserve the detection candidate for end-call recognition")
-        XCTAssertTrue(appDelegate.contains("await startRecording()"), "retained pending prompt recovery should retry the normal preflight/start path after setup is fixed")
+    func testSilentStartNeverOpensWindowsOnFailurePaths() throws {
+        let source = try appDelegateSource
+        guard let startRange = source.range(of: "func performStart(") else {
+            return XCTFail("performStart must exist as the single start path")
+        }
+        let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(6000, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
+        XCTAssertTrue(startBody.contains("let interactive = presentation == .interactive"), "presentation decides failure surfacing")
+        XCTAssertTrue(startBody.contains("if interactive {\n        presentPrivacyAcknowledgementIfNeeded()"), "only interactive starts present the consent sheet")
+        XCTAssertTrue(startBody.contains("if interactive {\n        denyStartForLowDisk"), "only interactive starts show the low-disk alert")
+        XCTAssertTrue(startBody.contains("if presentation == .interactive {"), "only interactive starts present onboarding/setup windows")
+        XCTAssertTrue(startBody.contains("return .failed(reason:"), "silent failures return typed reasons")
     }
 
-    func testRequiredSetupOutranksDetectedIconButDoesNotRemovePendingPromptModel() throws {
-        let appDelegate = try appDelegateSource
-        XCTAssertTrue(appDelegate.contains("setupNeedsAttention = true"), "required preflight denial should surface Setup Required")
-        XCTAssertTrue(appDelegate.contains("menu?.setupNeedsAttention = true"), "required preflight denial should mark the popover setup state")
-        XCTAssertTrue(appDelegate.contains("menu?.pendingPrompt = PendingPromptRecovery"), "setup-required state must coexist with pending meeting actions")
+    func testStopPathAutoDiscardsReleasesCandidateAndSuppressesSavedNotification() throws {
+        let source = try appDelegateSource
+        XCTAssertTrue(source.contains("AutoRecordPolicy.shouldAutoDiscard("), "stop consults the auto-record policy")
+        XCTAssertTrue(source.contains("discardRequested"), "an explicit Discard overrides the threshold")
+        XCTAssertTrue(source.contains("discardStoppedSession("), "the discard tail exists")
+        XCTAssertTrue(source.contains("await detectionEngine?.releaseActiveCandidate(candidate)"), "auto-discard releases its candidate so detection can re-fire")
+        XCTAssertTrue(source.contains("if origin == .manual {"), "only manual sessions present the saved notification")
+        XCTAssertTrue(source.contains("try dir.moveToTrash()"), "discard moves the folder to Trash")
+        XCTAssertTrue(source.contains("workerTasksByDirectory[url]"), "worker tasks are tracked by directory for Recents Discard cancellation")
+    }
+
+    func testRequiredSetupStillOutranksDetectedIcon() throws {
+        let source = try appDelegateSource
+        XCTAssertTrue(source.contains("setupNeedsAttention = true"), "required preflight denial should surface Setup Required")
+        XCTAssertTrue(source.contains("menu?.setupNeedsAttention = true"), "required preflight denial should mark the popover setup state")
     }
 }

@@ -76,6 +76,12 @@ public actor TranscriptionWorker {
     }
 
     public func run() async -> FinalState {
+        // A vanished directory means the user discarded the session from
+        // Recents while this worker was live or queued. Never treat that
+        // as a transcription failure and never write anything back:
+        // decline as cancelled so no file resurrects the folder.
+        if directoryVanished { return .cancelled }
+
         // Read the on-disk transcript once. Used both to skip already-terminal
         // sessions AND to recover the retry attempt count after an app relaunch
         // mid-backoff (codex slice-7 P2.2).
@@ -160,7 +166,7 @@ public actor TranscriptionWorker {
         // during the 5m/30m backoff doesn't grant a fresh retry budget.
         var failedAttempts = existing?.attempts ?? 0
         while true {
-            if Task.isCancelled { return .cancelled }
+            if Task.isCancelled || directoryVanished { return .cancelled }
             do {
                 let response = try await engine.transcribe(resolvedRequest)
                 if response.utterances.isEmpty {
@@ -217,6 +223,7 @@ public actor TranscriptionWorker {
                 // disk can't persist the retry state, treat that as
                 // terminal: the session can't be retried safely.
                 if !writeRetrying(failedAttempts: failedAttempts, lastError: error) {
+                    if directoryVanished { return .cancelled }
                     let reason = "retry persistence failed; terminating to avoid unbounded relaunch retries (last engine error: \(error))"
                     await writeFailed(reason: reason, failedAttempts: failedAttempts, underlying: error)
                     return .failed(reason: reason)
@@ -233,6 +240,12 @@ public actor TranscriptionWorker {
         }
     }
 
+    /// True when the session directory was removed (Recents Discard).
+    /// Guards every write so a discarded session never regains files.
+    private var directoryVanished: Bool {
+        FileManager.default.fileExists(atPath: directory.url.path) == false
+    }
+
     /// Returns true on successful persist, false on write failure.
     /// Codex rc2-audit CAP-6: callers must NOT swallow false — a
     /// stale on-disk attempts count + a fresh retry budget on
@@ -240,6 +253,10 @@ public actor TranscriptionWorker {
     /// engine error.
     @discardableResult
     private func writeRetrying(failedAttempts: Int, lastError: Error) -> Bool {
+        if directoryVanished {
+            Log.engine.info("Skipping retrying-state write: session directory vanished (discarded)")
+            return false
+        }
         // Build the retrying-status frontmatter inline. Must mirror every field
         // the supervisor's TranscriptFrontmatterReader knows how to restore,
         // including language + attendees, so a relaunch during the backoff
@@ -270,6 +287,10 @@ public actor TranscriptionWorker {
     }
 
     private func writeFailed(reason: String, failedAttempts: Int = 0, underlying: Error? = nil) async {
+        if directoryVanished {
+            Log.engine.info("Skipping failed-state write: session directory vanished (discarded)")
+            return
+        }
         let failedContext = contextForPersistence(language: context.language)
         let failureDetails = await makeFailureDetails(reason: reason, failedAttempts: failedAttempts, underlying: underlying)
         do {
@@ -373,6 +394,11 @@ public actor TranscriptionWorker {
     /// the raw stream list). Result is also stored on the actor so failure
     /// paths can stamp the same canonical path into metadata.
     private func prepareCanonicalAudio() async -> String {
+        if directoryVanished {
+            Log.engine.info("Skipping canonical audio: session directory vanished (discarded)")
+            canonicalAudioPath = ""
+            return ""
+        }
         let audioFinalURL = directory.audioFinal
         if FileManager.default.fileExists(atPath: audioFinalURL.path) {
             canonicalAudioPath = CanonicalAudio.fileName
@@ -406,6 +432,7 @@ public actor TranscriptionWorker {
     /// cancellation at the engine boundary leaves relaunch recovery with valid
     /// transcript.md + metadata.json and the original session engine.
     private func writePendingRecoveryState() {
+        if directoryVanished { return }
         let pendingContext = contextForPersistence(language: context.language)
         do {
             try TranscriptWriter.writePending(at: directory.transcript, context: pendingContext)
@@ -490,6 +517,7 @@ public actor TranscriptionWorker {
     /// JSON consumers with stale state alongside deleted raws.
     @discardableResult
     private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String, failureDetails: TranscriptFailureDetails? = nil) -> Bool {
+        if directoryVanished { return false }
         // Metadata.audio is a single string per spec line 251-255; pick the
         // first audio reference. With audio.m4a present, that's "audio.m4a".
         // With raw-streams fallback, that's mic.m4a (or whatever's first in

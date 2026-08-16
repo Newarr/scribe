@@ -42,6 +42,29 @@ final class SessionDirectoryTests: XCTestCase {
         XCTAssertEqual(dir.ptsSidecar, url.appendingPathComponent("pts.json"))
     }
 
+    func testMoveToTrashRemovesFolderRecoverably() throws {
+        let id = SessionID(from: Date(timeIntervalSince1970: 0), timeZone: TimeZone(identifier: "UTC")!)
+        let dir = try SessionDirectory.create(under: tmpRoot, id: id)
+        try Data("audio-bytes".utf8).write(to: dir.micFinal)
+
+        let trashed: URL?
+        do {
+            trashed = try dir.moveToTrash()
+        } catch {
+            throw XCTSkip("volume has no Trash folder: \(error)")
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.url.path))
+        if let trashed {
+            // Recoverable, not deleted: the folder and its audio moved intact.
+            XCTAssertTrue(FileManager.default.fileExists(atPath: trashed.path))
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: trashed.appendingPathComponent("mic.m4a").path))
+            try? FileManager.default.removeItem(at: trashed)
+        }
+    }
+
     func testAtomicRenameMicAndSystem() throws {
         let id = SessionID(from: Date(timeIntervalSince1970: 0), timeZone: TimeZone(identifier: "UTC")!)
         let dir = try SessionDirectory.create(under: tmpRoot, id: id)

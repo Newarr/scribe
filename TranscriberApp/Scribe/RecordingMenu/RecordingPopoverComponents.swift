@@ -382,6 +382,7 @@ struct MenuRow: View {
   let entry: SessionFolderEnumerator.Entry
   let onRetry: (URL) -> Void
   let onRepair: (URL) -> Void
+  let onDiscard: (URL) -> Void
   let localModelReadyForRetry: Bool?
   @State private var hovering: Bool = false
   @Environment(\.colorScheme) private var colorScheme
@@ -419,6 +420,12 @@ struct MenuRow: View {
         label: "Open Transcript",
         palette: palette,
         action: openTranscript
+      )
+      recentIconButton(
+        glyph: .trash2,
+        label: "Discard",
+        palette: palette,
+        action: { onDiscard(entry.directory) }
       )
 
       recentActionButton(palette: palette)

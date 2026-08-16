@@ -19,6 +19,8 @@ final class SettingsFormModel: ObservableObject {
   @Published var showInMenuBar: Bool
   @Published var startStopShortcut: KeyboardShortcutSetting
   @Published var transcriptionLanguage: String?
+  @Published var autoRecordEnabled: Bool
+  @Published var autoDiscardThresholdSeconds: Int
   @Published var apiKey: String
   @Published var apiKeyEditedFromInitial: Bool = false
   @Published var isSavingCloudAPIKey: Bool = false
@@ -54,6 +56,8 @@ final class SettingsFormModel: ObservableObject {
     self.showInMenuBar = initial.showInMenuBar
     self.startStopShortcut = initial.startStopShortcut
     self.transcriptionLanguage = initial.transcriptionLanguage
+    self.autoRecordEnabled = initial.autoRecordEnabled
+    self.autoDiscardThresholdSeconds = initial.autoDiscardThresholdSeconds
     self.keychainService = keychainService
     self.keychainAccount = keychainAccount
     self.engineReadiness = engineReadiness
@@ -86,7 +90,9 @@ final class SettingsFormModel: ObservableObject {
       launchAtLogin: launchAtLogin,
       showInMenuBar: showInMenuBar,
       startStopShortcut: startStopShortcut,
-      transcriptionLanguage: transcriptionLanguage
+      transcriptionLanguage: transcriptionLanguage,
+      autoDiscardThresholdSeconds: autoDiscardThresholdSeconds,
+      autoRecordEnabled: autoRecordEnabled
     )
   }
 

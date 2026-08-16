@@ -47,4 +47,15 @@ public enum MeetingApps {
     public static func appFor(bundleID: String) -> MeetingApp? {
         allowlist.first(where: { $0.bundleID == bundleID })
     }
+
+    /// V1 meeting-domain list for the browser tab gate. Same
+    /// single-source rule as the allowlist: one file, one entry per
+    /// addition. `BrowserTabInspector` matches the active tab URL host
+    /// (exact or dotted subdomain) and title against these.
+    public static let meetingDomains: [String] = [
+        "meet.google.com",
+        "zoom.us",
+        "teams.microsoft.com",
+        "teams.live.com",
+    ]
 }

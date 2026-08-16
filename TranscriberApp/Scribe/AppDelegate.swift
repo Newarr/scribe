@@ -68,11 +68,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var processWatcher: ProcessWatcher?
   let startPromptCoordinator = StartPromptCoordinator()
   private var queuedDetectionCandidate: QueuedDetectionCandidate?
-  var pendingPromptCalendarEventForStart: CalendarEvent?
-  var pendingPromptCandidateForStart: DetectionCandidate?
-  var pendingPromptAppBundleID: String?
-  var pendingPromptTriggerIdentity: String?
-  var dismissedPromptTriggerIdentities: Set<String> = []
+  /// Candidate + event staged for the next start, whether that start is
+  /// an auto-record (detection drives it immediately) or a manual
+  /// Record Now while a passive candidate is live. Cleared on start.
+  var pendingStartCandidate: DetectionCandidate?
+  var pendingStartEvent: CalendarEvent?
+  /// Passive "Meeting detected" state: a candidate fired that did not
+  /// record (auto-record off). Drives the menu bar trust surface.
+  var detectionAwaitingAction = false
+
+  /// Origin of the in-flight (or just-finished) session. Decides
+  /// auto-discard eligibility and saved-notification suppression.
+  var currentSessionOrigin: AutoRecordPolicy.SessionOrigin = .manual
+  /// Full candidate behind the in-flight recording, kept so a discard
+  /// can release it back to DetectionEngine for re-detection.
+  var currentRecordingCandidate: DetectionCandidate?
+  /// Transcription worker tasks keyed by session directory, so Recents
+  /// Discard can cancel a live or retrying worker before trashing.
+  var workerTasksByDirectory: [URL: Task<Void, Never>] = [:]
 
   // End detection mirrors the start prompt path: the recognition layer
   // proves the call ended, then EndGuard owns the 10s stop prompt / Keep
@@ -92,7 +105,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var setupNeedsAttention: Bool = false
   var sessionRepairPayload: SessionRepairRouting.LocalRepairPayload?
   var setupEngineFocus: EngineSettingsCardFocus?
-  var detectionPromptActive: Bool = false
   var lastSavedAt: Date?
   var lastFailureAt: Date?
   var savedFlashTimer: Timer?
@@ -152,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let defaultRoot = home.appendingPathComponent("Scribe", isDirectory: true)
     return SettingsStore.Defaults(
       outputRoot: defaultRoot,
-      engineMode: .cloud,  // rc1: only working engine until Phase ο
+      engineMode: .local,  // auto-record ships with the on-device default
       keepRawStreams: false,  // spec line 102
       aecEnabled: true  // D2
     )
@@ -477,14 +489,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       Log.lifecycle.info("Supervisor recovery deferred until privacy ack")
     }
 
-    // Detection layer: process allowlist watcher feeds DetectionEngine,
-    // engine fires onCandidate after dwell + per-PID input-device
-    // check, app shows the start prompt. The probe closes the
-    // Signal-opens-for-messaging and Chrome-opens-for-anything-else
-    // false positives that dwell-on-launch alone produced.
+    // Detection layer: process allowlist watcher feeds DetectionEngine.
+    // The engine gates every candidate through AutoRecordPolicy: native
+    // apps on probe evidence, browsers on a meeting-domain tab match or
+    // calendar overlap plus sustained mic. Passing candidates auto-start
+    // recording; the app never prompts before capture.
     let engine = DetectionEngine(
       dwellTime: 30,
       probe: CoreAudioInputProbe(),
+      tabInspector: BrowserTabInspector(),
+      calendarOverlapsNow: { [calendarWatcher] date in
+        await calendarWatcher.eventOverlapping(date) != nil
+      },
       triggerIdentity: { [weak self] app in
         await self?.triggerIdentity(for: app) ?? DetectionEngine.defaultTriggerIdentity(for: app)
       },
@@ -511,6 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Log.lifecycle.info(
       "Detection layer started (allowlist size=\(MeetingApps.allowlist.count, privacy: .public), dwellTime=30s)"
     )
+    prewarmBrowserAutomationGrants()
 
     // Phase η controllers (MainActor-isolated; safe to construct here
     // because applicationDidFinishLaunching runs on the main thread).
@@ -566,6 +583,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func applyAppearanceTheme(_ theme: AppearanceTheme) {
     AppearanceApplier.apply(theme)
+  }
+
+  /// Triggers the one-time macOS "control <browser>" automation prompt
+  /// at launch instead of mid-dwell on the first browser candidate. A
+  /// no-op once the grant exists. Grants bind to the signing identity,
+  /// so dev re-signs re-prompt (see scripts/dev-install.sh notes).
+  private func prewarmBrowserAutomationGrants() {
+    Task.detached(priority: .utility) {
+      for app in MeetingApps.allowlist where app.kind == .browser {
+        guard BrowserTabInspector.script(forBundleID: app.bundleID) != nil else { continue }
+        guard
+          NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID) != nil
+        else { continue }
+        _ = await BrowserTabInspector().activeTabMatchesMeeting(bundleID: app.bundleID)
+      }
+    }
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

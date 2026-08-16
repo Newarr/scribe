@@ -65,6 +65,25 @@ extension AppDelegate {
   private func handleEndGuardPrompt(reason: EndGuard.Reason) async {
     guard session != nil, status == .recording else { return }
     guard let endGuard else { return }
+    // Sub-threshold auto-recorded sessions stay fully silent: the stop
+    // countdown panel AND its notification would interrupt for a
+    // recording that is about to trash itself anyway. Test the
+    // PROJECTED duration: the countdown adds ~10s after this point, so
+    // suppressing on elapsed alone would let a session hide the panel
+    // at 115s and then get kept at 125s.
+    let elapsed = currentSessionStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+    let projectedSeconds = elapsed + EndGuard.Config.default.countdownDuration
+    if AutoRecordPolicy.shouldAutoDiscard(
+      durationSeconds: projectedSeconds,
+      origin: currentSessionOrigin,
+      initiator: .endGuard,
+      thresholdSeconds: TimeInterval(settings.autoDiscardThresholdSeconds)
+    ) {
+      Log.lifecycle.info(
+        "End guard prompt suppressed: projected duration under auto-discard threshold"
+      )
+      return
+    }
     let generation = await endGuard.promptGeneration
     let promptID = UUID().uuidString
     activeEndPromptGeneration = generation
@@ -88,6 +107,11 @@ extension AppDelegate {
       onStopNow: { [weak self, generation] in
         Task { @MainActor [weak self] in
           await self?.stopRecordingFromEndPrompt(generation: generation)
+        }
+      },
+      onDiscard: { [weak self, generation] in
+        Task { @MainActor [weak self] in
+          await self?.discardFromEndPrompt(generation: generation)
         }
       }
     )
@@ -133,7 +157,7 @@ extension AppDelegate {
     Log.lifecycle.info(
       "End guard auto-stop firing: \(Self.endGuardReasonLabel(reason), privacy: .public)")
     clearEndGuardPromptSurface()
-    await stopRecording()
+    await stopRecording(initiator: .endGuard)
   }
 
   @MainActor
@@ -164,6 +188,24 @@ extension AppDelegate {
     }
     Log.lifecycle.info("End guard prompt accepted: stop now")
     await stopRecording()
+  }
+
+  /// Discard from the stop countdown panel: stop the capture and trash
+  /// the folder. An explicit click overrides the threshold and origin:
+  /// any session, any duration, manual included.
+  @MainActor
+  func discardFromEndPrompt(generation: Int) async {
+    guard let endGuard else {
+      clearEndGuardPromptSurface()
+      return
+    }
+    let accepted = await endGuard.stopNow(generation: generation)
+    guard accepted else {
+      Log.lifecycle.info("Ignoring stale end guard Discard action")
+      return
+    }
+    Log.lifecycle.info("End prompt accepted: discard")
+    await stopRecording(discardRequested: true)
   }
 
   @MainActor

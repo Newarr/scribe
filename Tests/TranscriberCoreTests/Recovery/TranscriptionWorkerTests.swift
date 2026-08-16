@@ -636,6 +636,24 @@ final class TranscriptionWorkerTests: XCTestCase {
     XCTAssertTrue(reason.contains("No speech"), "reason should mention no-speech: \(reason)")
   }
 
+  /// plans/auto-record.md: a Recents Discard can trash a session while
+  /// its worker is live or retrying. The worker must decline as
+  /// cancelled, never write a failed transcript, and never recreate
+  /// the folder.
+  func testVanishedDirectoryDeclinesCancelledAndNeverRecreatesFolder() async throws {
+    try FileManager.default.createDirectory(at: dir().url, withIntermediateDirectories: true)
+    let worker = makeWorker(responses: [.success(makeResponse())])
+    try FileManager.default.removeItem(at: dir().url)
+    let final = await worker.run()
+    XCTAssertEqual(final, .cancelled, "a discarded session must resolve as cancelled")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: dir().url.path),
+      "the worker must not recreate a discarded session folder")
+    XCTAssertNil(
+      TranscriptFrontmatterReader.read(at: dir().transcript),
+      "the worker must not write any transcript for a discarded session")
+  }
+
   /// CDX-S7-CHAL.P2.2: when resuming a `retrying` session whose attempt count
   /// is already at the policy max, the worker must NOT grant a fresh budget.
   /// One transient failure here should write `failed` and never sleep.

@@ -180,6 +180,143 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertEqual(result?.bundleID, zoom.bundleID, "early false observations must not permanently suppress later active calls")
     }
 
+    // MARK: - Auto-record browser gates (plans/auto-record.md)
+
+    private func clockedEngine(
+        probe: AudioActivityProbe,
+        tabInspector: BrowserTabInspecting?,
+        calendarOverlaps: Bool = false,
+        onCandidate: @escaping @Sendable (DetectionCandidate) async -> Void
+    ) -> DetectionEngine {
+        let clock = DateBox(Date(timeIntervalSince1970: 1_700_000_000))
+        return DetectionEngine(
+            dwellTime: 30,
+            retryInterval: 5,
+            observationWindow: 120,
+            probe: probe,
+            tabInspector: tabInspector,
+            calendarOverlapsNow: { _ in calendarOverlaps },
+            now: clock.now,
+            sleep: { seconds in
+                clock.advance(by: seconds)
+                await Task.yield()
+            },
+            onCandidateEnded: onCandidate,
+            onCandidate: onCandidate
+        )
+    }
+
+    func testBrowserMeetingTabFiresDespiteInactiveProbe() async throws {
+        let captured = AppCapture()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let engine = clockedEngine(
+            probe: ConstantProbe(value: false),
+            tabInspector: ConstantTabInspector(value: true)
+        ) { candidate in
+            await captured.set(candidate.app)
+        }
+
+        await engine.reevaluate(chrome)
+        let result = await captured.waitForBundleID(chrome.bundleID)
+        XCTAssertEqual(result?.bundleID, chrome.bundleID, "a meeting-domain tab is the strongest signal and fires without mic evidence")
+    }
+
+    func testBrowserNonMeetingTabNeverFiresWithoutFallbackEvidence() async throws {
+        let captured = AppCapture()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let engine = clockedEngine(
+            probe: ConstantProbe(value: true),
+            tabInspector: ConstantTabInspector(value: false),
+            calendarOverlaps: false
+        ) { candidate in
+            await captured.set(candidate.app)
+        }
+
+        await engine.reevaluate(chrome)
+        for _ in 0..<2_000 { await Task.yield() }
+        let result = await captured.value
+        XCTAssertNil(result, "an inspected non-meeting tab must not record even with the mic held (no calendar, no sustained-mic credit)")
+    }
+
+    func testBrowserUninspectableFiresOnCalendarPlusSustainedMic() async throws {
+        let captured = AppCapture()
+        let firefox = MeetingApp(bundleID: "org.mozilla.firefox", displayName: "Firefox", kind: .browser)
+        // 6 consecutive positive samples x 5s = the 30s sustained-mic
+        // requirement; tab inspection unavailable (nil).
+        let engine = clockedEngine(
+            probe: SequenceProbe(values: [true, true, true, true, true, true]),
+            tabInspector: ConstantTabInspector(value: nil),
+            calendarOverlaps: true
+        ) { candidate in
+            await captured.set(candidate.app)
+        }
+
+        await engine.reevaluate(firefox)
+        let result = await captured.waitForBundleID(firefox.bundleID)
+        XCTAssertEqual(result?.bundleID, firefox.bundleID, "calendar overlap plus 30s of sustained mic must fire an uninspectable browser")
+    }
+
+    func testBrowserNilProbeSampleResetsSustainedMicAccumulator() async throws {
+        let captured = AppCapture()
+        let firefox = MeetingApp(bundleID: "org.mozilla.firefox", displayName: "Firefox", kind: .browser)
+        // 5 trues (25s) -> nil reset -> 5 more trues (25s): the streak
+        // never reaches 30s, so the fallback must never fire.
+        let engine = clockedEngine(
+            probe: SequenceProbe(values: [true, true, true, true, true, nil, true, true, true, true, true]),
+            tabInspector: ConstantTabInspector(value: nil),
+            calendarOverlaps: true
+        ) { candidate in
+            await captured.set(candidate.app)
+        }
+
+        await engine.reevaluate(firefox)
+        for _ in 0..<2_000 { await Task.yield() }
+        let result = await captured.value
+        XCTAssertNil(result, "HAL indeterminacy must never count as mic time; the streak resets on nil")
+    }
+
+    func testStaleBrowserCandidateWithUnreadableTabIsNotCleared() async throws {
+        let ended = CandidateSequenceCapture()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let tabInspector = SequenceTabInspector(values: [true, nil])
+        let engine = clockedEngine(
+            probe: ConstantProbe(value: false),
+            tabInspector: tabInspector
+        ) { candidate in
+            await ended.append(candidate)
+        }
+
+        // First evaluation: meeting tab -> candidate fires.
+        await engine.reevaluate(chrome)
+        _ = await ended.waitForCount(1)
+        // Second evaluation with the tab unreadable: an unreadable tab is
+        // not proof the call ended, so the active candidate must survive.
+        await engine.reevaluate(chrome)
+        for _ in 0..<200 { await Task.yield() }
+        let values = await ended.values
+        XCTAssertEqual(values.count, 1, "stale clearing must not fire onCandidateEnded when the tab cannot be read")
+    }
+
+    func testStaleBrowserCandidateWithInspectedNonMeetingTabIsCleared() async throws {
+        let ended = CandidateSequenceCapture()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let engine = clockedEngine(
+            probe: ConstantProbe(value: false),
+            tabInspector: SequenceTabInspector(values: [true, false])
+        ) { candidate in
+            await ended.append(candidate)
+        }
+
+        await engine.reevaluate(chrome)
+        _ = await ended.waitForCount(1)
+        // Definitive inactive probe AND inspected non-meeting tab: the
+        // candidate is stale and onCandidateEnded fires.
+        await engine.reevaluate(chrome)
+        _ = await ended.waitForCount(2)
+        let values = await ended.values
+        XCTAssertEqual(values.count, 2, "a definitively-ended browser call must clear its stale candidate")
+    }
+
     func testRepeatedObservationsCoalesceIntoOneCandidate() async throws {
         let captured = FireCounter()
         let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
@@ -522,6 +659,24 @@ actor BundleSequenceCapture {
 struct ConstantProbe: AudioActivityProbe {
     let value: Bool?
     func isActive(bundleID: String) async -> Bool? { value }
+}
+
+struct ConstantTabInspector: BrowserTabInspecting {
+    let value: Bool?
+    func activeTabMatchesMeeting(bundleID: String) async -> Bool? { value }
+}
+
+actor SequenceTabInspector: BrowserTabInspecting {
+    private var values: [Bool?]
+
+    init(values: [Bool?]) {
+        self.values = values
+    }
+
+    func activeTabMatchesMeeting(bundleID: String) async -> Bool? {
+        guard !values.isEmpty else { return nil }
+        return values.removeFirst()
+    }
 }
 
 

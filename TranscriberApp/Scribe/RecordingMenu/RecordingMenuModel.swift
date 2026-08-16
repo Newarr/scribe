@@ -7,7 +7,6 @@ final class RecordingMenuModel: ObservableObject {
 
   @Published var status: SessionStatus
   @Published var setupNeedsAttention: Bool = false
-  @Published var pendingPrompt: PendingPromptRecovery? = nil
   @Published var queuedNextMeeting: RecordingMenuQueuedMeeting? = nil
   @Published var endPrompt: RecordingMenuEndPrompt? = nil
   @Published var recents: [SessionFolderEnumerator.Entry] = []

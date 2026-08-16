@@ -71,6 +71,14 @@ public struct SessionSettings: Sendable, Equatable, Codable {
     /// fallback) decides. Cloud (ElevenLabs) always auto-detects and
     /// ignores this.
     public var transcriptionLanguage: String?
+    /// Auto-record: a detected recording under this many seconds goes to
+    /// the macOS Trash when EndGuard ends it. Manual recordings and
+    /// explicit user stops are exempt. Plan: `plans/auto-record.md`.
+    public var autoDiscardThresholdSeconds: Int
+    /// Master switch for automatic capture. Off: detection candidates
+    /// stop at the passive Meeting detected state and recording is
+    /// manual only.
+    public var autoRecordEnabled: Bool
 
     public init(
         outputRoot: URL,
@@ -82,7 +90,9 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         launchAtLogin: Bool = false,
         showInMenuBar: Bool = true,
         startStopShortcut: KeyboardShortcutSetting = .defaultStartStop,
-        transcriptionLanguage: String? = nil
+        transcriptionLanguage: String? = nil,
+        autoDiscardThresholdSeconds: Int = 120,
+        autoRecordEnabled: Bool = true
     ) {
         self.outputRoot = outputRoot
         self.engineMode = engineMode
@@ -95,10 +105,12 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.showInMenuBar = showInMenuBar
         self.startStopShortcut = startStopShortcut
         self.transcriptionLanguage = transcriptionLanguage
+        self.autoDiscardThresholdSeconds = autoDiscardThresholdSeconds
+        self.autoRecordEnabled = autoRecordEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged, appearanceTheme, launchAtLogin, showInMenuBar, startStopShortcut, transcriptionLanguage
+        case outputRoot, engineMode, keepRawStreams, aecEnabled, privacyAcknowledged, appearanceTheme, launchAtLogin, showInMenuBar, startStopShortcut, transcriptionLanguage, autoDiscardThresholdSeconds, autoRecordEnabled
     }
 
     /// Decoder permits older blob formats that omit `privacyAcknowledged`
@@ -116,6 +128,8 @@ public struct SessionSettings: Sendable, Equatable, Codable {
         self.showInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showInMenuBar) ?? true
         self.startStopShortcut = try c.decodeIfPresent(KeyboardShortcutSetting.self, forKey: .startStopShortcut) ?? .defaultStartStop
         self.transcriptionLanguage = try c.decodeIfPresent(String.self, forKey: .transcriptionLanguage)
+        self.autoDiscardThresholdSeconds = try c.decodeIfPresent(Int.self, forKey: .autoDiscardThresholdSeconds) ?? 120
+        self.autoRecordEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoRecordEnabled) ?? true
     }
 }
 
@@ -198,10 +212,12 @@ public actor SettingsStore {
         public var showInMenuBar: Bool
         public var startStopShortcut: KeyboardShortcutSetting
         public var transcriptionLanguage: String?
+        public var autoDiscardThresholdSeconds: Int
+        public var autoRecordEnabled: Bool
 
         public init(
             outputRoot: URL,
-            engineMode: EngineMode = .cloud,
+            engineMode: EngineMode = .local,  // plans/auto-record.md: on-device is the auto-record default
             keepRawStreams: Bool = false,  // spec line 102
             aecEnabled: Bool = true,        // D2
             privacyAcknowledged: Bool = false,  // spec line 348
@@ -209,7 +225,9 @@ public actor SettingsStore {
             launchAtLogin: Bool = false,
             showInMenuBar: Bool = true,
             startStopShortcut: KeyboardShortcutSetting = .defaultStartStop,
-            transcriptionLanguage: String? = nil
+            transcriptionLanguage: String? = nil,
+            autoDiscardThresholdSeconds: Int = 120,  // plans/auto-record.md
+            autoRecordEnabled: Bool = true
         ) {
             self.outputRoot = outputRoot
             self.engineMode = engineMode
@@ -222,6 +240,8 @@ public actor SettingsStore {
             self.showInMenuBar = showInMenuBar
             self.startStopShortcut = startStopShortcut
             self.transcriptionLanguage = transcriptionLanguage
+            self.autoDiscardThresholdSeconds = autoDiscardThresholdSeconds
+            self.autoRecordEnabled = autoRecordEnabled
         }
     }
 
@@ -312,6 +332,18 @@ public actor SettingsStore {
         try? commit(current)
     }
 
+    public func setAutoDiscardThresholdSeconds(_ seconds: Int) {
+        var current = snapshot()
+        current.autoDiscardThresholdSeconds = seconds
+        try? commit(current)
+    }
+
+    public func setAutoRecordEnabled(_ on: Bool) {
+        var current = snapshot()
+        current.autoRecordEnabled = on
+        try? commit(current)
+    }
+
     /// Atomic multi-key commit. Phase η Settings UI calls this after
     /// the user clicks Save so the resulting on-disk state never
     /// contains a partial mix of old + new fields.
@@ -354,7 +386,9 @@ private extension SettingsStore.Defaults {
             launchAtLogin: launchAtLogin,
             showInMenuBar: showInMenuBar,
             startStopShortcut: startStopShortcut,
-            transcriptionLanguage: transcriptionLanguage
+            transcriptionLanguage: transcriptionLanguage,
+            autoDiscardThresholdSeconds: autoDiscardThresholdSeconds,
+            autoRecordEnabled: autoRecordEnabled
         )
     }
 }

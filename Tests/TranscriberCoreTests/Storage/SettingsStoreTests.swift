@@ -38,7 +38,7 @@ final class SettingsStoreTests: XCTestCase {
         )
         let snap = await store.snapshot()
         XCTAssertEqual(snap.outputRoot, root)
-        XCTAssertEqual(snap.engineMode, .cloud)
+        XCTAssertEqual(snap.engineMode, .local, "plans/auto-record.md: on-device default")
         XCTAssertEqual(snap.keepRawStreams, false, "spec line 102 default OFF")
         XCTAssertEqual(snap.aecEnabled, true, "D2 default ON")
         XCTAssertEqual(snap.privacyAcknowledged, false, "spec line 348: first launch must re-prompt")
@@ -47,6 +47,44 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(snap.showInMenuBar, true)
         XCTAssertEqual(snap.startStopShortcut, .defaultStartStop)
         XCTAssertNil(snap.transcriptionLanguage, "default language is Auto (nil)")
+        XCTAssertEqual(snap.autoDiscardThresholdSeconds, 120, "plans/auto-record.md default")
+        XCTAssertEqual(snap.autoRecordEnabled, true, "auto-record ships on by default")
+    }
+
+    func testBlobWithoutAutoRecordKeysDecodesWithDefaults() async throws {
+        // A blob written by a build before the auto-record fields must
+        // keep decoding, with the new fields rolled forward as defaults.
+        let suite = try makeSuite()
+        let root = tempDir()
+        let old = SessionSettings(
+            outputRoot: root,
+            engineMode: .cloud,
+            keepRawStreams: true,
+            aecEnabled: false,
+            privacyAcknowledged: true
+        )
+        var json = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(old)) as! [String: Any]
+        json.removeValue(forKey: "autoDiscardThresholdSeconds")
+        json.removeValue(forKey: "autoRecordEnabled")
+        let data = try JSONSerialization.data(withJSONObject: json)
+        suite.box.defaults.set(data, forKey: SettingsStore.Key.storage.rawValue)
+
+        let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: tempDir()))
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap.keepRawStreams, true, "stored fields survive, no whole-blob fallback")
+        XCTAssertEqual(snap.autoDiscardThresholdSeconds, 120)
+        XCTAssertEqual(snap.autoRecordEnabled, true)
+    }
+
+    func testAutoRecordSettersRoundTrip() async throws {
+        let suite = try makeSuite()
+        let store = SettingsStore(defaults: suite.box, fallback: .init(outputRoot: tempDir()))
+        await store.setAutoDiscardThresholdSeconds(300)
+        await store.setAutoRecordEnabled(false)
+        let snap = await store.snapshot()
+        XCTAssertEqual(snap.autoDiscardThresholdSeconds, 300)
+        XCTAssertEqual(snap.autoRecordEnabled, false)
     }
 
     func testTranscriptionLanguageIsRoundTrippedAndClearable() async throws {
