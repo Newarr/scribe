@@ -33,7 +33,7 @@ extension TrustState {
     public struct Inputs: Sendable, Equatable {
         public var status: SessionStatus
         public var setupNeedsAttention: Bool
-        public var detectionAwaitingAction: Bool
+        public var parkedDetection: Bool
         public var endPromptActive: Bool
         public var lastSavedAt: Date?
         public var lastFailureAt: Date?
@@ -45,7 +45,7 @@ extension TrustState {
         public init(
             status: SessionStatus,
             setupNeedsAttention: Bool,
-            detectionAwaitingAction: Bool,
+            parkedDetection: Bool,
             endPromptActive: Bool = false,
             lastSavedAt: Date? = nil,
             lastFailureAt: Date? = nil,
@@ -54,7 +54,7 @@ extension TrustState {
         ) {
             self.status = status
             self.setupNeedsAttention = setupNeedsAttention
-            self.detectionAwaitingAction = detectionAwaitingAction
+            self.parkedDetection = parkedDetection
             self.endPromptActive = endPromptActive
             self.lastSavedAt = lastSavedAt
             self.lastFailureAt = lastFailureAt
@@ -86,10 +86,11 @@ extension TrustState {
         //    should communicate that recording cannot proceed yet.
         if inputs.setupNeedsAttention { return .setupRequired }
 
-        // 3. A passive detection candidate is the next-strongest
-        //    signal: a meeting is live but not being recorded, so the
-        //    icon pulses to draw the eye.
-        if inputs.detectionAwaitingAction { return .detected }
+        // 3. A parked detection candidate is the next-strongest
+        //    signal: a meeting is live but not being recorded (auto-
+        //    record off, or a declined silent start), so the icon
+        //    pulses to draw the eye.
+        if inputs.parkedDetection { return .detected }
 
         // 4. A terminal failure outranks the transient saved flash because
         //    the user just tried to record and it failed — that needs

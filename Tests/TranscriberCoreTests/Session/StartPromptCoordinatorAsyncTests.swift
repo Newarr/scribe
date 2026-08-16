@@ -9,7 +9,6 @@ final class StartPromptCoordinatorAsyncTests: XCTestCase {
   func testStaleGenerationEndPromptActionsDoNotAffectCurrentSession() async {
     let callbacks = EndPromptCallbackProbe()
     let coordinator = PromptNotificationCoordinatorCore(
-      presentPrompt: { _ in .dismissed },
       postEndNotification: { _ in },
       authorizationProvider: { .authorized }
     )

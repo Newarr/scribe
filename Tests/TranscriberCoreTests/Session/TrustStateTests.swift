@@ -7,7 +7,7 @@ final class TrustStateTests: XCTestCase {
     private func inputs(
         status: SessionStatus = .idle,
         setupNeedsAttention: Bool = false,
-        detectionAwaitingAction: Bool = false,
+        parkedDetection: Bool = false,
         endPromptActive: Bool = false,
         lastSavedAt: Date? = nil,
         lastFailureAt: Date? = nil
@@ -15,7 +15,7 @@ final class TrustStateTests: XCTestCase {
         TrustState.Inputs(
             status: status,
             setupNeedsAttention: setupNeedsAttention,
-            detectionAwaitingAction: detectionAwaitingAction,
+            parkedDetection: parkedDetection,
             endPromptActive: endPromptActive,
             lastSavedAt: lastSavedAt,
             lastFailureAt: lastFailureAt,
@@ -30,8 +30,8 @@ final class TrustStateTests: XCTestCase {
         XCTAssertEqual(s, .recording)
     }
 
-    func testStoppingBeatsDetectionPrompt() {
-        let s = TrustState.resolve(inputs(status: .stopping, detectionAwaitingAction: true))
+    func testStoppingBeatsParkedDetection() {
+        let s = TrustState.resolve(inputs(status: .stopping, parkedDetection: true))
         XCTAssertEqual(s, .stopping)
     }
 
@@ -47,13 +47,13 @@ final class TrustStateTests: XCTestCase {
 
     // MARK: - Idle session falls through to flag layer
 
-    func testDetectionPromptShowsDetected() {
-        let s = TrustState.resolve(inputs(detectionAwaitingAction: true))
+    func testParkedDetectionShowsDetected() {
+        let s = TrustState.resolve(inputs(parkedDetection: true))
         XCTAssertEqual(s, .detected)
     }
 
     func testSetupBlockerBeatsDetectedPromptIcon() {
-        let s = TrustState.resolve(inputs(setupNeedsAttention: true, detectionAwaitingAction: true))
+        let s = TrustState.resolve(inputs(setupNeedsAttention: true, parkedDetection: true))
         XCTAssertEqual(s, .setupRequired)
     }
 

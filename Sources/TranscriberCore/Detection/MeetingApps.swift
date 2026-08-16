@@ -5,21 +5,37 @@ public struct MeetingApp: Sendable, Equatable, Hashable {
     public let displayName: String
     /// Native meeting apps are stronger signals than browsers — Zoom or
     /// Teams launching means a call is plausibly starting, while a
-    /// browser opening doesn't tell us anything (per-URL inspection is
-    /// out of scope for V1). Used by `ProcessWatcher` to skip
-    /// cold-start enumeration of browsers, which were generating false
-    /// positives because most users keep a browser open all day.
+    /// browser opening doesn't tell us anything on its own. Used by
+    /// `ProcessWatcher` to skip cold-start enumeration of browsers,
+    /// which were generating false positives because most users keep a
+    /// browser open all day.
     public let kind: Kind
+    /// How `BrowserTabInspector` reads this browser's active tab. The
+    /// dialect lives here, next to the allowlist entry, so a new
+    /// browser ID cannot land in the allowlist and silently take the
+    /// calendar-plus-mic fallback: whoever adds the entry picks the
+    /// dialect in the same line. Firefox exposes no active tab over
+    /// AppleScript and stays `.none`.
+    public let tabDialect: TabDialect
 
     public enum Kind: Sendable, Equatable, Hashable {
         case nativeMeetingApp
         case browser
     }
 
-    init(bundleID: String, displayName: String, kind: Kind) {
+    public enum TabDialect: Sendable, Equatable, Hashable {
+        /// Not scriptable (Firefox) or not a browser. The candidate can
+        /// only pass on calendar overlap plus sustained mic.
+        case none
+        case safari
+        case chromium
+    }
+
+    init(bundleID: String, displayName: String, kind: Kind, tabDialect: TabDialect = .none) {
         self.bundleID = bundleID
         self.displayName = displayName
         self.kind = kind
+        self.tabDialect = tabDialect
     }
 }
 
@@ -33,15 +49,16 @@ public enum MeetingApps {
         .init(bundleID: "com.microsoft.teams",               displayName: "Microsoft Teams (legacy)", kind: .nativeMeetingApp),
         .init(bundleID: "org.whispersystems.signal-desktop", displayName: "Signal",                   kind: .nativeMeetingApp),
         .init(bundleID: "com.apple.FaceTime",                 displayName: "FaceTime",                 kind: .nativeMeetingApp),
-        // Browsers (supported surfaces; per-URL tab inspection deferred, active-call evidence still required when probing can determine it)
-        .init(bundleID: "com.google.Chrome",                 displayName: "Chrome",   kind: .browser),
-        .init(bundleID: "com.apple.Safari",                  displayName: "Safari",   kind: .browser),
-        .init(bundleID: "company.thebrowser.Browser",        displayName: "Arc",      kind: .browser),
-        .init(bundleID: "com.microsoft.Edge",                displayName: "Edge",     kind: .browser),
-        .init(bundleID: "org.mozilla.firefox",               displayName: "Firefox",  kind: .browser),
-        .init(bundleID: "com.brave.Browser",                 displayName: "Brave",    kind: .browser),
-        .init(bundleID: "net.imput.helium",                  displayName: "Helium",   kind: .browser),
-        .init(bundleID: "im.helium.helium",                  displayName: "Helium",   kind: .browser),
+        // Browsers. The tab gate reads the active tab per dialect;
+        // an unreadable tab falls back to calendar plus sustained mic.
+        .init(bundleID: "com.google.Chrome",                 displayName: "Chrome",   kind: .browser, tabDialect: .chromium),
+        .init(bundleID: "com.apple.Safari",                  displayName: "Safari",   kind: .browser, tabDialect: .safari),
+        .init(bundleID: "company.thebrowser.Browser",        displayName: "Arc",      kind: .browser, tabDialect: .chromium),
+        .init(bundleID: "com.microsoft.Edge",                displayName: "Edge",     kind: .browser, tabDialect: .chromium),
+        .init(bundleID: "org.mozilla.firefox",               displayName: "Firefox",  kind: .browser, tabDialect: .none),
+        .init(bundleID: "com.brave.Browser",                 displayName: "Brave",    kind: .browser, tabDialect: .chromium),
+        .init(bundleID: "net.imput.helium",                  displayName: "Helium",   kind: .browser, tabDialect: .chromium),
+        .init(bundleID: "im.helium.helium",                  displayName: "Helium",   kind: .browser, tabDialect: .chromium),
     ]
 
     public static func appFor(bundleID: String) -> MeetingApp? {

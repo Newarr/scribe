@@ -7,6 +7,9 @@ final class RecordingMenuModel: ObservableObject {
 
   @Published var status: SessionStatus
   @Published var setupNeedsAttention: Bool = false
+  /// Whether detected calls record automatically. Selects the idle
+  /// popover copy and mirrors Settings.
+  @Published var autoRecordEnabled: Bool = true
   @Published var queuedNextMeeting: RecordingMenuQueuedMeeting? = nil
   @Published var endPrompt: RecordingMenuEndPrompt? = nil
   @Published var recents: [SessionFolderEnumerator.Entry] = []

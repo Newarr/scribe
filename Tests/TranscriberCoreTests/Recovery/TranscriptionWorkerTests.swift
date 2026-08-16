@@ -654,6 +654,33 @@ final class TranscriptionWorkerTests: XCTestCase {
       "the worker must not write any transcript for a discarded session")
   }
 
+  /// The live case: the folder is trashed WHILE the engine call is in
+  /// flight. The post-await vanish gate must resolve cancelled instead
+  /// of writing the successful transcript.
+  func testDiscardDuringInFlightEngineCallResolvesCancelled() async throws {
+    try FileManager.default.createDirectory(at: dir().url, withIntermediateDirectories: true)
+    // Pre-publish canonical audio so the worker reaches the engine call
+    // without invoking AudioFinalizer on fixture files.
+    try Data("audio".utf8).write(to: dir().audioFinal)
+    let gate = EngineGate()
+    let engine = GatedEngine(gate: gate, response: makeResponse())
+    let worker = makeWorker(engine: engine)
+    let runTask = Task { await worker.run() }
+
+    // Wait until the engine call is suspended mid-transcribe.
+    await gate.waitForTranscribeStarted()
+    try FileManager.default.removeItem(at: dir().url)
+    await gate.release()
+    let final = await runTask.value
+    XCTAssertEqual(final, .cancelled, "a discard during the engine call must resolve as cancelled")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: dir().url.path),
+      "the worker must not recreate a discarded session folder")
+    XCTAssertNil(
+      TranscriptFrontmatterReader.read(at: dir().transcript),
+      "no transcript may be written for a session discarded mid-flight")
+  }
+
   /// CDX-S7-CHAL.P2.2: when resuming a `retrying` session whose attempt count
   /// is already at the policy max, the worker must NOT grant a fresh budget.
   /// One transient failure here should write `failed` and never sleep.
@@ -776,19 +803,26 @@ final class TranscriptionWorkerTests: XCTestCase {
 
   private func makeWorker(
     engine: TranscriptionEngine,
-    directory session: SessionDirectory,
-    context: TranscriptContext,
-    request: EngineRequest,
+    directory session: SessionDirectory? = nil,
+    context: TranscriptContext? = nil,
+    request: EngineRequest? = nil,
     sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { _ in /* skip */ },
     keepRawStreams: Bool = false,
     retryTerminalFailures: Bool = false
   ) -> TranscriptionWorker {
+    let session = session ?? dir()
     try? FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
     return TranscriptionWorker(
       directory: session,
-      context: context,
+      context: context ?? makeContext(),
       engine: engine,
-      request: request,
+      request: request
+        ?? EngineRequest(
+          audioURL: root.appendingPathComponent("multichannel.wav"),
+          mode: .multichannel,
+          languageCode: nil,
+          keyterms: []
+        ),
       speakerMapping: [:],
       policy: RetryPolicy(delays: [0.001, 0.001, 0.001]),
       sleep: sleep,
@@ -1132,4 +1166,53 @@ actor FakeEngine: TranscriptionEngine {
   }
 
   enum FakeError: Error { case noMoreResponses }
+}
+
+/// Suspends inside `transcribe` until released, so a test can trash the
+/// session folder while the engine call is genuinely in flight.
+actor EngineGate {
+  private var started = false
+  private var released = false
+  private var waiting: [CheckedContinuation<Void, Never>] = []
+
+  func markStarted() {
+    started = true
+  }
+
+  func waitForTranscribeStarted() async {
+    while !started {
+      try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+  }
+
+  func waitUntilReleased() async {
+    if released { return }
+    await withCheckedContinuation { continuation in
+      waiting.append(continuation)
+    }
+  }
+
+  func release() {
+    released = true
+    for continuation in waiting {
+      continuation.resume()
+    }
+    waiting.removeAll()
+  }
+}
+
+actor GatedEngine: TranscriptionEngine {
+  private let gate: EngineGate
+  private let response: EngineResponse
+
+  init(gate: EngineGate, response: EngineResponse) {
+    self.gate = gate
+    self.response = response
+  }
+
+  func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
+    await gate.markStarted()
+    await gate.waitUntilReleased()
+    return response
+  }
 }

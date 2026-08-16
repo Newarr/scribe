@@ -112,7 +112,9 @@ struct RecordingPopoverContent: View {
         Text(
           model.setupNeedsAttention
             ? "Open setup to finish permissions. The setup window will reopen even if you closed it."
-            : "Scribe records detected calls automatically. You can also start now."
+            : (model.autoRecordEnabled
+              ? "Scribe records detected calls automatically. You can also start now."
+              : "Auto-record is off. Detected meetings wait here; record them manually.")
         )
         .font(DS.Font.bodySmall)
         .foregroundStyle(palette.secondaryText)

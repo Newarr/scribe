@@ -120,7 +120,7 @@ extension AppDelegate {
       guard self.activeEndPromptID == promptID, self.activeEndPromptGeneration == generation else {
         return
       }
-      await self.startPromptCoordinator.postEndPromptNotificationIfPossible(
+      await self.endPromptCoordinator.postEndPromptNotificationIfPossible(
         promptID: promptID,
         generation: generation,
         reason: reason,
@@ -219,7 +219,7 @@ extension AppDelegate {
   @MainActor
   private func clearEndGuardPromptSurface() {
     if let promptID = activeEndPromptID {
-      startPromptCoordinator.clearEndPromptNotification(promptID: promptID)
+      endPromptCoordinator.clearEndPromptNotification(promptID: promptID)
     }
     activeEndPromptGeneration = nil
     activeEndPromptID = nil

@@ -3,7 +3,7 @@ import TranscriberCore
 
 extension AppDelegate {
   /// Phase η P0.2 helper: kicks the orphan-session supervisor scan in
-  /// the background. Tracked in `inflightTasks` so applicationShouldTerminate's
+  /// the background. Tracked in `inflightSessions` so applicationShouldTerminate's
   /// drain loop will await it. Must only be called after the user has
   /// acknowledged the privacy notice (cloud-mode uploads start as soon
   /// as the supervisor dispatches a worker).
@@ -45,7 +45,7 @@ extension AppDelegate {
       }
       await self?.removeTask(id: resumeId)
     }
-    inflightTasks[resumeId] = resumeTask
+    inflightSessions[resumeId] = (task: resumeTask, directory: nil)
   }
 
   @MainActor

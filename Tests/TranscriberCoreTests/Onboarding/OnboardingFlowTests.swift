@@ -46,7 +46,7 @@ final class OnboardingFlowTests: XCTestCase {
 
         // Auto-record cutover: detection starts use the silent path with
         // the manual interactive default untouched.
-        XCTAssertTrue(appDelegate.contains("origin: .detected, presentation: .silent"), "detection candidates must auto-start through the silent path")
+        XCTAssertTrue(appDelegate.contains("origin: .detected"), "detection candidates must auto-start through the silent origin")
     }
 
     func testRequiredOrderAndSkipSemanticsMatchSpec() {

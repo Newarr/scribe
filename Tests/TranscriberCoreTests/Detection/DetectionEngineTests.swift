@@ -28,34 +28,6 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertNil(result, "callback must not fire if app quit during dwell")
     }
 
-    func testLaunchWhileSuppressedDoesNotFire() async throws {
-        let captured = AppCapture()
-        let skip = SkipState()
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
-        await skip.suppress(zoom.bundleID, for: 60)
-        let engine = DetectionEngine(dwellTime: 30, skipState: skip, sleep: immediateSleep) { app in
-            await captured.set(app)
-        }
-        await engine.handleLaunch(of: zoom)
-        await Task.yield()
-        let result = await captured.value
-        XCTAssertNil(result, "suppressed apps must skip the dwell entirely")
-    }
-
-    func testSuppressDuringDwellCancelsCallbackWithoutWallClockSleep() async throws {
-        let captured = AppCapture()
-        let engine = DetectionEngine(dwellTime: 30, sleep: cancellableNeverSleep) { app in
-            await captured.set(app)
-        }
-        let zoom = MeetingApp(bundleID: "us.zoom.xos", displayName: "Zoom", kind: .nativeMeetingApp)
-        await engine.handleLaunch(of: zoom)
-        await Task.yield()
-        await engine.suppress(zoom)
-        await Task.yield()
-        let result = await captured.value
-        XCTAssertNil(result, "suppress() during dwell must cancel the in-flight callback")
-    }
-
     func testInactiveProbeSuppressesCandidate() async throws {
         let captured = AppCapture()
         let engine = DetectionEngine(
@@ -211,7 +183,7 @@ final class DetectionEngineTests: XCTestCase {
         let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
         let engine = clockedEngine(
             probe: ConstantProbe(value: false),
-            tabInspector: ConstantTabInspector(value: true)
+            tabInspector: ConstantTabInspector(value: .meeting)
         ) { candidate in
             await captured.set(candidate.app)
         }
@@ -226,7 +198,7 @@ final class DetectionEngineTests: XCTestCase {
         let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
         let engine = clockedEngine(
             probe: ConstantProbe(value: true),
-            tabInspector: ConstantTabInspector(value: false),
+            tabInspector: ConstantTabInspector(value: .notMeeting),
             calendarOverlaps: false
         ) { candidate in
             await captured.set(candidate.app)
@@ -238,6 +210,27 @@ final class DetectionEngineTests: XCTestCase {
         XCTAssertNil(result, "an inspected non-meeting tab must not record even with the mic held (no calendar, no sustained-mic credit)")
     }
 
+    func testBrowserInspectedNonMeetingTabNeverFiresEvenWithCalendarAndSustainedMic() async throws {
+        // The hole this pins at the engine level: a YouTube tab that was
+        // successfully inspected must not record, even with a calendar
+        // event overlapping and a 30s+ sustained-mic streak. The
+        // fallback exists only for tabs that could not be read.
+        let captured = AppCapture()
+        let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
+        let engine = clockedEngine(
+            probe: SequenceProbe(values: [true, true, true, true, true, true, true, true]),
+            tabInspector: ConstantTabInspector(value: .notMeeting),
+            calendarOverlaps: true
+        ) { candidate in
+            await captured.set(candidate.app)
+        }
+
+        await engine.reevaluate(chrome)
+        for _ in 0..<2_000 { await Task.yield() }
+        let result = await captured.value
+        XCTAssertNil(result, "an inspected non-meeting tab never takes the calendar-plus-mic fallback")
+    }
+
     func testBrowserUninspectableFiresOnCalendarPlusSustainedMic() async throws {
         let captured = AppCapture()
         let firefox = MeetingApp(bundleID: "org.mozilla.firefox", displayName: "Firefox", kind: .browser)
@@ -245,7 +238,7 @@ final class DetectionEngineTests: XCTestCase {
         // requirement; tab inspection unavailable (nil).
         let engine = clockedEngine(
             probe: SequenceProbe(values: [true, true, true, true, true, true]),
-            tabInspector: ConstantTabInspector(value: nil),
+            tabInspector: ConstantTabInspector(value: .unreadable),
             calendarOverlaps: true
         ) { candidate in
             await captured.set(candidate.app)
@@ -263,7 +256,7 @@ final class DetectionEngineTests: XCTestCase {
         // never reaches 30s, so the fallback must never fire.
         let engine = clockedEngine(
             probe: SequenceProbe(values: [true, true, true, true, true, nil, true, true, true, true, true]),
-            tabInspector: ConstantTabInspector(value: nil),
+            tabInspector: ConstantTabInspector(value: .unreadable),
             calendarOverlaps: true
         ) { candidate in
             await captured.set(candidate.app)
@@ -278,7 +271,7 @@ final class DetectionEngineTests: XCTestCase {
     func testStaleBrowserCandidateWithUnreadableTabIsNotCleared() async throws {
         let ended = CandidateSequenceCapture()
         let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
-        let tabInspector = SequenceTabInspector(values: [true, nil])
+        let tabInspector = SequenceTabInspector(values: [.meeting, .unreadable])
         let engine = clockedEngine(
             probe: ConstantProbe(value: false),
             tabInspector: tabInspector
@@ -302,7 +295,7 @@ final class DetectionEngineTests: XCTestCase {
         let chrome = MeetingApp(bundleID: "com.google.Chrome", displayName: "Chrome", kind: .browser)
         let engine = clockedEngine(
             probe: ConstantProbe(value: false),
-            tabInspector: SequenceTabInspector(values: [true, false])
+            tabInspector: SequenceTabInspector(values: [.meeting, .notMeeting])
         ) { candidate in
             await ended.append(candidate)
         }
@@ -662,19 +655,19 @@ struct ConstantProbe: AudioActivityProbe {
 }
 
 struct ConstantTabInspector: BrowserTabInspecting {
-    let value: Bool?
-    func activeTabMatchesMeeting(bundleID: String) async -> Bool? { value }
+    let value: TabInspectionResult
+    func inspectActiveTab(bundleID: String) async -> TabInspectionResult { value }
 }
 
 actor SequenceTabInspector: BrowserTabInspecting {
-    private var values: [Bool?]
+    private var values: [TabInspectionResult]
 
-    init(values: [Bool?]) {
+    init(values: [TabInspectionResult]) {
         self.values = values
     }
 
-    func activeTabMatchesMeeting(bundleID: String) async -> Bool? {
-        guard !values.isEmpty else { return nil }
+    func inspectActiveTab(bundleID: String) async -> TabInspectionResult {
+        guard !values.isEmpty else { return .unreadable }
         return values.removeFirst()
     }
 }

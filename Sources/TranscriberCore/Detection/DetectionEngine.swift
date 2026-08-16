@@ -15,7 +15,7 @@ public struct DetectionCandidate: Sendable, Equatable, Hashable {
 }
 
 /// Wires `ProcessWatcher` and running-app observations through a per-trigger
-/// dwell window, app-level suppression, audio activity probing, duplicate
+/// dwell window, audio activity probing, tab inspection, duplicate
 /// coalescing, and stale-candidate cleanup.
 ///
 /// Policy invariants:
@@ -23,17 +23,16 @@ public struct DetectionCandidate: Sendable, Equatable, Hashable {
 ///     need the input-device probe positive or indeterminate. Browsers
 ///     need a meeting-domain tab match, or (when the tab cannot be read)
 ///     a calendar overlap plus sustained microphone activity.
-///   - A transient inactive probe result does not permanently black-hole a
-///     plausible app; observation retries until the observation window expires.
+///   - A transient negative verdict does not permanently black-hole a
+///     plausible app; observation retries until the observation window
+///     expires.
 ///   - Repeated observations for the same ongoing app/call/calendar occurrence
-///     coalesce into one user-facing candidate until the app quits or a later
-///     inactive probe clears the stale active candidate.
+///     coalesce into one candidate until the app quits or a later
+///     definitive negative clears the stale active candidate.
 ///   - Calendar-enriched candidates key by event ID plus occurrence start when
 ///     available; app/browser-only candidates fall back to an app signature.
-///   - App-level suppression is delegated to in-memory `SkipState` and cancels
-///     in-flight/active recognition for that app only.
-///   - Every gate decision flows through `AutoRecordPolicy.shouldRecord`:
-///     the engine owns evidence collection, the policy owns the rule.
+///   - Both gates (fire and stale-clear) flow through `AutoRecordPolicy`:
+///     the engine owns evidence collection, the policy owns every rule.
 public actor DetectionEngine {
     public typealias TriggerIdentityProvider = @Sendable (MeetingApp) async -> String
     public typealias OnCandidate = @Sendable (DetectionCandidate) async -> Void
@@ -53,7 +52,6 @@ public actor DetectionEngine {
     private let dwellTime: TimeInterval
     private let retryInterval: TimeInterval
     private let observationWindow: TimeInterval
-    private let skipState: SkipState
     private let probe: AudioActivityProbe
     private let tabInspector: BrowserTabInspecting?
     private let calendarOverlapsNow: CalendarOverlapProvider
@@ -70,7 +68,6 @@ public actor DetectionEngine {
         dwellTime: TimeInterval = 30,
         retryInterval: TimeInterval = 5,
         observationWindow: TimeInterval = 2 * 60,
-        skipState: SkipState = SkipState(),
         probe: AudioActivityProbe = UnknownAudioActivityProbe(),
         tabInspector: BrowserTabInspecting? = nil,
         calendarOverlapsNow: @escaping CalendarOverlapProvider = { _ in false },
@@ -83,7 +80,6 @@ public actor DetectionEngine {
         self.dwellTime = dwellTime
         self.retryInterval = retryInterval
         self.observationWindow = observationWindow
-        self.skipState = skipState
         self.probe = probe
         self.tabInspector = tabInspector
         self.calendarOverlapsNow = calendarOverlapsNow
@@ -105,8 +101,6 @@ public actor DetectionEngine {
     /// safe to call from polling, launch, calendar refresh, wake, or audio-change
     /// signals: duplicate observations coalesce by trigger identity.
     public func reevaluate(_ app: MeetingApp) async {
-        if await skipState.isSuppressed(app.bundleID, now: now()) { return }
-
         let identity = await triggerIdentity(app)
         let candidate = DetectionCandidate(app: app, triggerIdentity: identity)
         if activeCandidates[identity] != nil {
@@ -148,20 +142,6 @@ public actor DetectionEngine {
         }
     }
 
-    /// Suppresses `app` for `duration` seconds and cancels any in-flight or
-    /// coalesced active candidate for that app. Defaults to 30 minutes per spec.
-    public func suppress(_ app: MeetingApp, for duration: TimeInterval = 30 * 60) async {
-        await skipState.suppress(app.bundleID, for: duration, now: now())
-        for (identity, observation) in pendingObservations where observation.candidate.app.bundleID == app.bundleID {
-            pendingTasks[identity]?.cancel()
-            pendingTasks.removeValue(forKey: identity)
-            pendingObservations.removeValue(forKey: identity)
-        }
-        for identity in activeCandidates.keys where activeCandidates[identity]?.app.bundleID == app.bundleID {
-            activeCandidates.removeValue(forKey: identity)
-        }
-    }
-
     private func startObservation(for candidate: DetectionCandidate) {
         let identity = candidate.triggerIdentity
         let bundleID = candidate.app.bundleID
@@ -174,11 +154,6 @@ public actor DetectionEngine {
             await sleep(dwell)
             while !Task.isCancelled {
                 guard let self else { return }
-                if await self.skipState.isSuppressed(bundleID, now: self.now()) {
-                    await self.finishObservation(identity: identity)
-                    return
-                }
-
                 let shouldContinue = await self.evaluatePendingObservation(identity: identity, observationWindow: window)
                 guard shouldContinue else { return }
                 await sleep(retry)
@@ -188,8 +163,8 @@ public actor DetectionEngine {
     }
 
     /// Returns true when the observation should retry after `retryInterval`.
-    /// Builds `AutoRecordPolicy.Evidence` per sample and fires only when
-    /// `shouldRecord` passes.
+    /// Builds `AutoRecordPolicy.Evidence` per sample; fire and stale-clear
+    /// both consult the policy.
     private func evaluatePendingObservation(identity: String, observationWindow: TimeInterval) async -> Bool {
         guard let observation = pendingObservations[identity] else { return false }
         let probeIsActive = await probe.isActive(bundleID: observation.candidate.app.bundleID)
@@ -206,13 +181,7 @@ public actor DetectionEngine {
         }
         pendingObservations[identity] = updated
 
-        let tabMatches: Bool?
-        switch observation.candidate.kind {
-        case .nativeMeetingApp:
-            tabMatches = nil
-        case .browser:
-            tabMatches = await tabInspector?.activeTabMatchesMeeting(bundleID: observation.candidate.bundleID)
-        }
+        let tabResult = await inspectTab(for: observation.candidate)
 
         if Task.isCancelled {
             finishObservation(identity: identity)
@@ -222,7 +191,7 @@ public actor DetectionEngine {
         let evidence = AutoRecordPolicy.Evidence(
             kind: observation.candidate.kind,
             probeIsActive: probeIsActive,
-            browserTabMatchesMeeting: tabMatches,
+            browserTab: tabResult,
             calendarOverlapsNow: await calendarOverlapsNow(now()),
             sustainedMicSeconds: updated.sustainedMicSeconds
         )
@@ -235,22 +204,6 @@ public actor DetectionEngine {
             return false
         }
         return true
-    }
-
-    /// Definitive "this app is not in a meeting" verdict used to clear
-    /// stale active candidates. For browsers, an unreadable tab is not
-    /// proof of absence: require both a definitive inactive probe AND an
-    /// inspected non-meeting tab.
-    private func definitelyNotInAMeeting(_ candidate: DetectionCandidate) async -> Bool {
-        let isActive = await probe.isActive(bundleID: candidate.bundleID)
-        switch candidate.kind {
-        case .nativeMeetingApp:
-            return isActive == false
-        case .browser:
-            guard isActive == false else { return false }
-            let tabMatches = await tabInspector?.activeTabMatchesMeeting(bundleID: candidate.bundleID)
-            return tabMatches == false
-        }
     }
 
     /// Returns true when stale active state was cleared and the current
@@ -266,7 +219,7 @@ public actor DetectionEngine {
 
     /// A calendar-scoped candidate can become app-scoped after the calendar
     /// event ends. If the app is now inactive, clear the old active candidates
-    /// so the shell can show the stop prompt for the recording.
+    /// so the shell can stop the recording for the ended call.
     private func clearEndedCandidatesForSameBundle(as candidate: DetectionCandidate) async {
         let stale = activeCandidates.values.filter {
             $0.app.bundleID == candidate.app.bundleID && $0.triggerIdentity != candidate.triggerIdentity
@@ -277,6 +230,23 @@ public actor DetectionEngine {
             activeCandidates.removeValue(forKey: ended.triggerIdentity)
             await onCandidateEnded?(ended)
         }
+    }
+
+    private func definitelyNotInAMeeting(_ candidate: DetectionCandidate) async -> Bool {
+        let evidence = AutoRecordPolicy.Evidence(
+            kind: candidate.kind,
+            probeIsActive: await probe.isActive(bundleID: candidate.bundleID),
+            browserTab: await inspectTab(for: candidate),
+            calendarOverlapsNow: false,
+            sustainedMicSeconds: 0
+        )
+        return AutoRecordPolicy.isDefinitelyNotInAMeeting(evidence)
+    }
+
+    private func inspectTab(for candidate: DetectionCandidate) async -> TabInspectionResult? {
+        guard candidate.kind == .browser else { return nil }
+        return await tabInspector?.inspectActiveTab(bundleID: candidate.bundleID)
+            ?? .unreadable
     }
 
     private func fireCandidate(_ candidate: DetectionCandidate) async {

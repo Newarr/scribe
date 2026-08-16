@@ -8,20 +8,13 @@ extension AppDelegate {
     case started
     case alreadyBusy
     case failed(reason: String)
-
-    var isStarted: Bool { self == .started }
   }
 
-  enum StartPresentation {
-    /// User clicked something (Record now, hotkey, menu). Failure paths
-    /// keep today's behavior: blocking low-disk alert, consent sheet,
-    /// setup popover / onboarding window.
-    case interactive
-    /// Detection-driven start. Same preflight, zero windows: failures
-    /// return typed and surface only through the Setup Required trust
-    /// state and lifecycle logs.
-    case silent
-  }
+  /// The staged start: the detection candidate (and its calendar event)
+  /// behind the next start, whether that start is an auto-record or a
+  /// manual Record Now while a candidate is parked. One value, so the
+  /// parked state can never disagree with itself.
+  typealias StagedStart = (candidate: DetectionCandidate, event: CalendarEvent?)
 
   @MainActor
   private func presentLowDiskAlert(freeBytes: Int64, outputRoot: URL) {
@@ -55,7 +48,7 @@ extension AppDelegate {
   func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async {
     _ = await performStart(
       origin: .manual,
-      presentation: .interactive,
+      staged: parkedCandidate,
       allowPendingPrivacyAcknowledgementForOnboardingTest:
         allowPendingPrivacyAcknowledgementForOnboardingTest
     )
@@ -63,14 +56,18 @@ extension AppDelegate {
 
   /// Single start path for manual and detection-driven starts. The
   /// preflight (privacy gate, disk space, permission audit) is identical
-  /// for both; only the failure presentation differs.
+  /// for both; only the failure presentation differs, and that is
+  /// derived from the origin: manual starts keep today's windows
+  /// (low-disk alert, consent sheet, setup popover), detected starts
+  /// fail typed and surface only through the Setup Required trust
+  /// state and lifecycle logs.
   @MainActor
   func performStart(
     origin: AutoRecordPolicy.SessionOrigin,
-    presentation: StartPresentation,
+    staged: StagedStart?,
     allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false
   ) async -> StartOutcome {
-    let interactive = presentation == .interactive
+    let interactive = origin == .manual
     // Codex P2 fix: claim .starting before any await so concurrent
     // detection candidates (or a menu Record + a candidate firing
     // simultaneously) can't pass the handleDetectionCandidate guard
@@ -94,7 +91,7 @@ extension AppDelegate {
     guard snapshot.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest
     else {
       Log.lifecycle.info(
-        "startRecording blocked: privacy acknowledgement pending (\(presentation == .silent ? "silent" : "interactive", privacy: .public))")
+        "startRecording blocked: privacy acknowledgement pending (\(interactive ? "interactive" : "silent", privacy: .public))")
       if interactive {
         presentPrivacyAcknowledgementIfNeeded()
       }
@@ -128,7 +125,7 @@ extension AppDelegate {
       return .failed(reason: "low disk")
     }
 
-    guard await handleStartPreflightResult(report, presentation: presentation) else {
+    guard await handleStartPreflightResult(report, interactive: interactive) else {
       return .failed(reason: "preflight denied")
     }
 
@@ -137,14 +134,14 @@ extension AppDelegate {
       let dir = try SessionDirectory.create(under: snapshot.outputRoot, id: id)
       let sessionEngineMode = snapshot.engineMode
       let session = try makeCaptureSession(directory: dir, engineMode: sessionEngineMode)
-      installStartingSession(session, directory: dir, engineMode: sessionEngineMode, origin: origin)
+      installStartingSession(
+        session, directory: dir, engineMode: sessionEngineMode, origin: origin, staged: staged)
 
-      // Slice 6: prefer the watcher cache (already populated, no
-      // EventKit round-trip on the start path). Fall back to the
-      // direct lookup if the cache hasn't been refreshed yet.
-      let stagedEvent = pendingStartEvent
-      let cachedEvent = stagedEvent == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
-      let event = stagedEvent ?? cachedEvent ?? calendar.eventOverlapping(Date())
+      // Slice 6: prefer the staged event, then the watcher cache
+      // (already populated, no EventKit round-trip on the start path),
+      // then the direct lookup.
+      let cachedEvent = staged?.event == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
+      let event = staged?.event ?? cachedEvent ?? calendar.eventOverlapping(Date())
       self.currentCalendarEvent = event
       Log.calendar.info(
         "Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)"
@@ -161,7 +158,7 @@ extension AppDelegate {
 
   @MainActor
   private func handleStartPreflightResult(
-    _ report: PreflightReport, presentation: StartPresentation
+    _ report: PreflightReport, interactive: Bool
   ) async -> Bool {
     switch RecordRequestGate().verdict(from: report) {
     case .deny(let reasons):
@@ -184,7 +181,7 @@ extension AppDelegate {
       // The silent path never opens a window; the Setup Required trust
       // state is the only surface. The interactive path keeps the
       // polished blockers UI.
-      if presentation == .interactive {
+      if interactive {
         // Permission-only blockers → polished onboarding window;
         // engine/output blockers stay on the popover path.
         if Self.allBlockersArePermissions(report) {
@@ -237,16 +234,19 @@ extension AppDelegate {
 
   @MainActor
   private func installStartingSession(
-    _ session: CaptureSession, directory: SessionDirectory, engineMode: EngineMode,
-    origin: AutoRecordPolicy.SessionOrigin
+    _ session: CaptureSession,
+    directory: SessionDirectory,
+    engineMode: EngineMode,
+    origin: AutoRecordPolicy.SessionOrigin,
+    staged: StagedStart?
   ) {
     self.session = session
     currentSessionDirectory = directory
     currentSessionStartedAt = Date()
     currentSessionEngineMode = engineMode
     currentSessionOrigin = origin
-    currentRecordingTriggerIdentity = pendingStartCandidate?.triggerIdentity
-    currentRecordingCandidate = pendingStartCandidate
+    currentRecordingTriggerIdentity = staged?.candidate.triggerIdentity
+    currentRecordingCandidate = staged?.candidate
     menu?.sessionEngineMode = engineMode
     currentDiagnosticsLiveLevels = nil
   }
@@ -264,9 +264,9 @@ extension AppDelegate {
   @MainActor
   private func finishSuccessfulStart(directory: SessionDirectory, event: CalendarEvent?) async {
     status = .recording
-    pendingStartCandidate = nil
-    pendingStartEvent = nil
-    detectionAwaitingAction = false
+    // The staged candidate now belongs to the recording; the parked
+    // hold is consumed either way (auto-start or manual attach).
+    parkedCandidate = nil
     await startEndGuard(startedAt: currentSessionStartedAt ?? Date())
     // Wire the popover's live trust-surface readouts so the user sees
     // a ticking timer and the matched meeting title the moment they
@@ -280,15 +280,13 @@ extension AppDelegate {
     applyTrustIcon()
   }
 
+  /// Clears every piece of live-session state. Used by the stop path
+  /// and the failed-start path so both leave the app well-defined.
+  /// Does not touch the parked candidate: a failed start restores it
+  /// (the meeting is still live) and only the ended-candidate signal
+  /// clears it.
   @MainActor
-  private func handleStartFailure(_ error: Error) {
-    Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
-    // Codex rc2-audit STATE-3: a failed start would leave
-    // self.session / currentSessionDirectory / currentSessionStartedAt
-    // populated. A subsequent Stop or Quit would then write a
-    // pending transcript for a never-started session. Clear all
-    // session state on the catch path so the app is well-defined.
-    status = .failed
+  private func clearLiveSessionState() {
     session = nil
     currentSessionDirectory = nil
     currentSessionStartedAt = nil
@@ -298,9 +296,19 @@ extension AppDelegate {
     currentRecordingTriggerIdentity = nil
     currentRecordingCandidate = nil
     currentSessionOrigin = .manual
-    pendingStartCandidate = nil
-    pendingStartEvent = nil
     stopElapsedTickTimer()
+  }
+
+  @MainActor
+  private func handleStartFailure(_ error: Error) {
+    Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
+    // Codex rc2-audit STATE-3: a failed start would leave
+    // self.session / currentSessionDirectory / currentSessionStartedAt
+    // populated. A subsequent Stop or Quit would then write a
+    // pending transcript for a never-started session. Clear all
+    // session state on the catch path so the app is well-defined.
+    status = .failed
+    clearLiveSessionState()
     menu?.outcomeFolderName = nil
     menu?.outcomeFolderURL = nil
     menu?.sessionEngineMode = .cloud
@@ -432,18 +440,8 @@ extension AppDelegate {
       Log.lifecycle.error("Stop failed: \(String(describing: error), privacy: .public)")
       self.status = .failed
     }
-    self.session = nil
-    self.currentSessionDirectory = nil
-    self.currentSessionStartedAt = nil
-    self.currentCalendarEvent = nil
-    self.currentSessionEngineMode = nil
-    self.currentDiagnosticsLiveLevels = nil
-    self.currentRecordingTriggerIdentity = nil
-    self.currentRecordingCandidate = nil
-    self.currentSessionOrigin = .manual
-    self.pendingStartCandidate = nil
-    self.pendingStartEvent = nil
-    stopElapsedTickTimer()
+    clearLiveSessionState()
+    parkedCandidate = nil
     menu?.outcomeFolderName = dir.url.lastPathComponent
     menu?.outcomeFolderURL = dir.url
     menu?.sessionEngineMode = sessionEngineMode
@@ -469,6 +467,7 @@ extension AppDelegate {
         candidate: recordingCandidate,
         origin: origin,
         started: started,
+        endedAt: endedAt,
         event: event,
         engineMode: sessionEngineMode,
         keepRawStreams: snap.keepRawStreams,
@@ -476,16 +475,42 @@ extension AppDelegate {
       return
     }
 
+    keepStoppedSession(
+      dir: dir,
+      started: started,
+      endedAt: endedAt,
+      event: event,
+      origin: origin,
+      engineMode: sessionEngineMode,
+      keepRawStreams: snap.keepRawStreams,
+      transcriptionLanguage: snap.transcriptionLanguage,
+      durationSeconds: Int(durationSeconds))
+  }
+
+  /// The keep tail: pending transcript, worker dispatch, then queued-
+  /// candidate re-evaluation. Shared by the normal stop and the
+  /// failed-discard fallback so both paths stay identical.
+  @MainActor
+  private func keepStoppedSession(
+    dir: SessionDirectory,
+    started: Date,
+    endedAt: Date,
+    event: CalendarEvent?,
+    origin: AutoRecordPolicy.SessionOrigin,
+    engineMode: EngineMode,
+    keepRawStreams: Bool,
+    transcriptionLanguage: String?,
+    durationSeconds: Int
+  ) {
     let context = Self.makeContext(
-      dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: sessionEngineMode)
+      dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: engineMode)
     do {
       try TranscriptWriter.writePending(at: dir.transcript, context: context)
     } catch {
       Log.engine.error(
         "Failed to write pending transcript: \(String(describing: error), privacy: .public)")
     }
-
-    // Source-order guard: worker creation below precedes the queue
+    // Source-order guard: worker dispatch below precedes the queue
     // re-evaluation so the stopped session has a durable worker path
     // before a queued candidate can start a new recording.
     dispatchWorker(
@@ -493,25 +518,25 @@ extension AppDelegate {
       context: context,
       event: event,
       origin: origin,
-      keepRawStreams: snap.keepRawStreams,
-      engineMode: sessionEngineMode,
-      transcriptionLanguage: snap.transcriptionLanguage,
-      durationSeconds: Int(durationSeconds)
-    )
+      keepRawStreams: keepRawStreams,
+      engineMode: engineMode,
+      transcriptionLanguage: transcriptionLanguage,
+      durationSeconds: durationSeconds)
     reevaluateQueuedDetectionCandidateAfterStop()
   }
 
   /// Shared tail for every discard: trash the folder, release the
   /// detection candidate so a quiet-start call can re-fire, re-evaluate
   /// a queued candidate, and settle to idle with no notification. A
-  /// failed trash keeps the session untouched (never a `failed`
-  /// transcript for a discard problem) and transcribes it instead.
+  /// failed trash keeps the session (never a `failed` transcript for a
+  /// discard problem) and runs the exact keep tail.
   @MainActor
   private func discardStoppedSession(
     dir: SessionDirectory,
     candidate: DetectionCandidate?,
     origin: AutoRecordPolicy.SessionOrigin,
     started: Date,
+    endedAt: Date,
     event: CalendarEvent?,
     engineMode: EngineMode,
     keepRawStreams: Bool,
@@ -523,27 +548,16 @@ extension AppDelegate {
       Log.lifecycle.error(
         "Discard failed; session kept at its current status: \(String(describing: error), privacy: .public)"
       )
-      // Fall through to the normal keep path so nothing is lost.
-      let endedAt = Date()
-      let context = Self.makeContext(
-        dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: engineMode)
-      do {
-        try TranscriptWriter.writePending(at: dir.transcript, context: context)
-      } catch {
-        Log.engine.error(
-          "Failed to write pending transcript after discard failure: \(String(describing: error), privacy: .public)"
-        )
-      }
-      dispatchWorker(
+      keepStoppedSession(
         dir: dir,
-        context: context,
+        started: started,
+        endedAt: endedAt,
         event: event,
         origin: origin,
-        keepRawStreams: keepRawStreams,
         engineMode: engineMode,
+        keepRawStreams: keepRawStreams,
         transcriptionLanguage: transcriptionLanguage,
-        durationSeconds: 0
-      )
+        durationSeconds: 0)
       return
     }
     Log.lifecycle.info(
@@ -555,7 +569,7 @@ extension AppDelegate {
     if let candidate {
       await detectionEngine?.releaseActiveCandidate(candidate)
     }
-    detectionAwaitingAction = false
+    parkedCandidate = nil
     status = .idle
     menu?.outcomeFolderName = nil
     menu?.outcomeFolderURL = nil
@@ -566,11 +580,12 @@ extension AppDelegate {
     reevaluateQueuedDetectionCandidateAfterStop()
   }
 
-  /// Dispatches a transcription worker for a session and tracks it by
-  /// directory so Recents Discard can cancel it. Auto-recorded
-  /// (detected) sessions transcribe silently: the saved window after
-  /// every call of the day would be a larger new surface than the
-  /// capture itself. Manual recordings keep the confirmation.
+  /// Dispatches a transcription worker for a session and tracks it in
+  /// the inflight table (keyed by directory) so Recents Discard can
+  /// cancel it. Auto-recorded (detected) sessions transcribe silently:
+  /// the saved window after every call of the day would be a larger new
+  /// surface than the capture itself. Manual recordings keep the
+  /// confirmation.
   @MainActor
   private func dispatchWorker(
     dir: SessionDirectory,
@@ -620,19 +635,15 @@ extension AppDelegate {
         case .cancelled:
           self.status = .idle
           self.resetMenuAfterWorker(status: self.status)
-          // App was quit / session forcibly aborted. Don't
-          // flash either success or failure; just settle
-          // back to idle.
+          // App was quit / session forcibly aborted / discarded from
+          // Recents. Don't flash either success or failure; just
+          // settle back to idle.
           self.applyTrustIcon()
         }
       }
       await self?.removeTask(id: id)
-      await MainActor.run { [weak self] in
-        self?.workerTasksByDirectory.removeValue(forKey: dir.url)
-      }
     }
-    inflightTasks[id] = task
-    workerTasksByDirectory[dir.url] = task
+    inflightSessions[id] = (task: task, directory: dir.url)
   }
 
   /// Recents Discard: cancel any live or retrying worker for the
@@ -641,12 +652,14 @@ extension AppDelegate {
   @MainActor
   func discardSession(at url: URL) async {
     Log.lifecycle.info("Recents discard requested: \(url.lastPathComponent, privacy: .public)")
-    let workerTask = workerTasksByDirectory[url]
+    let workerTasks = inflightSessions
+      .filter { $0.value.directory == url }
+      .map(\.value.task)
     let dir = SessionDirectory.existing(at: url)
     Task.detached(priority: .userInitiated) { [weak self] in
-      if let workerTask {
-        workerTask.cancel()
-        _ = await workerTask.value
+      for task in workerTasks {
+        task.cancel()
+        _ = await task.value
       }
       let trashed: URL?
       do {
@@ -658,7 +671,9 @@ extension AppDelegate {
         trashed = nil
       }
       await MainActor.run { [weak self] in
-        self?.workerTasksByDirectory.removeValue(forKey: url)
+        for (id, entry) in self?.inflightSessions ?? [:] where entry.directory == url {
+          self?.removeTask(id: id)
+        }
         self?.menu?.refreshRecents()
         if trashed != nil {
           Log.lifecycle.info(

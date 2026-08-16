@@ -4,14 +4,15 @@ import TranscriberCore
 
 /// F-5: scribe-design-system stop-prompt HUD. A floating panel with a
 /// gigantic countdown numeral, mono eyebrow describing the reason, and
-/// two primary buttons (`Keep recording` / `Stop now`). Replaces the
-/// silent placeholder where the stop prompt was previously implicit
-/// (the spec called this surface out by name as a showpiece HUD).
+/// three actions: `Keep recording` (primary, Enter), `Stop now`, and
+/// `Discard` (stop and move the session folder to Trash).
 ///
 /// Lifecycle:
-///   - `present(reason:secondsRemaining:onKeep:onStopNow:)` builds and
-///     orders the panel front. The panel is borderless, floating, and
-///     centered on the active screen.
+///   - `present(reason:secondsRemaining:onKeep:onStopNow:onDiscard:)`
+///     builds and orders the panel front. The panel is borderless,
+///     floating, and centered on the active screen. Callers pass
+///     generation-scoped actions so a stale click cannot touch the
+///     wrong session.
 ///   - The caller drives the countdown via `update(secondsRemaining:)`
 ///     ticks and calls `dismiss()` when the EndGuard transitions out
 ///     of `.counting`.
@@ -30,7 +31,7 @@ final class EndCountdownWindowController {
         secondsRemaining: Int,
         onKeep: @escaping @MainActor () -> Void,
         onStopNow: @escaping @MainActor () -> Void,
-        onDiscard: @escaping @MainActor () -> Void = {}
+        onDiscard: @escaping @MainActor () -> Void
     ) {
         model.eyebrow = Self.eyebrow(for: reason)
         model.secondsRemaining = secondsRemaining

@@ -169,6 +169,11 @@ public actor TranscriptionWorker {
             if Task.isCancelled || directoryVanished { return .cancelled }
             do {
                 let response = try await engine.transcribe(resolvedRequest)
+                // Recents Discard can trash the folder while the engine
+                // call is in flight. Every post-await branch re-checks:
+                // a discarded session is cancelled, never failed, and
+                // never regains files.
+                if directoryVanished { return .cancelled }
                 if response.utterances.isEmpty {
                     let msg = "No speech detected. The audio tracks may be silent, corrupt, or below the engine's detection threshold."
                     await writeFailed(reason: msg, failedAttempts: failedAttempts + 1)
@@ -183,6 +188,7 @@ public actor TranscriptionWorker {
                         speakerMapping: speakerMapping
                     )
                 } catch {
+                    if directoryVanished { return .cancelled }
                     Log.engine.error("writeComplete failed: \(String(describing: error), privacy: .public)")
                     return .failed(reason: "transcript write failed: \(error)")
                 }
@@ -204,6 +210,7 @@ public actor TranscriptionWorker {
             } catch is CancellationError {
                 return .cancelled
             } catch {
+                if directoryVanished { return .cancelled }
                 if !Self.isTransient(error) {
                     let reason = String(describing: error)
                     await writeFailed(reason: reason, failedAttempts: failedAttempts + 1, underlying: error)
@@ -486,6 +493,7 @@ public actor TranscriptionWorker {
     /// need the raws for retry or recovery. Only invoked from the
     /// `.complete` happy path.
     private func cleanupRawStreamsIfPolicyAllows() {
+        if directoryVanished { return }
         guard !keepRawStreams else {
             Log.engine.info("keepRawStreams=true: preserving mic.m4a + system.m4a")
             return

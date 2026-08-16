@@ -8,7 +8,7 @@ import UserNotifications
 /// session. The pre-call start prompt machinery was removed with the
 /// auto-record cutover (plans/auto-record.md).
 @MainActor
-final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
+final class EndPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     private static let endCategoryIdentifier = "scribe.recording.end-prompt"
     private enum EndAction {

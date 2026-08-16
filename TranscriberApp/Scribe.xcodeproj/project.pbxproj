@@ -61,6 +61,7 @@
 		C4457AFB46EBCC8F7A30D469 /* ScribeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */; };
 		C77F36DC8336DD0B1E8C4E42 /* DSComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6560FDC7869C04A2DDA47C4D /* DSComponents.swift */; };
 		CD50518167C00014F057718B /* LaunchAtLoginController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A122E1BA74B13B927113F362 /* LaunchAtLoginController.swift */; };
+		D2EF03FAC112394B7E313DF2 /* EndPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D887A9515CB2AF5296EB6970 /* EndPromptCoordinator.swift */; };
 		D3F3210B5BA17B57CD7BE503 /* RecordingPopoverComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 787B3FF78982C293A3655FDE /* RecordingPopoverComponents.swift */; };
 		D8CFF69D8EEF54C470DF4FC4 /* SettingsFormModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D902958479BD76E8A591E772 /* SettingsFormModel.swift */; };
 		D8F8E2FE0264A5E771AC9369 /* AppDelegate+Recovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70477D568C94933B28B28660 /* AppDelegate+Recovery.swift */; };
@@ -71,7 +72,6 @@
 		E3348DFA7B84EF83D2B6020E /* RecordingPopoverContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1233A5A24CB164CD57C1CF /* RecordingPopoverContent.swift */; };
 		E5C6D97873E51C84CF16DE83 /* GeistMonoVariable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = E1AD54C2365F26003491870B /* GeistMonoVariable.ttf */; };
 		E67E39F278A45AF190AE2D5E /* RecordingMenuModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57798CE05322D21F821E5C1F /* RecordingMenuModel.swift */; };
-		E779DA60BCB9E871BE08B542 /* StartPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */; };
 		EA3807D7A4FEAFB9C8FA0A28 /* AppearanceApplier.swift in Sources */ = {isa = PBXBuildFile; fileRef = C664D4D3F7F9ED903172F13F /* AppearanceApplier.swift */; };
 		EAE5D4E4120F7F855B7ADB6D /* MLXAudioSTT in Frameworks */ = {isa = PBXBuildFile; productRef = 2F343A2DF12DC4D575CEA724 /* MLXAudioSTT */; };
 		EB0FA60A0BD3F50F9FACC252 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = BF1DD1FF53036826C2308046 /* MLXAudioCore */; };
@@ -92,7 +92,6 @@
 		1B7103EC351C0B317B030CEB /* InterVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InterVariable-Italic.ttf"; sourceTree = "<group>"; };
 		1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWindow.swift; sourceTree = "<group>"; };
 		1F1858E8D174C9EF87D9DF96 /* DSButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DSButtonStyles.swift; sourceTree = "<group>"; };
-		21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartPromptCoordinator.swift; sourceTree = "<group>"; };
 		223F8F991BFCA69CD8E77665 /* Geist-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Geist-OFL.txt"; sourceTree = "<group>"; };
 		24F4582EC33FD01ACF85F684 /* JetBrainsMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
 		27116E539EDC78A1D1FAF12F /* SettingsForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsForm.swift; sourceTree = "<group>"; };
@@ -141,6 +140,7 @@
 		D288AA87854E67BA12387175 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		D5C795F753B561341FDDD89D /* GeneralPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralPanel.swift; sourceTree = "<group>"; };
 		D7C10C9A46853F1D1244288F /* RecordingMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMenu.swift; sourceTree = "<group>"; };
+		D887A9515CB2AF5296EB6970 /* EndPromptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndPromptCoordinator.swift; sourceTree = "<group>"; };
 		D8B6D8B78285F246A1264A86 /* GeistMonoVariable-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "GeistMonoVariable-Italic.ttf"; sourceTree = "<group>"; };
 		D902958479BD76E8A591E772 /* SettingsFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFormModel.swift; sourceTree = "<group>"; };
 		E1389DD3A1C02E91BD83F963 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = AppIcon.icon; sourceTree = "<group>"; };
@@ -269,6 +269,7 @@
 				C871FAADFB4FA1A173B1256D /* CompositeLocalModelDownloadStarter.swift */,
 				D288AA87854E67BA12387175 /* DiagnosticsView.swift */,
 				57A418554CCA692B873FA2E4 /* EndCountdownWindow.swift */,
+				D887A9515CB2AF5296EB6970 /* EndPromptCoordinator.swift */,
 				ACC696A8F237634672FD3D9D /* KeyboardShortcutSetting+App.swift */,
 				A122E1BA74B13B927113F362 /* LaunchAtLoginController.swift */,
 				1E8ED07528CA7F15CB8B5834 /* OnboardingWindow.swift */,
@@ -278,7 +279,6 @@
 				B9437F7D84ECAFD4F230BE94 /* SavedNotificationWindow.swift */,
 				B5FE20690F9A4138A7E556F8 /* ScreenRecordingRelaunchAssist.swift */,
 				572ACD849DC28AE0C35FCA9B /* ScribeApp.swift */,
-				21F39003E93011F1694EF2DD /* StartPromptCoordinator.swift */,
 				A53ED7E906F024B21ABCDACA /* StartStopHotKeyRegistrar.swift */,
 				7CA05E35B5AF36D97BD50523 /* DesignSystem */,
 				80ECC09A60AB563DAA7AF65E /* Fonts */,
@@ -413,6 +413,7 @@
 				336C59F175AEA1A4DA1C7820 /* DebugVisualSnapshotWriter.swift in Sources */,
 				09D39AB01C40DFE6902AD567 /* DiagnosticsView.swift in Sources */,
 				AFE235F52485B1F5D7F52259 /* EndCountdownWindow.swift in Sources */,
+				D2EF03FAC112394B7E313DF2 /* EndPromptCoordinator.swift in Sources */,
 				5C695B5E2911084AEA2D356B /* FidelityChrome.swift in Sources */,
 				BE0AA8F37881495D92A9095C /* FidelityComponents.swift in Sources */,
 				7E611EC0F030FB39FCF05762 /* GeneralPanel.swift in Sources */,
@@ -438,7 +439,6 @@
 				2A87B65CC212C89C77C0AAB0 /* SettingsWindowController.swift in Sources */,
 				9C0923308D31F7AB56305CEE /* ShortcutCapture.swift in Sources */,
 				48F838161692F910B33138E5 /* ShortcutsPanel.swift in Sources */,
-				E779DA60BCB9E871BE08B542 /* StartPromptCoordinator.swift in Sources */,
 				623C58CBA16EAC45B390C6C3 /* StartStopHotKeyRegistrar.swift in Sources */,
 				8EE1BA8BD2A6BE8CF013D51B /* VaultPanel.swift in Sources */,
 				01606658AAD57D7E4DDF5C6C /* WindowChrome.swift in Sources */,

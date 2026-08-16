@@ -29,12 +29,10 @@ extension AppDelegate {
       Log.lifecycle.info(
         "Detection candidate parked (auto-record off): \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)"
       )
-      // Passive state: keep the candidate staged so a manual Record
+      // The parked hold keeps the candidate staged so a manual Record
       // Now attaches its identity (ended-call routing keeps working)
       // and the trust icon shows the pulse.
-      detectionAwaitingAction = true
-      pendingStartCandidate = candidate
-      pendingStartEvent = event
+      parkedCandidate = (candidate: candidate, event: event)
       applyTrustIcon()
       return
     }
@@ -42,21 +40,23 @@ extension AppDelegate {
       "Auto-record candidate: \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)"
     )
     Log.calendar.info("Start enrichment: matched=\(event != nil ? "yes" : "no", privacy: .public)")
-    pendingStartCandidate = candidate
-    pendingStartEvent = event
-    detectionAwaitingAction = false
-    let outcome = await performStart(origin: .detected, presentation: .silent)
+    // Park first: a failed silent start (privacy, disk, preflight)
+    // restores the hold, and a successful start consumes it.
+    parkedCandidate = (candidate: candidate, event: event)
+    let outcome = await performStart(origin: .detected, staged: (candidate, event))
     if case .failed(let reason) = outcome {
       // Silent path never opens a window; the Setup Required trust
-      // state and this log are the whole report.
+      // state and this log are the whole report. The candidate stays
+      // parked so ended-call recognition can clear it and a manual
+      // Record Now can attach it.
       Log.lifecycle.info(
         "Auto-record start declined: \(reason, privacy: .public)")
     }
   }
 
   /// Recognition proved a call ended. Routes the stop when the ended
-  /// call is the one being recorded; otherwise clears the passive
-  /// "Meeting detected" state if it belonged to this candidate.
+  /// call is the one being recorded; otherwise clears the parked hold
+  /// if it belonged to this candidate.
   @MainActor
   func handleEndedDetectionCandidate(_ candidate: DetectionCandidate) async {
     if isEndedCandidateForCurrentRecording(candidate) {
@@ -67,20 +67,17 @@ extension AppDelegate {
       return
     }
 
-    guard detectionAwaitingAction,
-      let pending = pendingStartCandidate,
+    guard let parked = parkedCandidate,
       DetectionTriggerIdentity.matchesEndedCandidate(
-        pendingTriggerIdentity: pending.triggerIdentity,
-        pendingBundleID: pending.bundleID,
+        pendingTriggerIdentity: parked.candidate.triggerIdentity,
+        pendingBundleID: parked.candidate.bundleID,
         endedCandidate: candidate
       )
     else { return }
     Log.lifecycle.info(
       "Detection candidate ended without recording: \(candidate.app.bundleID, privacy: .public) trigger=\(candidate.triggerIdentity, privacy: .public)"
     )
-    detectionAwaitingAction = false
-    pendingStartCandidate = nil
-    pendingStartEvent = nil
+    parkedCandidate = nil
     applyTrustIcon()
   }
 

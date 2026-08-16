@@ -69,6 +69,10 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
     didSet { model.refreshRecents(under: outputRoot) }
   }
 
+  /// Reads the live auto-record setting each time the popover opens,
+  /// so a Settings toggle is reflected without an app restart.
+  var autoRecordEnabledProvider: (() -> Bool)?
+
   /// Re-enumerates the recents list from the current outputRoot.
   /// Called after out-of-band folder changes (Recents Discard).
   func refreshRecents() {
@@ -193,6 +197,7 @@ final class RecordingMenu: NSObject, NSPopoverDelegate {
     // view so this stays cheap; the enumerator only touches
     // frontmatter, never bodies.
     model.refreshRecents(under: outputRoot)
+    model.autoRecordEnabled = autoRecordEnabledProvider?() ?? true
     refreshRecentActionsReadiness()
     applyDebugMenuFixtureIfNeeded()
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

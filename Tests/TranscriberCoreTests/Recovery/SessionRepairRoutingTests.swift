@@ -167,7 +167,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("func performStart("), "both start origins must funnel through one start path")
-        XCTAssertTrue(source.contains("origin: .detected, presentation: .silent"), "the detection start uses the silent presentation")
+        XCTAssertTrue(source.contains("performStart(origin: .detected,"), "the detection start uses the silent origin")
 
         guard let startRange = source.range(of: "func performStart(") else {
             return XCTFail("performStart must exist")
@@ -257,9 +257,8 @@ final class SessionRepairRoutingTests: XCTestCase {
 
     func testDetectionStartCarriesCalendarEventIntoRecordingStartWhenCalendarLaterUnavailable() throws {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
-        XCTAssertTrue(source.contains("var pendingStartEvent: CalendarEvent?"))
-        XCTAssertTrue(source.contains("pendingStartEvent = event"))
-        XCTAssertTrue(source.contains("let stagedEvent = pendingStartEvent"), "the staged start must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
+        XCTAssertTrue(source.contains("var parkedCandidate: AppDelegate.StagedStart?"), "the parked hold stages candidate and event together")
+        XCTAssertTrue(source.contains("staged?.event ?? cachedEvent"), "the staged start must preserve the enriched event instead of depending on a second calendar lookup that may be denied/unavailable")
     }
 
     func testAppDelegatePassesSessionEngineSnapshotToMenuAndSavedNotification() throws {
@@ -371,8 +370,8 @@ final class SessionRepairRoutingTests: XCTestCase {
         }
         let endedBody = String(source[endedRange.lowerBound..<source.index(endedRange.lowerBound, offsetBy: min(1400, source.distance(from: endedRange.lowerBound, to: source.endIndex)))])
         XCTAssertTrue(endedBody.contains("await endGuard?.suspectCallEnded(at: Date())"), "an ended call during its own recording must route into the EndGuard stop flow")
-        XCTAssertTrue(endedBody.contains("detectionAwaitingAction = false"), "ended calls must clear the passive Meeting detected trust state")
-        XCTAssertTrue(endedBody.contains("pendingStartCandidate = nil"), "ended calls must clear the staged candidate so stale manual starts cannot attach it")
+        XCTAssertTrue(endedBody.contains("parkedCandidate = nil"), "ended calls must clear the passive Meeting detected hold")
+
         XCTAssertTrue(endedBody.contains("applyTrustIcon()"), "ended calls must refresh the menu-bar trust surface after clearing the passive state")
     }
 
@@ -408,7 +407,7 @@ final class SessionRepairRoutingTests: XCTestCase {
         let source = try CombinedAppSources.appSource("AppDelegate.swift")
 
         XCTAssertTrue(source.contains("func performStart("), "one factored start path must serve manual and detected origins")
-        XCTAssertTrue(source.contains("origin: .detected, presentation: .silent"), "the detected origin uses the silent presentation")
+        XCTAssertTrue(source.contains("performStart(origin: .detected, staged:"), "the detected origin uses the silent single start path")
         XCTAssertTrue(source.contains("case .record: await startRecording()"), "manual Record Now keeps the interactive default presentation")
 
         guard let startRange = source.range(of: "func performStart(") else {

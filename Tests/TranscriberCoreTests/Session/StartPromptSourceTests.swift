@@ -2,38 +2,17 @@ import XCTest
 
 /// Source guards for the auto-record cutover (plans/auto-record.md).
 /// The pre-call start prompt is gone: detection records directly. What
-/// survives is the EndGuard stop-prompt notification channel, the
-/// silent start path, and the discard machinery.
+/// survives is the EndGuard stop-prompt notification channel
+/// (`EndPromptCoordinator`), the silent start path, and the discard
+/// machinery.
 final class StartPromptSourceTests: XCTestCase {
     private var source: String {
         get throws {
-            try CombinedAppSources.appSource("StartPromptCoordinator.swift")
+            try CombinedAppSources.appSource("EndPromptCoordinator.swift")
         }
     }
 
-    // MARK: - Pre-call machinery is gone
-
-    func testPreCallPromptMachineryIsDeleted() throws {
-        let source = try source
-        XCTAssertFalse(source.contains("func prompt(for candidate:"), "no pre-call prompt entry point")
-        XCTAssertFalse(source.contains("PromptModalWindow.run"), "no pre-call modal")
-        XCTAssertFalse(source.contains("scheduleRecoveryTimers"), "no reminder/expiry timers")
-        XCTAssertFalse(source.contains("var reminderDelay"), "no ignored-prompt policy")
-        XCTAssertFalse(source.contains("final class Pending:"), "no pending start-prompt state")
-        XCTAssertFalse(source.contains("chooseStartFromRecovery"), "no menu recovery for a prompt that cannot exist")
-        XCTAssertFalse(source.contains("expireActivePrompt"), "no stale-call expiry for a prompt that cannot exist")
-    }
-
-    func testPopoverPromptRecoverySurfaceIsDeleted() throws {
-        let menuSource = try CombinedAppSources.recordingMenu()
-        XCTAssertFalse(menuSource.contains("PendingPromptRecovery"), "popover recovery model is gone")
-        XCTAssertFalse(menuSource.contains("promptStartRecording"), "prompt menu action is gone")
-        XCTAssertFalse(menuSource.contains("promptNotNow"), "prompt menu action is gone")
-        XCTAssertFalse(menuSource.contains("promptSuppressApp"), "prompt menu action is gone")
-        XCTAssertFalse(menuSource.contains("More options ▾"), "suppression disclosure is gone")
-    }
-
-    // MARK: - End-prompt notification channel survives
+    // MARK: - End-prompt notification channel
 
     func testEndPromptNotificationActionsAreGenerationGuardedAndClearSurfaces() throws {
         let source = try source
@@ -88,9 +67,9 @@ final class PromptPreflightRecoverySourceTests: XCTestCase {
     func testDetectionCandidateAutoRecordsThroughTheSilentStartPath() throws {
         let source = try appDelegateSource
         XCTAssertFalse(source.contains("private func presentStartPrompt"), "the pre-call prompt handler is deleted")
-        XCTAssertTrue(source.contains("performStart(origin: .detected, presentation: .silent)"), "detection candidates start recording silently")
+        XCTAssertTrue(source.contains("origin: .detected"), "detection candidates start recording through the silent origin")
         XCTAssertTrue(source.contains("guard settings.autoRecordEnabled else"), "auto-record off parks the candidate instead of starting")
-        XCTAssertTrue(source.contains("detectionAwaitingAction = true"), "parked candidates surface the passive Meeting detected state")
+        XCTAssertTrue(source.contains("parkedCandidate = (candidate: candidate, event: event)"), "the parked hold is the single staged-start value")
     }
 
     func testSilentStartNeverOpensWindowsOnFailurePaths() throws {
@@ -99,11 +78,22 @@ final class PromptPreflightRecoverySourceTests: XCTestCase {
             return XCTFail("performStart must exist as the single start path")
         }
         let startBody = String(source[startRange.lowerBound..<source.index(startRange.lowerBound, offsetBy: min(6000, source.distance(from: startRange.lowerBound, to: source.endIndex)))])
-        XCTAssertTrue(startBody.contains("let interactive = presentation == .interactive"), "presentation decides failure surfacing")
-        XCTAssertTrue(startBody.contains("if interactive {\n        presentPrivacyAcknowledgementIfNeeded()"), "only interactive starts present the consent sheet")
-        XCTAssertTrue(startBody.contains("if interactive {\n        denyStartForLowDisk"), "only interactive starts show the low-disk alert")
-        XCTAssertTrue(startBody.contains("if presentation == .interactive {"), "only interactive starts present onboarding/setup windows")
+        XCTAssertTrue(startBody.contains("let interactive = origin == .manual"), "the origin alone decides failure surfacing: one fact, one enum")
+        XCTAssertFalse(startBody.contains("enum StartPresentation"), "the presentation enum must not exist apart from the origin")
+        XCTAssertTrue(startBody.contains("if interactive {\n        presentPrivacyAcknowledgementIfNeeded()"), "only manual starts present the consent sheet")
+        XCTAssertTrue(startBody.contains("if interactive {\n        denyStartForLowDisk"), "only manual starts show the low-disk alert")
+        XCTAssertTrue(startBody.contains("if interactive {"), "only manual starts present onboarding/setup windows")
         XCTAssertTrue(startBody.contains("return .failed(reason:"), "silent failures return typed reasons")
+    }
+
+    func testParkedCandidateIsOneValueWithConsistentLifecycle() throws {
+        let source = try appDelegateSource
+        XCTAssertTrue(source.contains("var parkedCandidate: AppDelegate.StagedStart?"), "exactly one parked value, no companion flag")
+        XCTAssertFalse(source.contains("var detectionAwaitingAction"), "the writable companion flag is gone")
+        XCTAssertTrue(source.contains("parkedCandidate = nil"), "parked clears on consumption/discard/ended")
+        XCTAssertTrue(source.contains("parkedCandidate != nil"), "the trust surface derives from the single parked value")
+        // A failed detected start restores the hold instead of leaking a ghost identity.
+        XCTAssertTrue(source.contains("Auto-record start declined"), "a failed silent start reports and keeps the hold for ended-call cleanup")
     }
 
     func testStopPathAutoDiscardsReleasesCandidateAndSuppressesSavedNotification() throws {
@@ -111,10 +101,18 @@ final class PromptPreflightRecoverySourceTests: XCTestCase {
         XCTAssertTrue(source.contains("AutoRecordPolicy.shouldAutoDiscard("), "stop consults the auto-record policy")
         XCTAssertTrue(source.contains("discardRequested"), "an explicit Discard overrides the threshold")
         XCTAssertTrue(source.contains("discardStoppedSession("), "the discard tail exists")
+        XCTAssertTrue(source.contains("keepStoppedSession("), "the keep tail is shared by the normal stop and the failed-discard fallback")
         XCTAssertTrue(source.contains("await detectionEngine?.releaseActiveCandidate(candidate)"), "auto-discard releases its candidate so detection can re-fire")
         XCTAssertTrue(source.contains("if origin == .manual {"), "only manual sessions present the saved notification")
         XCTAssertTrue(source.contains("try dir.moveToTrash()"), "discard moves the folder to Trash")
-        XCTAssertTrue(source.contains("workerTasksByDirectory[url]"), "worker tasks are tracked by directory for Recents Discard cancellation")
+    }
+
+    func testWorkerTrackingIsOneTableKeyedByDirectory() throws {
+        let source = try appDelegateSource
+        XCTAssertTrue(source.contains("var inflightSessions: [UUID: (task: Task<Void, Never>, directory: URL?)]"), "one inflight table with optional directories")
+        XCTAssertFalse(source.contains("workerTasksByDirectory"), "the second map is gone")
+        XCTAssertTrue(source.contains("inflightSessions[id] = (task: task, directory: dir.url)"), "worker dispatch registers with its directory")
+        XCTAssertTrue(source.contains("$0.value.directory == url"), "Recents Discard cancels by directory through the one table")
     }
 
     func testRequiredSetupStillOutranksDetectedIcon() throws {

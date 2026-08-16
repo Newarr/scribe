@@ -1,17 +1,25 @@
 import Foundation
 
+/// Three-way result of reading a browser's active tab. `unreadable`
+/// (Firefox, timeout, script error, missing automation grant) is the
+/// only outcome that may take the calendar-plus-mic fallback: an
+/// inspected non-meeting tab is a definitive no.
+public enum TabInspectionResult: Sendable, Equatable {
+    case meeting
+    case notMeeting
+    case unreadable
+}
+
 /// Seam `DetectionEngine` uses to gate browser candidates. Production
 /// is `BrowserTabInspector`; tests inject stubs.
 public protocol BrowserTabInspecting: Sendable {
-    /// `true` = active tab matches a meeting domain. `false` = inspected,
-    /// no match. `nil` = could not inspect; use the fallback gate.
-    func activeTabMatchesMeeting(bundleID: String) async -> Bool?
+    func inspectActiveTab(bundleID: String) async -> TabInspectionResult
 }
 
 /// Answers one question per browser candidate: does the active tab match
-/// a meeting domain? `nil` means "could not inspect" (Firefox, timeout,
-/// script error, missing automation grant) and the caller degrades to
-/// the calendar-plus-mic gate.
+/// a meeting domain? Reads the tab with the dialect named on the
+/// `MeetingApp` allowlist entry (Safari vs Chromium AppleScript); a
+/// `.none` dialect returns `.unreadable` without running anything.
 ///
 /// Every inspection runs under a hard timeout. A hanging AppleEvent is
 /// cancelled, never abandoned: the osascript process is terminated on
@@ -33,10 +41,10 @@ public struct BrowserTabInspector: Sendable {
         self.runScript = runScript
     }
 
-    /// `true` = active tab matches a meeting domain. `false` = inspected,
-    /// no match. `nil` = could not inspect; use the fallback gate.
-    public func activeTabMatchesMeeting(bundleID: String) async -> Bool? {
-        guard let source = Self.script(forBundleID: bundleID) else { return nil }
+    public func inspectActiveTab(bundleID: String) async -> TabInspectionResult {
+        guard let source = Self.script(for: MeetingApps.appFor(bundleID: bundleID)) else {
+            return .unreadable
+        }
         let runScript = self.runScript
         let timeout = self.timeout
         let output: String? = await withTaskGroup(of: String?.self) { group in
@@ -48,11 +56,11 @@ public struct BrowserTabInspector: Sendable {
             defer { group.cancelAll() }
             return await group.next() ?? nil
         }
-        guard let output else { return nil }
+        guard let output else { return .unreadable }
         let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let urlLine = lines.first ?? ""
         let titleLine = lines.count > 1 ? lines[1] : ""
-        return Self.matchesMeetingDomain(url: urlLine, title: titleLine)
+        return Self.matchesMeetingDomain(url: urlLine, title: titleLine) ? .meeting : .notMeeting
     }
 
     /// Strict host match for the URL (exact domain or dotted subdomain),
@@ -68,35 +76,30 @@ public struct BrowserTabInspector: Sendable {
         return MeetingApps.meetingDomains.contains { lowered.contains($0) }
     }
 
-    /// One dialect per browser family. Firefox exposes no active tab
-    /// over AppleScript, so it returns nil and always takes the
-    /// fallback gate. Public so the app shell can check grant coverage
-    /// without running an inspection.
-    public static func script(forBundleID bundleID: String) -> String? {
-        switch bundleID {
-        case "com.apple.Safari":
+    /// One template per tab dialect, resolved from the allowlist entry.
+    /// There is no bundle-ID switch here: a browser with no dialect
+    /// entry takes the fallback gate by construction.
+    static func script(for app: MeetingApp?) -> String? {
+        guard let app else { return nil }
+        switch app.tabDialect {
+        case .none:
+            return nil
+        case .safari:
             return """
-            tell application id "com.apple.Safari"
+            tell application id "\(app.bundleID)"
                 set u to URL of current tab of front window
                 set t to name of current tab of front window
                 return u & linefeed & t
             end tell
             """
-        case "com.google.Chrome",
-             "com.microsoft.Edge",
-             "com.brave.Browser",
-             "company.thebrowser.Browser",
-             "net.imput.helium",
-             "im.helium.helium":
+        case .chromium:
             return """
-            tell application id "\(bundleID)"
+            tell application id "\(app.bundleID)"
                 set u to URL of active tab of front window
                 set t to title of active tab of front window
                 return u & linefeed & t
             end tell
             """
-        default:
-            return nil
         }
     }
 

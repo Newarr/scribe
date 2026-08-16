@@ -61,21 +61,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// suspension semantics are simpler under tests.
   var elapsedTickTimer: Timer?
 
-  var inflightTasks: [UUID: Task<Void, Never>] = [:]
-
   // Detection layer (slice 5 light)
   var detectionEngine: DetectionEngine?
   private var processWatcher: ProcessWatcher?
-  let startPromptCoordinator = StartPromptCoordinator()
+  let endPromptCoordinator = EndPromptCoordinator()
   private var queuedDetectionCandidate: QueuedDetectionCandidate?
-  /// Candidate + event staged for the next start, whether that start is
-  /// an auto-record (detection drives it immediately) or a manual
-  /// Record Now while a passive candidate is live. Cleared on start.
-  var pendingStartCandidate: DetectionCandidate?
-  var pendingStartEvent: CalendarEvent?
-  /// Passive "Meeting detected" state: a candidate fired that did not
-  /// record (auto-record off). Drives the menu bar trust surface.
-  var detectionAwaitingAction = false
+  /// The one parked-detection value: the candidate (and its calendar
+  /// event) staged for the next start. Set when a candidate fires and
+  /// auto-record is off (the passive hold), restored when a detected
+  /// auto-start fails, consumed when any start begins recording, and
+  /// cleared when recognition proves the call ended. `nil` means no
+  /// meeting is waiting; the trust icon derives from exactly this.
+  var parkedCandidate: AppDelegate.StagedStart?
 
   /// Origin of the in-flight (or just-finished) session. Decides
   /// auto-discard eligibility and saved-notification suppression.
@@ -83,12 +80,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// Full candidate behind the in-flight recording, kept so a discard
   /// can release it back to DetectionEngine for re-detection.
   var currentRecordingCandidate: DetectionCandidate?
-  /// Transcription worker tasks keyed by session directory, so Recents
-  /// Discard can cancel a live or retrying worker before trashing.
-  var workerTasksByDirectory: [URL: Task<Void, Never>] = [:]
 
-  // End detection mirrors the start prompt path: the recognition layer
-  // proves the call ended, then EndGuard owns the 10s stop prompt / Keep
+  /// One inflight table: every background task the app owns, with the
+  /// session directory it belongs to when it is a transcription worker.
+  /// Quit drains all of them; Recents Discard looks entries up by
+  /// directory.
+  var inflightSessions: [UUID: (task: Task<Void, Never>, directory: URL?)] = [:]
+
+  // End detection mirrors recording end: the recognition layer proves
+  // the call ended, then EndGuard owns the 10s stop prompt / Keep
   // Recording flow. The audio-silence fallback uses the same guard.
   var endGuard: EndGuard?
   var endGuardTickTimer: Timer?
@@ -99,9 +99,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // primary trust surface, so its shape encodes more than just
   // SessionStatus. These fields capture the pieces of state the
   // status enum doesn't carry: setup blockers (PermissionDoctor),
-  // an in-flight detection prompt, and the most recent terminal
-  // outcome (saved / failed) so the icon can transiently flash a
-  // confirmation glyph after a session lands.
+  // a parked detection candidate (auto-record off), and the most
+  // recent terminal outcome (saved / failed) so the icon can
+  // transiently flash a confirmation glyph after a session lands.
   var setupNeedsAttention: Bool = false
   var sessionRepairPayload: SessionRepairRouting.LocalRepairPayload?
   var setupEngineFocus: EngineSettingsCardFocus?
@@ -465,6 +465,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return menu
     }
     m.outputRoot = snap.outputRoot
+    m.autoRecordEnabledProvider = { [weak self] in
+      self?.settings.autoRecordEnabled ?? true
+    }
     m.appearanceTheme = snap.appearanceTheme
     self.menu = m
     if snap.showInMenuBar {
@@ -589,14 +592,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// at launch instead of mid-dwell on the first browser candidate. A
   /// no-op once the grant exists. Grants bind to the signing identity,
   /// so dev re-signs re-prompt (see scripts/dev-install.sh notes).
+  /// Only browsers with a real tab dialect are worth a grant; Firefox
+  /// has none and is skipped.
   private func prewarmBrowserAutomationGrants() {
     Task.detached(priority: .utility) {
-      for app in MeetingApps.allowlist where app.kind == .browser {
-        guard BrowserTabInspector.script(forBundleID: app.bundleID) != nil else { continue }
+      for app in MeetingApps.allowlist where app.tabDialect != .none {
         guard
           NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID) != nil
         else { continue }
-        _ = await BrowserTabInspector().activeTabMatchesMeeting(bundleID: app.bundleID)
+        _ = await BrowserTabInspector().inspectActiveTab(bundleID: app.bundleID)
       }
     }
   }
@@ -612,12 +616,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       self.calendarChangeObserver = nil
     }
     Task { await self.calendarWatcher.stop() }
-    let inflight = Array(inflightTasks.values)
+    let inflight = Array(inflightSessions.values.map(\.task))
     let hasLiveCapture = (session != nil)
     let relaunchAfterTermination = ScreenRecordingRelaunchAssist.isArmed()
 
     // Codex extensive-review P1.1 fix: a live CaptureSession isn't tracked
-    // in inflightTasks, so a Quit during recording previously exited
+    // in inflightSessions, so a Quit during recording previously exited
     // immediately with the SCStream + AVAssetWriter still live, leaving
     // .partial files and no transcript. Finalize the capture first.
     if !hasLiveCapture && inflight.isEmpty {
@@ -690,7 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   @MainActor
   func removeTask(id: UUID) {
-    inflightTasks.removeValue(forKey: id)
+    inflightSessions.removeValue(forKey: id)
   }
 
   @MainActor

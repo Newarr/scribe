@@ -45,62 +45,79 @@ final class BrowserTabInspectorTests: XCTestCase {
                 url: "https://teams.live.com/meet/9", title: ""))
     }
 
-    // MARK: - script dialects
+    // MARK: - dialects live on the allowlist
 
-    func testFirefoxHasNoScript() {
-        XCTAssertNil(BrowserTabInspector.script(forBundleID: "org.mozilla.firefox"))
+    func testEveryAllowlistedBrowserHasADialectOrExplicitNone() {
+        for app in MeetingApps.allowlist {
+            switch app.kind {
+            case .nativeMeetingApp:
+                XCTAssertEqual(app.tabDialect, .none, "native apps never inspect tabs")
+            case .browser:
+                if app.bundleID == "org.mozilla.firefox" {
+                    XCTAssertEqual(app.tabDialect, .none, "Firefox has no AppleScript tab access")
+                } else {
+                    XCTAssertNotEqual(
+                        app.tabDialect, .none, "\(app.bundleID) must declare a tab dialect")
+                }
+            }
+        }
     }
 
-    func testCoveredBrowsersHaveScripts() {
-        for bundleID in [
-            "com.apple.Safari", "com.google.Chrome", "com.microsoft.Edge",
-            "com.brave.Browser", "company.thebrowser.Browser",
-            "net.imput.helium", "im.helium.helium",
-        ] {
-            XCTAssertNotNil(
-                BrowserTabInspector.script(forBundleID: bundleID), "missing script for \(bundleID)")
-        }
+    func testScriptComesFromTheDialect() {
+        XCTAssertNil(
+            BrowserTabInspector.script(for: MeetingApp(
+                bundleID: "org.mozilla.firefox", displayName: "Firefox", kind: .browser)))
+        XCTAssertNotNil(
+            BrowserTabInspector.script(
+                for: MeetingApps.appFor(bundleID: "com.apple.Safari")))
+        XCTAssertNotNil(
+            BrowserTabInspector.script(
+                for: MeetingApps.appFor(bundleID: "net.imput.helium")))
+        // An unknown bundle ID has no allowlist entry and no dialect.
+        XCTAssertNil(
+            BrowserTabInspector.script(
+                for: MeetingApps.appFor(bundleID: "com.unknown.browser")))
     }
 
     // MARK: - inspection outcomes
 
-    func testMatchingTabReturnsTrue() async {
+    func testMatchingTabIsMeeting() async {
         let inspector = BrowserTabInspector(timeout: 2) { _ in
             "https://meet.google.com/abc\nWeekly sync"
         }
-        let match = await inspector.activeTabMatchesMeeting(bundleID: "net.imput.helium")
-        XCTAssertEqual(match, true)
+        let result = await inspector.inspectActiveTab(bundleID: "net.imput.helium")
+        XCTAssertEqual(result, .meeting)
     }
 
-    func testNonMeetingTabReturnsFalse() async {
+    func testNonMeetingTabIsNotMeeting() async {
         let inspector = BrowserTabInspector(timeout: 2) { _ in
             "https://www.youtube.com/watch?v=x\nSome video"
         }
-        let match = await inspector.activeTabMatchesMeeting(bundleID: "com.google.Chrome")
-        XCTAssertEqual(match, false)
+        let result = await inspector.inspectActiveTab(bundleID: "com.google.Chrome")
+        XCTAssertEqual(result, .notMeeting)
     }
 
-    func testScriptErrorReturnsNil() async {
+    func testScriptErrorIsUnreadable() async {
         // Grant denial and script failure both surface as a thrown error.
         let inspector = BrowserTabInspector(timeout: 2) { _ in
             throw BrowserTabInspector.InspectionError.scriptFailed
         }
-        let match = await inspector.activeTabMatchesMeeting(bundleID: "com.apple.Safari")
-        XCTAssertNil(match)
+        let result = await inspector.inspectActiveTab(bundleID: "com.apple.Safari")
+        XCTAssertEqual(result, .unreadable)
     }
 
-    func testFirefoxReturnsNilWithoutRunningAnyScript() async {
+    func testFirefoxIsUnreadableWithoutRunningAnyScript() async {
         let called = Mutex(false)
         let inspector = BrowserTabInspector(timeout: 2) { _ in
             called.withLock { $0 = true }
             return "https://meet.google.com/abc\nx"
         }
-        let match = await inspector.activeTabMatchesMeeting(bundleID: "org.mozilla.firefox")
-        XCTAssertNil(match)
+        let result = await inspector.inspectActiveTab(bundleID: "org.mozilla.firefox")
+        XCTAssertEqual(result, .unreadable)
         XCTAssertFalse(called.withLock { $0 })
     }
 
-    func testHungScriptResolvesNilWithinTimeout() async {
+    func testHungScriptIsUnreadableWithinTimeout() async {
         // A hanging AppleEvent must cancel, never abandon, and never
         // stall the caller past the hard timeout.
         let inspector = BrowserTabInspector(timeout: 0.2) { _ in
@@ -108,9 +125,9 @@ final class BrowserTabInspectorTests: XCTestCase {
             return "https://meet.google.com/abc\nx"
         }
         let started = Date()
-        let match = await inspector.activeTabMatchesMeeting(bundleID: "net.imput.helium")
+        let result = await inspector.inspectActiveTab(bundleID: "net.imput.helium")
         let elapsed = Date().timeIntervalSince(started)
-        XCTAssertNil(match)
+        XCTAssertEqual(result, .unreadable)
         XCTAssertLessThan(elapsed, 2, "inspection must resolve well inside the 2s dwell budget")
     }
 }

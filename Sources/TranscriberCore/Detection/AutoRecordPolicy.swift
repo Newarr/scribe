@@ -1,14 +1,15 @@
 import Foundation
 
 /// Pure decision layer for auto-record. `DetectionEngine` builds an
-/// `Evidence` value per probe sample and fires a candidate only when
-/// `shouldRecord` passes. `shouldAutoDiscard` decides whether a finished
+/// `Evidence` value per probe sample and consults this policy for both
+/// gates: `shouldRecord` decides whether a candidate fires, and
+/// `isDefinitelyNotInAMeeting` decides whether a stale active candidate
+/// may be cleared. One policy, so a start-gate change cannot drift from
+/// the end-of-call gate. `shouldAutoDiscard` decides whether a finished
 /// recording is short enough to trash unseen. No state, no clocks;
 /// callers own both.
 ///
-/// Plan: `plans/auto-record.md`. The gate lives here, not in the app
-/// layer, because the engine's observation loop is the one place all
-/// the evidence exists (probe samples, tab inspection, mic accumulation).
+/// Plan: `plans/auto-record.md`.
 public enum AutoRecordPolicy {
     /// Everything the detection layer knows about a candidate at
     /// evaluation time. Built by `DetectionEngine`, nowhere else.
@@ -17,9 +18,9 @@ public enum AutoRecordPolicy {
         /// Result of the input-device probe for this sample. `nil` means
         /// the HAL could not answer.
         public var probeIsActive: Bool?
-        /// Result of the tab inspection. `nil` means the browser could
-        /// not be inspected (Firefox, timeout, error, missing grant).
-        public var browserTabMatchesMeeting: Bool?
+        /// Result of the tab inspection. `nil` means the candidate is not
+        /// a browser (native apps are never inspected).
+        public var browserTab: TabInspectionResult?
         public var calendarOverlapsNow: Bool
         /// Consecutive positive probe samples multiplied by the sample
         /// interval. The engine resets this on a `false` OR `nil` sample
@@ -29,13 +30,13 @@ public enum AutoRecordPolicy {
         public init(
             kind: MeetingApp.Kind,
             probeIsActive: Bool?,
-            browserTabMatchesMeeting: Bool?,
+            browserTab: TabInspectionResult? = nil,
             calendarOverlapsNow: Bool,
             sustainedMicSeconds: TimeInterval
         ) {
             self.kind = kind
             self.probeIsActive = probeIsActive
-            self.browserTabMatchesMeeting = browserTabMatchesMeeting
+            self.browserTab = browserTab
             self.calendarOverlapsNow = calendarOverlapsNow
             self.sustainedMicSeconds = sustainedMicSeconds
         }
@@ -56,6 +57,9 @@ public enum AutoRecordPolicy {
     public static let defaultSustainedMicRequirementSeconds: TimeInterval = 30
 
     /// Called by `DetectionEngine` before it fires a candidate.
+    /// A meeting-domain tab records alone. An inspected non-meeting tab
+    /// never records, whatever the calendar or mic say: the fallback
+    /// runs only when the tab was unreadable.
     public static func shouldRecord(
         _ evidence: Evidence,
         sustainedMicRequirementSeconds: TimeInterval = defaultSustainedMicRequirementSeconds
@@ -66,9 +70,28 @@ public enum AutoRecordPolicy {
             // existing fire-on-true-or-nil behavior for native apps.
             return evidence.probeIsActive != false
         case .browser:
-            if evidence.browserTabMatchesMeeting == true { return true }
-            return evidence.calendarOverlapsNow
-                && evidence.sustainedMicSeconds >= sustainedMicRequirementSeconds
+            switch evidence.browserTab {
+            case .meeting:
+                return true
+            case .notMeeting:
+                return false
+            case .unreadable, nil:
+                return evidence.calendarOverlapsNow
+                    && evidence.sustainedMicSeconds >= sustainedMicRequirementSeconds
+            }
+        }
+    }
+
+    /// Definitive "this app is not in a meeting" verdict used to clear
+    /// stale active candidates. For browsers an unreadable tab is not
+    /// proof of absence: it requires both a definitive inactive probe
+    /// AND an inspected non-meeting tab.
+    public static func isDefinitelyNotInAMeeting(_ evidence: Evidence) -> Bool {
+        switch evidence.kind {
+        case .nativeMeetingApp:
+            return evidence.probeIsActive == false
+        case .browser:
+            return evidence.probeIsActive == false && evidence.browserTab == .notMeeting
         }
     }
 
