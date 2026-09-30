@@ -1,0 +1,19 @@
+Sources/TranscriberCore/Engines/LocalModelManager.swift
+  s_cc65a040f1c809::t_0f7a0fb06e9384 238-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "50d327a3be68b16ceebdd491dc70722196f94a2c",
+  "prompts": {},
+  "sessions": {
+    "s_cc65a040f1c809": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f415-8171-7ba2-bff1-e154999d28ad",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Szymon Sypniewicz <22638839+Newarr@users.noreply.github.com>"
+    }
+  }
+}
