@@ -1,0 +1,25 @@
+Sources/TranscriberCore/Engines/CohereMLXBackend.swift
+  s_71ba36798aff7a::t_1b0353908ae4fa 293-298
+Sources/TranscriberCore/Engines/LanguageDetector.swift
+  s_71ba36798aff7a::t_6226ce14a86a80 66-71
+Sources/TranscriberCore/Engines/LocalInferenceMemory.swift
+  s_71ba36798aff7a::t_8626cecccea14a 1-12
+Tests/TranscriberCoreTests/Engines/LocalInferenceMemoryTests.swift
+  s_71ba36798aff7a::t_a4a7fab5ad5117 1-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "4658c5e1a05f31052c235dc8f047a19f941b706a",
+  "prompts": {},
+  "sessions": {
+    "s_71ba36798aff7a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f41d-800f-77d1-b1ef-e08d2ac54564",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Szymon Sypniewicz <22638839+Newarr@users.noreply.github.com>"
+    }
+  }
+}
