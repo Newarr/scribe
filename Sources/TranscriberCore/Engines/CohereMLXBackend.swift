@@ -290,6 +290,12 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
     }
 
     public func transcribe(_ request: CohereMLXAdapterRequest) async throws -> CohereMLXAdapterResponse {
+        try LocalInferenceMemory.withReleasedCache {
+            try transcribeSynchronously(request)
+        }
+    }
+
+    private func transcribeSynchronously(_ request: CohereMLXAdapterRequest) throws -> CohereMLXAdapterResponse {
         let (_, audio) = try loadAudioArray(from: request.audioURL, sampleRate: request.inputSampleRate)
         let model = try CohereTranscribeModel.fromDirectory(request.modelDirectoryURL)
         let parameters = Self.makeGenerationParameters(
