@@ -8,12 +8,14 @@ let package = Package(
         .library(name: "TranscriberCore", targets: ["TranscriberCore"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Newarr/mlx-audio-swift.git", revision: "b8ec43083e4c5535594dbf9274893f9e6fe4a506")
+        .package(url: "https://github.com/Newarr/mlx-audio-swift.git", revision: "b8ec43083e4c5535594dbf9274893f9e6fe4a506"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3")
     ],
     targets: [
         .target(
             name: "TranscriberCore",
             dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
                 .product(name: "MLXAudioVAD", package: "mlx-audio-swift"),
@@ -32,7 +34,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TranscriberCoreTests",
-            dependencies: ["TranscriberCore"],
+            dependencies: ["TranscriberCore", .product(name: "MLX", package: "mlx-swift")],
             path: "Tests/TranscriberCoreTests",
             resources: [.copy("Engines/Fixtures")]
         )
