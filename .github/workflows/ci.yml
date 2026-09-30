@@ -17,20 +17,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
-        # mlx-audio-swift requires swift-tools-version:6.2 (Xcode 26).
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+        run: sudo xcode-select -s /Applications/Xcode_26.5.app
       - name: Build core
-        run: swift build
-      - name: Test core
-        run: swift test --enable-code-coverage
+        run: swift build --build-tests --enable-code-coverage --force-resolved-versions
       - name: Build app
         run: |
+          mkdir -p TranscriberApp/Scribe.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          cp Package.resolved TranscriberApp/Scribe.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
           xcodebuild \
             -project TranscriberApp/Scribe.xcodeproj \
             -scheme Scribe \
+            -onlyUsePackageVersionsFromResolvedFile \
             -configuration Debug \
+            -derivedDataPath build/ci \
             -destination 'platform=macOS' \
             build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
+      - name: Prepare MLX test runtime
+        run: |
+          test_binary_dir="$(swift build --show-bin-path)/TranscriberCorePackageTests.xctest/Contents/MacOS"
+          cp build/ci/Build/Products/Debug/Scribe.app/Contents/Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib "$test_binary_dir/mlx.metallib"
+      - name: Test core
+        run: swift test --skip-build --enable-code-coverage
