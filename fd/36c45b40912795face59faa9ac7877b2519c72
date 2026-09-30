@@ -1,0 +1,23 @@
+.gitignore
+  s_cc65a040f1c809::t_bd8975d3c2cadb 3-4
+Package.resolved
+  s_cc65a040f1c809::t_f0694c04de557c 1-149
+Package.swift
+  s_cc65a040f1c809::t_b1dbc18bac4915 11-12,18,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fd36c45b40912795face59faa9ac7877b2519c72",
+  "prompts": {},
+  "sessions": {
+    "s_cc65a040f1c809": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f415-8171-7ba2-bff1-e154999d28ad",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Szymon Sypniewicz <22638839+Newarr@users.noreply.github.com>"
+    }
+  }
+}
