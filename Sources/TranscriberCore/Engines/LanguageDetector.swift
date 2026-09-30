@@ -63,6 +63,12 @@ public struct EcapaLanguageDetector: LanguageDetector {
     }
 
     public func detect(from audioURL: URL) async -> String? {
+        LocalInferenceMemory.withReleasedCache {
+            detectSynchronously(from: audioURL)
+        }
+    }
+
+    private func detectSynchronously(from audioURL: URL) -> String? {
         guard let model = try? EcapaTdnn.fromModelDirectory(modelDirectoryURL) else {
             Log.engine.warning("EcapaLanguageDetector: LID model unavailable at \(self.modelDirectoryURL.path, privacy: .public); falling back to engine auto-detect")
             return nil

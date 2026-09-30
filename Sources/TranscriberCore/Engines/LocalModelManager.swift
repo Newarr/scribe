@@ -235,7 +235,8 @@ public actor LocalModelManager {
     }
 }
 
-private struct LocalModelDownloadWorker {
+// FileManager supports concurrent use, but its SDK type lacks Sendable conformance.
+private struct LocalModelDownloadWorker: @unchecked Sendable {
     let cacheRoot: URL
     let manifest: LocalModelManifest
     let downloader: any LocalModelDownloading

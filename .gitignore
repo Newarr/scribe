@@ -1,6 +1,7 @@
 # SwiftPM
 .build/
-Package.resolved
+**/Package.resolved
+!/Package.resolved
 .swiftpm/
 
 # Xcode
