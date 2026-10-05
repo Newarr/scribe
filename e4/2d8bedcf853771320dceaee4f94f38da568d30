@@ -1,0 +1,59 @@
+Tests/TranscriberCoreTests/Engines/SpeakerMappingBuilderTests.swift
+  s_9de6458d246037::t_28abe9964d4cd8 20
+  s_9de6458d246037::t_e842b594adfae9 5,15-17,31-33,37
+Sources/TranscriberCore/Engines/ElevenLabsScribeBackend.swift
+  s_9de6458d246037::t_c99e4b751f938d 112
+  s_9de6458d246037::t_25c2ce95781aa3 35,82,90,95,99,105-107,118,125
+  s_9de6458d246037::t_f2d272c56c329f 101-104
+  s_9de6458d246037::t_bf07748b2bafb9 79
+Tests/TranscriberCoreTests/Engines/ElevenLabsScribeBackendTests.swift
+  s_9de6458d246037::t_e842b594adfae9 40,43,45-49,53-61
+Tests/TranscriberCoreTests/Recovery/TranscriptionWorkerTests.swift
+  s_9de6458d246037::t_0414a9eb7f4b1d 146-147
+  s_9de6458d246037::t_e842b594adfae9 562,599,774,837,898,951
+  s_9de6458d246037::t_bbbe51e48a7f47 127-145,148-151,1127,1134
+Sources/TranscriberCore/Recovery/TranscriptionWorker.swift
+  s_9de6458d246037::t_bf07748b2bafb9 157,426-447
+Sources/TranscriberCore/Engines/EngineRequest.swift
+  s_9de6458d246037::t_25c2ce95781aa3 6
+  s_9de6458d246037::t_bf07748b2bafb9 7-11
+Sources/TranscriberCore/Engines/SpeechChunkPlanner.swift
+  s_9de6458d246037::t_55fbce6eb7ce3f 59-60,83,87-88,91,94,97
+  s_9de6458d246037::t_3ca36be38e5164 22,24,27
+Tests/TranscriberCoreTests/Engines/SpeechChunkPlannerTests.swift
+  s_9de6458d246037::t_e842b594adfae9 14-31
+Sources/TranscriberCore/Audio/ChannelActivity.swift
+  s_9de6458d246037::t_b9a6bcd7f85d5e 1-8,10-30,32-119
+  s_9de6458d246037::t_21e662108f223c 9
+  s_9de6458d246037::t_efb53c4dde6210 31
+Sources/TranscriberCore/Engines/SpeakerMappingBuilder.swift
+  s_9de6458d246037::t_f2d272c56c329f 4-8,12,15
+TranscriberApp/Scribe/AppDelegate+TranscriptionPipeline.swift
+  s_9de6458d246037::t_525c2d70304fd8 44-45
+  s_9de6458d246037::t_bf07748b2bafb9 77
+Tests/TranscriberCoreTests/Audio/ChannelActivityTests.swift
+  s_9de6458d246037::t_e842b594adfae9 52,77
+  s_9de6458d246037::t_ed9f77007e777c 1-49,51,53-76,78-111
+  s_9de6458d246037::t_21e662108f223c 50
+Sources/TranscriberCore/Engines/CohereMLXBackend.swift
+  s_9de6458d246037::t_55fbce6eb7ce3f 20,30-31,41,49,51,55,149,215-216,235,243,315-322,325,348-354,369-370
+  s_9de6458d246037::t_bf07748b2bafb9 205
+Tests/TranscriberCoreTests/Recovery/SessionSupervisorTests.swift
+  s_9de6458d246037::t_e842b594adfae9 564
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e42d8bedcf853771320dceaee4f94f38da568d30",
+  "prompts": {},
+  "sessions": {
+    "s_9de6458d246037": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65407a78-2eef-47d4-a775-4767c96dd617",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Szymon Sypniewicz <22638839+Newarr@users.noreply.github.com>"
+    }
+  }
+}
