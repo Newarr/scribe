@@ -159,7 +159,7 @@ extension AudioFinalizer {
     }
   }
 
-  private final class TimelineStreamReader {
+  final class TimelineStreamReader {
     let segments: [TimelineSegment]
     let endFrame: Int
     private let reader: StreamReader
@@ -201,8 +201,8 @@ extension AudioFinalizer {
             output.advanced(by: dest).update(from: ptr.baseAddress!, count: produced.count)
           }
         }
-        if overlapEnd >= segmentEnd || produced.count < needed { segmentIndex += 1 }
-        if produced.count < needed { continue }
+        if overlapEnd < segmentEnd && produced.count == needed { break }
+        segmentIndex += 1
       }
     }
 

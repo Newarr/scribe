@@ -391,6 +391,31 @@ final class AudioFinalizerTests: XCTestCase {
     )
   }
 
+  func testPTSTimelineKeepsMicBuffersThatStraddleRenderChunks() async throws {
+    let micURL = tmp.appendingPathComponent("mic-capture-sized.m4a")
+    let sysURL = tmp.appendingPathComponent("system-capture-sized.m4a")
+    let ptsURL = tmp.appendingPathComponent("pts-capture-sized.jsonl")
+    let outURL = tmp.appendingPathComponent("audio-capture-sized.m4a")
+    try writeAACPCM(to: micURL, sampleRate: 48000, duration: 1.0) { ptr, frames, _ in
+      for i in 0..<frames { ptr[i] = Float(0.45 * sin(2 * .pi * 440 * Double(i) / 48000.0)) }
+    }
+    try writeAACSilence(to: sysURL, durationSec: 1.0)
+    let micEntries = (0..<93).map {
+      PTSLogEntry(stream: "mic", ptsSeconds: Double($0 * 512) / 48000, sampleCount: 512, sampleRate: 48000)
+    }
+    let systemEntries = (0..<50).map {
+      PTSLogEntry(stream: "system", ptsSeconds: Double($0 * 960) / 48000, sampleCount: 960, sampleRate: 48000)
+    }
+    try writePTSLog(to: ptsURL, entries: micEntries + systemEntries)
+
+    try await AudioFinalizer.finalize(
+      mic: micURL, system: sysURL, output: outURL, sampleRate: 48000, ptsLogURL: ptsURL)
+
+    let samples = try readSamples(from: outURL)
+    XCTAssertGreaterThan(rms(samples, start: 24_000, count: 2_000), 0.05)
+    XCTAssertGreaterThan(rms(samples, start: 42_000, count: 2_000), 0.05)
+  }
+
   func testPTSTimelineNormalizesNonZeroFirstPTS() async throws {
     let micURL = tmp.appendingPathComponent("mic-absolute.m4a")
     let sysURL = tmp.appendingPathComponent("system-absolute.m4a")
