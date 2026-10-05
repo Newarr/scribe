@@ -37,122 +37,28 @@ final class ElevenLabsScribeBackendTests: XCTestCase {
         XCTAssertEqual(response.detectedLanguage, "en")
     }
 
-    func testMultichannelResponseProducesChannelKeyedSpeakers() async throws {
-        let body = try Data(contentsOf: fixture("elevenlabs-multichannel-success"))
-        MockURLProtocol.handler = { request in
-            // Note: Foundation strips httpBody by the time URLProtocol sees the request,
-            // so request-side multipart params (use_multi_channel, diarize, num_speakers)
-            // can't be asserted here. The backend's static mode->params switch is the
-            // safety net; this test focuses on the response-parsing path that's
-            // multichannel-specific (channel_index -> speaker_<n>).
-            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, body)
-        }
-
-        let backend = ElevenLabsScribeBackend(apiKey: "test-key", session: mockSession)
-        let req = EngineRequest(
-            audioURL: try makeTinyWAV(),
-            mode: .multichannel,
-            languageCode: "en",
-            keyterms: []
-        )
-        let response = try await backend.transcribe(req)
-
-        XCTAssertEqual(response.utterances.count, 2)
-        XCTAssertEqual(response.utterances[0].speaker, "speaker_0")
-        XCTAssertTrue(response.utterances[0].text.contains("Hi"))
-        XCTAssertTrue(response.utterances[0].text.contains("Faris"))
-        XCTAssertEqual(response.utterances[1].speaker, "speaker_1")
-        XCTAssertTrue(response.utterances[1].text.contains("Yes"))
-    }
-
-    /// Defensive direct test of the mode->params dispatch since the URLProtocol mock
-    /// can't see the request body. Calls the parser directly so this stays a unit test.
-    func testParserGroupsByChannelIndex() throws {
-        let body = try Data(contentsOf: fixture("elevenlabs-multichannel-success"))
-        let response = try ElevenLabsScribeBackend.parse(body)
-        XCTAssertEqual(response.utterances.count, 2)
-        XCTAssertEqual(response.utterances.map(\.speaker), ["speaker_0", "speaker_1"])
-    }
-
-    /// Phase μ codex P1.12: ElevenLabs's actual multichannel response
-    /// shape is a nested `transcripts: [{channel_index, words}, ...]`
-    /// array — NOT a top-level `words[]` with per-word channel_index.
-    /// v0 parser only handled the latter and would throw on the
-    /// former, blocking the AEC-clean V1 multichannel path entirely.
-    func testParserHandlesNestedTranscriptsShape() throws {
-        let body = try Data(contentsOf: fixture("elevenlabs-multichannel-transcripts"))
-        let response = try ElevenLabsScribeBackend.parse(body)
-
-        // Two channels → two utterances, sorted by start time.
-        XCTAssertEqual(response.utterances.count, 2)
-        XCTAssertEqual(response.utterances[0].speaker, "speaker_0")
-        XCTAssertTrue(response.utterances[0].text.contains("Hi Faris"), response.utterances[0].text)
-        XCTAssertTrue(response.utterances[0].text.contains("hear me"), response.utterances[0].text)
-        XCTAssertEqual(response.utterances[1].speaker, "speaker_1")
-        XCTAssertTrue(response.utterances[1].text.contains("Yes"), response.utterances[1].text)
-        XCTAssertTrue(response.utterances[1].text.contains("hear you"), response.utterances[1].text)
-
-        // Detected language picks up from the per-channel field.
-        XCTAssertEqual(response.detectedLanguage, "en")
-    }
-
-    /// Verifies the parser is shape-tolerant: empty `transcripts[]`
-    /// (multichannel envelope but no channels populated) falls back
-    /// to single-channel parsing rather than producing an empty
-    /// utterance list silently.
-    func testParserFallsBackWhenTranscriptsArrayIsEmpty() throws {
+    func testChannelSpeakersSplitWhatDiarizationMergedIntoOneVoice() throws {
         let json = """
         {
-            "transcripts": [],
-            "language_code": "en",
+            "language_code": "pl",
             "words": [
-                {"text": "Hello", "type": "word", "start": 0.0, "end": 0.5},
-                {"text": ".", "type": "spacing", "start": 0.5, "end": 0.51}
+                {"text": "Dzień", "type": "word", "start": 1.0, "end": 1.4, "speaker_id": "speaker_0"},
+                {"text": " ", "type": "spacing", "start": 1.4, "end": 1.5, "speaker_id": "speaker_0"},
+                {"text": "dobry.", "type": "word", "start": 1.5, "end": 2.0, "speaker_id": "speaker_0"},
+                {"text": " ", "type": "spacing", "start": 2.0, "end": 11.0, "speaker_id": "speaker_0"},
+                {"text": "Cześć!", "type": "word", "start": 11.0, "end": 11.6, "speaker_id": "speaker_0"}
             ]
         }
         """
-        let response = try ElevenLabsScribeBackend.parse(Data(json.utf8))
-        XCTAssertEqual(response.utterances.count, 1)
-        XCTAssertEqual(response.utterances[0].text, "Hello.")
-    }
+        let activity = try XCTUnwrap(ChannelActivity.scripted([
+            (seconds: 10, micDecibels: -20, systemDecibels: -120),
+            (seconds: 10, micDecibels: -50, systemDecibels: -20),
+            (seconds: 10, micDecibels: -50, systemDecibels: -120),
+        ]))
+        let response = try ElevenLabsScribeBackend.parse(Data(json.utf8), channelActivity: activity)
 
-    /// Interleaved word timings across channels must be sorted into a
-    /// chronological transcript. Real meetings have overlapping
-    /// speakers; the response carries channel-tagged words and the
-    /// parser must group consecutive same-channel words into one
-    /// utterance.
-    func testParserSortsInterleavedMultichannelWordsByStartTime() throws {
-        let json = """
-        {
-            "transcripts": [
-                {
-                    "channel_index": 0,
-                    "language_code": "en",
-                    "words": [
-                        {"text": "First", "type": "word", "start": 0.0, "end": 0.3},
-                        {"text": "later", "type": "word", "start": 2.0, "end": 2.3}
-                    ]
-                },
-                {
-                    "channel_index": 1,
-                    "language_code": "en",
-                    "words": [
-                        {"text": "second", "type": "word", "start": 1.0, "end": 1.3},
-                        {"text": "third", "type": "word", "start": 1.5, "end": 1.8}
-                    ]
-                }
-            ]
-        }
-        """
-        let response = try ElevenLabsScribeBackend.parse(Data(json.utf8))
-        // Expected: [speaker_0:"First", speaker_1:"second third", speaker_0:"later"]
-        XCTAssertEqual(response.utterances.count, 3)
-        XCTAssertEqual(response.utterances[0].speaker, "speaker_0")
-        XCTAssertEqual(response.utterances[0].text, "First")
-        XCTAssertEqual(response.utterances[1].speaker, "speaker_1")
-        XCTAssertEqual(response.utterances[1].text, "second third")
-        XCTAssertEqual(response.utterances[2].speaker, "speaker_0")
-        XCTAssertEqual(response.utterances[2].text, "later")
+        XCTAssertEqual(response.utterances.map(\.speaker), [ChannelActivity.micSpeaker, ChannelActivity.systemSpeaker])
+        XCTAssertEqual(response.utterances.map { $0.text.trimmingCharacters(in: .whitespaces) }, ["Dzień dobry.", "Cześć!"])
     }
 
     func testRateLimitMapsToRetryableError() async throws {

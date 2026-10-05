@@ -3,7 +3,12 @@ import Foundation
 public struct EngineRequest: Sendable {
     public enum Mode: Sendable, Equatable {
         case singleChannelDiarized(numSpeakers: Int?)
-        case multichannel
+        case speakersByChannel(ChannelActivity)
+
+        var channelActivity: ChannelActivity? {
+            if case .speakersByChannel(let activity) = self { return activity }
+            return nil
+        }
     }
 
     public let audioURL: URL

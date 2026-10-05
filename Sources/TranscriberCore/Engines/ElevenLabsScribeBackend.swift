@@ -32,8 +32,7 @@ final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Sendable {
         case .singleChannelDiarized(let numSpeakers):
             body.appendField(name: "diarize", value: "true")
             if let n = numSpeakers { body.appendField(name: "num_speakers", value: String(n)) }
-        case .multichannel:
-            body.appendField(name: "use_multi_channel", value: "true")
+        case .speakersByChannel:
             body.appendField(name: "diarize", value: "false")
         }
 
@@ -77,104 +76,53 @@ final class ElevenLabsScribeBackend: TranscriptionEngine, @unchecked Sendable {
         default: throw BackendError.httpError(http.statusCode)
         }
 
-        return try Self.parse(data)
+        return try Self.parse(data, channelActivity: request.mode.channelActivity)
     }
 
-    static func parse(_ data: Data) throws -> EngineResponse {
+    static func parse(_ data: Data, channelActivity: ChannelActivity? = nil) throws -> EngineResponse {
         struct Word: Decodable {
             let text: String
             let type: String
             let start: Double
             let end: Double
             let speaker_id: String?
-            let channel_index: Int?
         }
-        /// Single-channel diarized shape: `{"language_code": "...",
-        /// "words": [...]}`.
-        struct SingleChannelBody: Decodable {
+        struct Body: Decodable {
             let language_code: String?
             let words: [Word]
         }
-        /// Multichannel shape: `{"transcripts": [{"channel_index": N,
-        /// "language_code": "...", "words": [...]}, ...]}`. Codex
-        /// Phase μ P1.12 — v0 parser only handled single-channel and
-        /// returned `malformedResponse` for any multichannel call,
-        /// which spec line 117 mandates as the AEC-clean V1 path.
-        struct ChannelTranscript: Decodable {
-            let channel_index: Int?
-            let language_code: String?
-            let words: [Word]
-        }
-        struct MultichannelBody: Decodable {
-            let transcripts: [ChannelTranscript]
-        }
 
-        let decoder = JSONDecoder()
-        let words: [Word]
-        let detectedLanguage: String?
-
-        if let multi = try? decoder.decode(MultichannelBody.self, from: data),
-           !multi.transcripts.isEmpty {
-            // Flatten + tag each word with the channel-derived speaker
-            // index. Sort by start time so the utterance grouping below
-            // produces a chronological transcript.
-            var flattened: [Word] = []
-            for transcript in multi.transcripts {
-                let cidx = transcript.channel_index
-                for w in transcript.words {
-                    // Stamp channel_index from the parent if the word
-                    // didn't already carry one (defensive — some
-                    // backends inline it, others put it on the parent).
-                    let stamped = Word(
-                        text: w.text,
-                        type: w.type,
-                        start: w.start,
-                        end: w.end,
-                        speaker_id: w.speaker_id,
-                        channel_index: w.channel_index ?? cidx
-                    )
-                    flattened.append(stamped)
-                }
-            }
-            flattened.sort { $0.start < $1.start }
-            words = flattened
-            // Detected language: prefer the first transcript that has
-            // one (channels usually agree on language; if not, the
-            // first non-nil is a reasonable default).
-            detectedLanguage = multi.transcripts.compactMap { $0.language_code }.first
-        } else {
-            // Fallback: single-channel diarized shape.
-            let single = try decoder.decode(SingleChannelBody.self, from: data)
-            words = single.words
-            detectedLanguage = single.language_code
-        }
-
+        let body = try JSONDecoder().decode(Body.self, from: data)
         var utterances: [EngineResponse.Utterance] = []
         var current: (speaker: String, start: Double, end: Double, text: String)?
 
-        for w in words {
+        for w in body.words {
             let speaker: String
-            if let cidx = w.channel_index { speaker = "speaker_\(cidx)" }
-            else if let sid = w.speaker_id { speaker = sid }
-            else { speaker = "speaker_0" }
+            if w.type == "spacing", let c = current {
+                speaker = c.speaker
+            } else if let channelActivity {
+                speaker = channelActivity.speaker(from: w.start, to: w.end)
+            } else {
+                speaker = w.speaker_id ?? "speaker_0"
+            }
 
             if var c = current, c.speaker == speaker {
                 c.end = w.end
                 if w.type == "spacing" { c.text += w.text }
-                else { c.text += (c.text.isEmpty ? "" : " ") + w.text }
+                else { c.text += (c.text.isEmpty || c.text.last!.isWhitespace ? "" : " ") + w.text }
                 current = c
             } else {
                 if let c = current {
                     utterances.append(.init(speaker: c.speaker, startSeconds: c.start, endSeconds: c.end, text: c.text))
                 }
-                current = (speaker, w.start, w.end, w.type == "spacing" ? w.text : w.text)
+                current = (speaker, w.start, w.end, w.text)
             }
         }
         if let c = current {
             utterances.append(.init(speaker: c.speaker, startSeconds: c.start, endSeconds: c.end, text: c.text))
         }
 
-        return EngineResponse(utterances: utterances, detectedLanguage: detectedLanguage, modelID: "scribe_v2")
+        return EngineResponse(utterances: utterances, detectedLanguage: body.language_code, modelID: "scribe_v2")
     }
 }
 

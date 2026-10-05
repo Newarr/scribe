@@ -2,7 +2,7 @@ import XCTest
 @testable import TranscriberCore
 
 final class SpeakerMappingBuilderTests: XCTestCase {
-    func testOneOnOneMultichannelMapsBothSpeakers() {
+    func testOneOnOneNamesBothSpeakers() {
         let event = CalendarEvent(
             title: "1:1",
             startDate: Date(),
@@ -12,12 +12,12 @@ final class SpeakerMappingBuilderTests: XCTestCase {
                 .init(name: "Faris", isCurrentUser: false)
             ]
         )
-        let mapping = SpeakerMappingBuilder.build(event: event, mode: .multichannel)
-        XCTAssertEqual(mapping["speaker_0"], "Szymon")
-        XCTAssertEqual(mapping["speaker_1"], "Faris")
+        let mapping = SpeakerMappingBuilder.build(event: event)
+        XCTAssertEqual(mapping[ChannelActivity.micSpeaker], "Szymon")
+        XCTAssertEqual(mapping[ChannelActivity.systemSpeaker], "Faris")
     }
 
-    func testGroupMeetingDoesNotMapSpeakerOne() {
+    func testGroupMeetingDoesNotNameSystemAudioSpeaker() {
         let event = CalendarEvent(
             title: "Team weekly",
             startDate: Date(),
@@ -28,26 +28,13 @@ final class SpeakerMappingBuilderTests: XCTestCase {
                 .init(name: "Maciek", isCurrentUser: false)
             ]
         )
-        let mapping = SpeakerMappingBuilder.build(event: event, mode: .multichannel)
-        XCTAssertEqual(mapping["speaker_0"], "Szymon")
-        XCTAssertNil(mapping["speaker_1"], "group meetings: speaker_1 stays unmapped, downstream renders it raw")
+        let mapping = SpeakerMappingBuilder.build(event: event)
+        XCTAssertEqual(mapping[ChannelActivity.micSpeaker], "Szymon")
+        XCTAssertNil(mapping[ChannelActivity.systemSpeaker], "group meetings: system audio mixes every remote voice")
     }
 
     func testNoEventReturnsEmptyMap() {
-        let mapping = SpeakerMappingBuilder.build(event: nil, mode: .multichannel)
-        XCTAssertTrue(mapping.isEmpty)
-    }
-
-    func testSingleChannelDiarizedReturnsEmptyMapEvenWithEvent() {
-        let event = CalendarEvent(
-            title: "1:1",
-            startDate: Date(), endDate: Date().addingTimeInterval(1800),
-            attendees: [
-                .init(name: "Szymon", isCurrentUser: true),
-                .init(name: "Faris", isCurrentUser: false)
-            ]
-        )
-        let mapping = SpeakerMappingBuilder.build(event: event, mode: .singleChannelDiarized(numSpeakers: 2))
+        let mapping = SpeakerMappingBuilder.build(event: nil)
         XCTAssertTrue(mapping.isEmpty)
     }
 }

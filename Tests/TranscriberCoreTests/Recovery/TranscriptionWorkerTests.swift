@@ -124,6 +124,31 @@ final class TranscriptionWorkerTests: XCTestCase {
     XCTAssertGreaterThan(rms(samples, start: 15_000, count: 2_000), 0.05)
   }
 
+  func testSpeakersComeFromCaptureChannelsWhenBothSidesSpoke() async throws {
+    let session = dir()
+    try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+    try writeMicThenSystemTurns(into: session)
+    let engine = FakeEngine(responses: [.success(makeResponse())])
+
+    let final = await makeWorker(
+      engine: engine,
+      directory: session,
+      context: makeContext(),
+      request: EngineRequest(
+        audioURL: session.audioFinal,
+        mode: .singleChannelDiarized(numSpeakers: 2),
+        languageCode: "en",
+        keyterms: []
+      )
+    ).run()
+
+    XCTAssertEqual(final, .complete)
+    let requests = await engine.requests
+    let activity = try XCTUnwrap(requests.first?.mode.channelActivity)
+    XCTAssertEqual(activity.speaker(from: 0.5, to: 2.5), ChannelActivity.micSpeaker)
+    XCTAssertEqual(activity.speaker(from: 3.5, to: 5.5), ChannelActivity.systemSpeaker)
+  }
+
   private func writeAACSilence(to url: URL, durationSec: Double) throws {
     let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
     let settings: [String: Any] = [
@@ -534,7 +559,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       engine: engine,
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
-        mode: .multichannel,
+        mode: .singleChannelDiarized(numSpeakers: 2),
         languageCode: "en",
         keyterms: []
       ),
@@ -571,7 +596,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       engine: engine2,
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
-        mode: .multichannel,
+        mode: .singleChannelDiarized(numSpeakers: 2),
         languageCode: "en",
         keyterms: []
       ),
@@ -746,7 +771,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       request: request
         ?? EngineRequest(
           audioURL: root.appendingPathComponent("multichannel.wav"),
-          mode: .multichannel,
+          mode: .singleChannelDiarized(numSpeakers: 2),
           languageCode: nil,
           keyterms: []
         ),
@@ -809,7 +834,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
-        mode: .multichannel,
+        mode: .singleChannelDiarized(numSpeakers: 2),
         languageCode: nil,
         keyterms: [],
         modelID: "scribe_v2"
@@ -870,7 +895,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
-        mode: .multichannel,
+        mode: .singleChannelDiarized(numSpeakers: 2),
         languageCode: nil,
         keyterms: [],
         modelID: "scribe_v2"
@@ -923,7 +948,7 @@ final class TranscriptionWorkerTests: XCTestCase {
       ]),
       request: EngineRequest(
         audioURL: root.appendingPathComponent("multichannel.wav"),
-        mode: .multichannel,
+        mode: .singleChannelDiarized(numSpeakers: 2),
         languageCode: nil,
         keyterms: [],
         modelID: "scribe_v2"
@@ -1099,12 +1124,14 @@ actor RecordingEngine: TranscriptionEngine {
 
 actor FakeEngine: TranscriptionEngine {
   private var queue: [Result<EngineResponse, Error>]
+  private(set) var requests: [EngineRequest] = []
 
   init(responses: [Result<EngineResponse, Error>]) {
     self.queue = responses
   }
 
   func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
+    requests.append(request)
     guard !queue.isEmpty else { throw FakeError.noMoreResponses }
     let next = queue.removeFirst()
     switch next {

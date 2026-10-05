@@ -11,6 +11,24 @@ final class SpeechChunkPlannerTests: XCTestCase {
         XCTAssertTrue(chunks.isEmpty)
     }
 
+    func testTurnChangeStartsANewChunkEvenAcrossAShortGap() {
+        let spans = [
+            SpeechSpan(start: seconds(0), end: seconds(4)),
+            SpeechSpan(start: seconds(4.3), end: seconds(8)),
+            SpeechSpan(start: seconds(8.3), end: seconds(12)),
+        ]
+        let chunks = SpeechChunkPlanner.plan(
+            spans: spans,
+            sampleCount: seconds(60),
+            sampleRate: rate,
+            speakerOf: { $0.start < self.seconds(4) ? "Me" : "Them" }
+        )
+        XCTAssertEqual(chunks, [
+            SpeechChunk(startSample: seconds(0), endSample: seconds(4), speaker: "Me"),
+            SpeechChunk(startSample: seconds(4.3), endSample: seconds(12), speaker: "Them"),
+        ])
+    }
+
     func testSingleShortSpanIsOneChunk() {
         let spans = [SpeechSpan(start: seconds(2), end: seconds(10))]
         let chunks = SpeechChunkPlanner.plan(spans: spans, sampleCount: seconds(60), sampleRate: rate)

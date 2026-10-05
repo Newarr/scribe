@@ -41,15 +41,8 @@ extension AppDelegate {
     transcriptionLanguage: String? = nil,
     engineOverride: TranscriptionEngine? = nil
   ) -> TranscriptionWorker {
-    // Pre-AEC default: single-channel diarized (slice 2 path).
-    //
-    // Spec line 117 (`decision_engine_payload_multichannel`) requires the mic
-    // channel to be AEC-cleaned before multichannel upload. Spec line 119
-    // explicitly forbids "dirty 2-channel uploads" as a fallback because they
-    // reproduce a known failure mode where the remote speaker is decoded
-    // twice. Slice 4 ships AEC + flips this back to multichannel with
-    // mic.cleaned.wav. Until then, upload audio.m4a (the streaming-mixed
-    // mono output produced by AudioFinalizer) and rely on diarize=true.
+    // The worker swaps the diarized mode below for channel speakers when both
+    // raw streams carry speech, so diarization is only the fallback.
     //
     // Codex rc1-final P0.1 + P0.2: previously prepareAudio called
     // AudioMixer.mix to write mixed.wav as a SECOND copy of the mix,
@@ -81,10 +74,7 @@ extension AppDelegate {
       keyterms: keyterms,
       modelID: engineMode == .local ? CohereMLXBackend.modelID : "scribe_v2"
     )
-    // SpeakerMappingBuilder returns empty for single-channel diarized
-    // because diarization clusters voices by acoustic features, not by
-    // channel; speaker_0/_1 don't reliably correspond to mic vs system.
-    let mapping = SpeakerMappingBuilder.build(event: event, mode: request.mode)
+    let mapping = SpeakerMappingBuilder.build(event: event)
 
     // prepareAudio is a no-op now: audio.m4a is produced by
     // TranscriptionWorker.prepareCanonicalAudio (which calls the

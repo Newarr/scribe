@@ -17,6 +17,7 @@ public struct CohereMLXAdapterRequest: Sendable, Equatable {
     let inputSampleRate: Int
     let inputChannelCount: Int
     let audioDurationSeconds: Double
+    let channelActivity: ChannelActivity?
 
     public init(
         audioURL: URL,
@@ -26,7 +27,8 @@ public struct CohereMLXAdapterRequest: Sendable, Equatable {
         keyterms: [String],
         inputSampleRate: Int = 16_000,
         inputChannelCount: Int = 1,
-        audioDurationSeconds: Double = 0
+        audioDurationSeconds: Double = 0,
+        channelActivity: ChannelActivity? = nil
     ) {
         self.audioURL = audioURL
         self.modelID = modelID
@@ -36,6 +38,7 @@ public struct CohereMLXAdapterRequest: Sendable, Equatable {
         self.inputSampleRate = inputSampleRate
         self.inputChannelCount = inputChannelCount
         self.audioDurationSeconds = audioDurationSeconds
+        self.channelActivity = channelActivity
     }
 }
 
@@ -43,11 +46,13 @@ public struct CohereMLXSegment: Sendable, Equatable {
     public let text: String
     public let startSeconds: Double
     public let endSeconds: Double
+    public let speaker: String?
 
-    public init(text: String, startSeconds: Double, endSeconds: Double) {
+    public init(text: String, startSeconds: Double, endSeconds: Double, speaker: String? = nil) {
         self.text = text
         self.startSeconds = startSeconds
         self.endSeconds = endSeconds
+        self.speaker = speaker
     }
 }
 
@@ -141,6 +146,7 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     public static let modelID = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
     static let defaultRequestModelID = modelID
     static let defaultLanguageCode = "en"
+    static let unattributedSpeaker = "Speaker A"
     static let nativeModelTypeName = "CohereTranscribeModel"
     static let nativeModuleNames = ["MLXAudioSTT", "MLXAudioCore"]
 
@@ -196,6 +202,7 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
 
     public func transcribe(_ request: EngineRequest) async throws -> EngineResponse {
         let language = Self.normalizedLanguageCode(from: request.languageCode)
+        let channelActivity = request.mode.channelActivity
         let duration = try await durationReader.durationSeconds(for: request.audioURL)
         let localRequest = CohereMLXAdapterRequest(
             audioURL: request.audioURL,
@@ -205,7 +212,8 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
             keyterms: [],
             inputSampleRate: Self.inferenceSampleRate,
             inputChannelCount: Self.inferenceChannelCount,
-            audioDurationSeconds: duration
+            audioDurationSeconds: duration,
+            channelActivity: channelActivity
         )
         let output = try await adapter.transcribe(localRequest)
         if let reason = DegenerateOutputDetector.evaluate(output.text) {
@@ -224,7 +232,7 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
             utterances = []
         } else if output.segments.isEmpty {
             utterances = [EngineResponse.Utterance(
-                speaker: "Speaker A",
+                speaker: channelActivity?.speaker(from: 0, to: duration) ?? Self.unattributedSpeaker,
                 startSeconds: 0,
                 endSeconds: duration,
                 text: output.text
@@ -232,7 +240,7 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         } else {
             utterances = output.segments.map { segment in
                 EngineResponse.Utterance(
-                    speaker: "Speaker A",
+                    speaker: segment.speaker ?? Self.unattributedSpeaker,
                     startSeconds: segment.startSeconds,
                     endSeconds: segment.endSeconds,
                     text: segment.text
@@ -310,9 +318,17 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
         guard let vad = try? SileroVAD.fromModelDirectory(vadModelDirectoryURL) else {
             Log.engine.warning("NativeCohereMLXAdapter: Silero VAD unavailable at \(self.vadModelDirectoryURL.path, privacy: .public); transcribing without silence gating")
             let output = model.generate(audio: audio, generationParameters: parameters)
+            let segments = Self.segments(from: output.segments).map { segment in
+                CohereMLXSegment(
+                    text: segment.text,
+                    startSeconds: segment.startSeconds,
+                    endSeconds: segment.endSeconds,
+                    speaker: request.channelActivity?.speaker(from: segment.startSeconds, to: segment.endSeconds)
+                )
+            }
             return CohereMLXAdapterResponse(
                 text: output.text,
-                segments: Self.segments(from: output.segments),
+                segments: segments,
                 detectedLanguage: output.language
             )
         }
@@ -335,7 +351,13 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
             sampleCount: sampleCount,
             sampleRate: sampleRate,
             maxChunkSeconds: Double(CohereMLXBackend.inferenceChunkDurationSeconds),
-            splitPoint: { Self.lowestEnergySplitPoint(in: audio, searchRange: $0, sampleRate: sampleRate) }
+            splitPoint: { Self.lowestEnergySplitPoint(in: audio, searchRange: $0, sampleRate: sampleRate) },
+            speakerOf: { span in
+                request.channelActivity?.speaker(
+                    from: Double(span.start) / Double(sampleRate),
+                    to: Double(span.end) / Double(sampleRate)
+                )
+            }
         )
 
         var texts: [String] = []
@@ -350,7 +372,8 @@ public struct NativeCohereMLXAdapter: CohereMLXTranscribing {
             segments.append(CohereMLXSegment(
                 text: text,
                 startSeconds: chunk.startSeconds(sampleRate: sampleRate),
-                endSeconds: chunk.endSeconds(sampleRate: sampleRate)
+                endSeconds: chunk.endSeconds(sampleRate: sampleRate),
+                speaker: chunk.speaker
             ))
             if detectedLanguage == nil { detectedLanguage = output.language }
         }

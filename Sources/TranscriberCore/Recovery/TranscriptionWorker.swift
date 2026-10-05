@@ -154,7 +154,7 @@ public actor TranscriptionWorker {
         // file (the user's voice carries the strongest language signal;
         // system audio can be music / silence / a different language).
         // Failure here is non-fatal — fall through to engine auto-detect.
-        let resolvedRequest = await resolveLanguage(for: request)
+        let resolvedRequest = await resolveLanguage(for: requestWithChannelSpeakers(request))
 
         // Resume from the persisted attempt count, not from zero, so a relaunch
         // during the 5m/30m backoff doesn't grant a fresh retry budget.
@@ -423,6 +423,28 @@ public actor TranscriptionWorker {
     /// `languageCode` filled in. If the caller already specified a
     /// language, or the detector returns nil (failure / no detector),
     /// the request is returned unchanged.
+    private func requestWithChannelSpeakers(_ request: EngineRequest) -> EngineRequest {
+        let activity: ChannelActivity?
+        do {
+            activity = try ChannelActivity.measure(
+                mic: directory.micFinal,
+                system: directory.systemFinal,
+                ptsLog: directory.ptsStreamingLog
+            )
+        } catch {
+            Log.engine.info("Channel activity unavailable, keeping diarized speakers: \(String(describing: error), privacy: .public)")
+            return request
+        }
+        guard let activity else { return request }
+        return EngineRequest(
+            audioURL: request.audioURL,
+            mode: .speakersByChannel(activity),
+            languageCode: request.languageCode,
+            keyterms: request.keyterms,
+            modelID: request.modelID
+        )
+    }
+
     private func resolveLanguage(for request: EngineRequest) async -> EngineRequest {
         guard request.languageCode == nil, let detector = languageDetector else {
             return request

@@ -561,7 +561,7 @@ final class SessionSupervisorTests: XCTestCase {
         let engine = FakeEngine(responses: responses)
         let request = EngineRequest(
             audioURL: dir.url.appendingPathComponent("multichannel.wav"),
-            mode: .multichannel,
+            mode: .singleChannelDiarized(numSpeakers: 2),
             languageCode: nil,
             keyterms: [],
             modelID: requestModelID

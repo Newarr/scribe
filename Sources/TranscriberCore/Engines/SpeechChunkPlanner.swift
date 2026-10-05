@@ -19,10 +19,12 @@ struct SpeechSpan: Sendable, Equatable {
 struct SpeechChunk: Sendable, Equatable {
     let startSample: Int
     let endSample: Int
+    let speaker: String?
 
-    init(startSample: Int, endSample: Int) {
+    init(startSample: Int, endSample: Int, speaker: String? = nil) {
         self.startSample = startSample
         self.endSample = endSample
+        self.speaker = speaker
     }
 
     func startSeconds(sampleRate: Int) -> Double {
@@ -54,7 +56,8 @@ enum SpeechChunkPlanner {
         sampleRate: Int,
         maxChunkSeconds: Double = 30,
         maxMergeGapSeconds: Double = 1.0,
-        splitPoint: (Range<Int>) -> Int = { $0.lowerBound + $0.count / 2 }
+        splitPoint: (Range<Int>) -> Int = { $0.lowerBound + $0.count / 2 },
+        speakerOf: (SpeechSpan) -> String? = { _ in nil }
     ) -> [SpeechChunk] {
         let maxChunkSamples = Int(maxChunkSeconds * Double(sampleRate))
         let maxGapSamples = Int(maxMergeGapSeconds * Double(sampleRate))
@@ -77,18 +80,21 @@ enum SpeechChunkPlanner {
         var chunks: [SpeechChunk] = []
         var chunkStart = pieces[0].start
         var chunkEnd = pieces[0].end
+        var chunkSpeaker = speakerOf(pieces[0])
         for span in pieces.dropFirst() {
             let gap = span.start - chunkEnd
             let mergedLength = span.end - chunkStart
-            if gap <= maxGapSamples && mergedLength <= maxChunkSamples {
+            let speaker = speakerOf(span)
+            if gap <= maxGapSamples && mergedLength <= maxChunkSamples && speaker == chunkSpeaker {
                 chunkEnd = span.end
             } else {
-                chunks.append(SpeechChunk(startSample: chunkStart, endSample: chunkEnd))
+                chunks.append(SpeechChunk(startSample: chunkStart, endSample: chunkEnd, speaker: chunkSpeaker))
                 chunkStart = span.start
                 chunkEnd = span.end
+                chunkSpeaker = speaker
             }
         }
-        chunks.append(SpeechChunk(startSample: chunkStart, endSample: chunkEnd))
+        chunks.append(SpeechChunk(startSample: chunkStart, endSample: chunkEnd, speaker: chunkSpeaker))
         return chunks
     }
 
