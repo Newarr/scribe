@@ -76,35 +76,19 @@ public actor TranscriptionWorker {
     }
 
     public func run() async -> FinalState {
-        // Read the on-disk transcript once. Used both to skip already-terminal
-        // sessions AND to recover the retry attempt count after an app relaunch
-        // mid-backoff (codex slice-7 P2.2).
-        let existing = TranscriptFrontmatterReader.read(at: directory.transcript)
-
-        if let existing, existing.status == .complete || (existing.status == .failed && !retryTerminalFailures) {
-            return existing.status == .complete ? .complete : .failed(reason: "already terminal on disk")
-        }
-
-        // Phase γ: atomic per-session claim. Two workers running against the
-        // same directory (running app + relaunched supervisor scan racing on
-        // the same pending session) would clobber each other's writes.
-        // acquire returns nil if a live worker holds the claim — return
-        // cancelled so the caller knows we declined cleanly.
         guard let claimToken = SessionClaim.acquire(at: directory.claim) else {
             Log.engine.info("Worker declined: claim held by another process")
             return .cancelled
         }
-        // Heartbeat task keeps the claim alive while we work. Cancellation
-        // flows through to the heartbeat loop on every exit path.
-        let heartbeatTask = Task { [claimToken] in
-            while Task.isCancelled == false {
-                SessionClaim.heartbeat(claimToken)
-                try? await Task.sleep(nanoseconds: UInt64(SessionClaim.defaultHeartbeatInterval * 1_000_000_000))
-            }
+        defer { SessionClaim.release(claimToken) }
+
+        let existing = TranscriptFrontmatterReader.read(at: directory.transcript)
+        if existing?.status == .complete {
+            reconcileCompletedSession()
+            return .complete
         }
-        defer {
-            heartbeatTask.cancel()
-            SessionClaim.release(claimToken)
+        if existing?.status == .failed && !retryTerminalFailures {
+            return .failed(reason: "already terminal on disk")
         }
 
         // One-shot audio preparation before the retry loop. Failure here is
@@ -142,7 +126,7 @@ public actor TranscriptionWorker {
         // missing file.
         if canonicalAudioPath.isEmpty
             && request.audioURL.lastPathComponent == CanonicalAudio.fileName
-            && !FileManager.default.fileExists(atPath: request.audioURL.path) {
+            && !CanonicalAudio.isUsable(at: request.audioURL) {
             let reason = "AudioFinalizer did not produce audio.m4a; cannot upload (raw streams remain on disk for manual recovery)"
             await writeFailed(reason: reason)
             return .failed(reason: reason)
@@ -180,20 +164,7 @@ public actor TranscriptionWorker {
                     Log.engine.error("writeComplete failed: \(String(describing: error), privacy: .public)")
                     return .failed(reason: "transcript write failed: \(error)")
                 }
-                let metadataWritten = writeMetadata(status: .complete, context: completedContext, audioPath: canonicalAudioPath)
-                // Phase ι: spec line 102. Default-OFF keepRawStreams
-                // means raw streams are deleted ONLY after the terminal
-                // success state has been written to disk. We require:
-                //   (a) keepRawStreams == false
-                //   (b) the canonical audio.m4a actually exists on disk
-                //   (c) metadata.json was written successfully (codex
-                //       rc1-final P1.1: don't delete the raws when the
-                //       metadata is half-written, leaving JSON consumers
-                //       with stale state)
-                // NEVER deletes on pending / retrying / failed.
-                if metadataWritten {
-                    cleanupRawStreamsIfPolicyAllows()
-                }
+                reconcileCompletedSession()
                 return .complete
             } catch is CancellationError {
                 return .cancelled
@@ -374,21 +345,19 @@ public actor TranscriptionWorker {
     /// paths can stamp the same canonical path into metadata.
     private func prepareCanonicalAudio() async -> String {
         let audioFinalURL = directory.audioFinal
-        if FileManager.default.fileExists(atPath: audioFinalURL.path) {
+        if CanonicalAudio.isUsable(at: audioFinalURL) {
             canonicalAudioPath = CanonicalAudio.fileName
             return canonicalAudioPath
         }
         do {
-            // Codex rc2-audit CAP-2: pass the PTS streaming log so
-            // AudioFinalizer can align mic/system on the same
-            // session timeline. Missing log → finalizer falls back
-            // to zip-from-frame-zero (legacy behavior).
+            let hasCaptureMetadata = [directory.ptsStreamingLog, directory.ptsSidecar, directory.startManifest]
+                .contains { FileManager.default.fileExists(atPath: $0.path) }
             try await AudioFinalizer.finalize(
                 mic: directory.micFinal,
                 system: directory.systemFinal,
                 output: audioFinalURL,
                 sampleRate: 48000,
-                ptsLogURL: directory.ptsStreamingLog
+                ptsLogURL: hasCaptureMetadata ? directory.ptsStreamingLog : nil
             )
             canonicalAudioPath = CanonicalAudio.fileName
             return canonicalAudioPath
@@ -470,46 +439,16 @@ public actor TranscriptionWorker {
         )
     }
 
-    /// Phase ι: spec line 102. Default-OFF deletes raw mic.m4a +
-    /// system.m4a after audio.m4a is on disk and the terminal status
-    /// has been written. The deletion is gated on:
-    ///   1. `keepRawStreams == false` (the spec default)
-    ///   2. `audio.m4a` actually exists at `directory.url/audio.m4a`
-    ///      (otherwise we'd orphan the user's only copy)
-    ///
-    /// NEVER fires on pending / retrying / failed — those states may
-    /// need the raws for retry or recovery. Only invoked from the
-    /// `.complete` happy path.
-    private func cleanupRawStreamsIfPolicyAllows() {
-        guard !keepRawStreams else {
-            Log.engine.info("keepRawStreams=true: preserving mic.m4a + system.m4a")
-            return
-        }
-        let canonicalAudio = directory.audioFinal
-        guard FileManager.default.fileExists(atPath: canonicalAudio.path) else {
-            Log.engine.warning("Skipping raw-stream cleanup: audio.m4a missing — preserving mic.m4a + system.m4a as fallback")
-            return
-        }
-
-        for url in [directory.micFinal, directory.systemFinal] {
-            do {
-                if FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
-                }
-            } catch {
-                // Best-effort: log but don't fail the worker. The user
-                // has audio.m4a; the raws being slow to delete just
-                // means they'll persist until the next sweep.
-                Log.engine.warning("Failed to delete raw stream \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
-            }
+    private func reconcileCompletedSession() {
+        do {
+            try CompletedSession.repairMetadataAndCleanup(in: directory, keepRawStreams: keepRawStreams)
+        } catch {
+            Log.engine.error("Completed session cleanup deferred: \(String(describing: error), privacy: .public)")
         }
     }
 
     /// Writes metadata.json mirroring the transcript frontmatter.
     /// Returns true on success, false on write failure (logged).
-    /// Codex rc1-final P1.1: callers gate raw-stream cleanup on the
-    /// success of this write, so half-written metadata can't leave
-    /// JSON consumers with stale state alongside deleted raws.
     @discardableResult
     private func writeMetadata(status: TranscriptStatus, context: TranscriptContext, audioPath: String, failureDetails: TranscriptFailureDetails? = nil) -> Bool {
         // Metadata.audio is a single string per spec line 251-255; pick the

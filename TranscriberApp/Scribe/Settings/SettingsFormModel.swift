@@ -1,13 +1,6 @@
 import SwiftUI
 import TranscriberCore
 
-/// Observable backing store for the Settings form. SwiftUI binds to the
-/// `@Published` fields; on Save the controller plucks `currentSettings`
-/// out and hands it to `SettingsStore.commit(_:)`.
-///
-/// API key is stored in the macOS Keychain (separate from settings
-/// blob); the form reads and writes it directly so the Save button
-/// commits both at once.
 @MainActor
 final class SettingsFormModel: ObservableObject {
   @Published var outputRoot: URL
@@ -20,15 +13,13 @@ final class SettingsFormModel: ObservableObject {
   @Published var startStopShortcut: KeyboardShortcutSetting
   @Published var transcriptionLanguage: String?
   @Published var apiKey: String
-  @Published var apiKeyEditedFromInitial: Bool = false
   @Published var isSavingCloudAPIKey: Bool = false
   @Published var saveError: String?
   @Published var engineViewState: EngineSettingsViewState
   @Published var pendingLocalModelRemoval: EngineSettingsEffect?
 
   let initialSnapshot: SessionSettings
-  private let keychainService: String
-  private let keychainAccount: String
+  private let keychain: any KeychainPersisting
   private var initialAPIKey: String
   private let engineReadiness: EngineReadinessProbing
   private let onRetryLocalModel: @MainActor () async -> LocalModelCacheStatus
@@ -39,6 +30,7 @@ final class SettingsFormModel: ObservableObject {
     keychainService: String,
     keychainAccount: String,
     engineReadiness: EngineReadinessProbing,
+    keychain: (any KeychainPersisting)? = nil,
     onRetryLocalModel: @escaping @MainActor () async -> LocalModelCacheStatus = {
       .notDownloaded(modelID: CohereMLXBackend.modelID)
     },
@@ -54,13 +46,12 @@ final class SettingsFormModel: ObservableObject {
     self.showInMenuBar = initial.showInMenuBar
     self.startStopShortcut = initial.startStopShortcut
     self.transcriptionLanguage = initial.transcriptionLanguage
-    self.keychainService = keychainService
-    self.keychainAccount = keychainAccount
+    let keychain = keychain ?? KeychainStore(service: keychainService, account: keychainAccount)
+    self.keychain = keychain
     self.engineReadiness = engineReadiness
     self.onRetryLocalModel = onRetryLocalModel
     self.onClearLocalModelCache = onClearLocalModelCache
 
-    let keychain = KeychainStore(service: keychainService, account: keychainAccount)
     let stored = (try? keychain.read()) ?? ""
     self.initialAPIKey = stored
     self.apiKey = stored
@@ -168,18 +159,14 @@ final class SettingsFormModel: ObservableObject {
     return cloudAPIKeyHasChanges ? "Unsaved key edit" : "Key saved in Keychain"
   }
 
-  /// Commits the API key through Keychain. Returns true on success.
-  /// Pass a `keychainOverride` for testing with a fake seam; production
-  /// always uses `KeychainStore(service:account:)`.
   @discardableResult
-  func persistAPIKeyIfChanged(keychainOverride: (any KeychainPersisting)? = nil) async -> Bool {
+  func persistAPIKeyIfChanged(
+    onCommitSettings: @MainActor (SessionSettings) async -> Void
+  ) async -> Bool {
     guard apiKey != initialAPIKey else { return true }
     isSavingCloudAPIKey = true
     defer { isSavingCloudAPIKey = false }
     let candidate = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-    let keychain: any KeychainPersisting =
-      keychainOverride
-      ?? KeychainStore(service: keychainService, account: keychainAccount)
     do {
       if candidate.isEmpty {
         try keychain.delete()
@@ -193,8 +180,8 @@ final class SettingsFormModel: ObservableObject {
         initialAPIKey = candidate
         saveError = "ElevenLabs API key saved to Keychain."
       }
-      apiKeyEditedFromInitial = false
       await refreshEngineViewState()
+      await onCommitSettings(currentSettings)
       return true
     } catch {
       saveError =
@@ -204,10 +191,11 @@ final class SettingsFormModel: ObservableObject {
   }
 
   @discardableResult
-  func clearCloudAPIKey(keychainOverride: (any KeychainPersisting)? = nil) async -> Bool {
+  func clearCloudAPIKey(
+    onCommitSettings: @MainActor (SessionSettings) async -> Void
+  ) async -> Bool {
     apiKey = ""
-    apiKeyEditedFromInitial = true
-    return await persistAPIKeyIfChanged(keychainOverride: keychainOverride)
+    return await persistAPIKeyIfChanged(onCommitSettings: onCommitSettings)
   }
 
   func canCloseOrSurfaceUnsavedCloudKeyWarning() -> Bool {

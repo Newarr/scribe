@@ -5,9 +5,6 @@ import AppKit
 /// `onClose` fires after the window closes so the owning controller can
 /// drop its window reference. Used by the Settings window, the
 /// Permissions onboarding window, and the Diagnostics window.
-///
-/// Lives in Settings/ (not DesignSystem/) so the settings source-guard
-/// tests keep `windowShouldClose` anchored to real code.
 final class CloseCallbackWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
   private let shouldClose: @MainActor () -> Bool
   private let onClose: @MainActor () -> Void

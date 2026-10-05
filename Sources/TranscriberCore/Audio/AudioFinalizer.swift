@@ -93,9 +93,9 @@ public enum AudioFinalizer {
 
     let writerSettings = aacMonoSettings(sampleRate: sampleRate)
 
-    if let ptsLogURL, FileManager.default.fileExists(atPath: ptsLogURL.path) {
+    if let ptsLogURL {
+      guard FileManager.default.fileExists(atPath: ptsLogURL.path) else { throw FinalizeError.invalidPTSLog }
       let timeline = try readPTSTimeline(at: ptsLogURL, outputSampleRate: sampleRate)
-      if !timeline.mic.isEmpty || !timeline.system.isEmpty {
         try await finalizeWithTimeline(
           mic: mic,
           system: system,
@@ -107,7 +107,6 @@ public enum AudioFinalizer {
           writerSettings: writerSettings
         )
         return
-      }
     }
 
     let micPrependFrames: Int = 0

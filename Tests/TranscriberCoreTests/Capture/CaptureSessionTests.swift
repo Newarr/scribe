@@ -13,6 +13,85 @@ final class CaptureSessionTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
+    func testCaptureTimingGapFinalizesWithAllAudioPreserved() async throws {
+        let id = SessionID(from: Date(), timeZone: TimeZone(identifier: "UTC")!)
+        let directory = try SessionDirectory.create(under: root, id: id)
+        let mic = FakeAudioCaptureSource()
+        let system = FakeAudioCaptureSource()
+        let session = try CaptureSession(directory: directory, mic: mic, system: system, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+        for pts in [100.0, 100.3] {
+            mic.emit(SyntheticSampleBuffer.make(ptsSeconds: pts, sampleRate: 48000, channelCount: 1, frameCount: 4800, sampleValue: 0.25))
+            system.emit(SyntheticSampleBuffer.make(ptsSeconds: pts, sampleRate: 48000, channelCount: 1, frameCount: 4800, sampleValue: 0))
+        }
+        try await session.stop()
+        try await AudioFinalizer.finalize(
+            mic: directory.micFinal, system: directory.systemFinal,
+            output: directory.audioFinal, ptsLogURL: directory.ptsStreamingLog
+        )
+        let audio = try AVAudioFile(forReading: directory.audioFinal)
+        XCTAssertEqual(Double(audio.length) / audio.processingFormat.sampleRate, 0.4, accuracy: 0.001)
+        let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(audio.length))!
+        try audio.read(into: buffer)
+        let samples = buffer.floatChannelData![0]
+        let firstSpeechEnergy = (1000..<3000).reduce(Float.zero) { $0 + abs(samples[$1]) }
+        let gapEnergy = (7000..<12000).reduce(Float.zero) { $0 + abs(samples[$1]) }
+        let finalSpeechEnergy = (16000..<18000).reduce(Float.zero) { $0 + abs(samples[$1]) }
+        XCTAssertGreaterThan(firstSpeechEnergy, 100)
+        XCTAssertLessThan(gapEnergy, 1)
+        XCTAssertGreaterThan(finalSpeechEnergy, 100)
+        let analysisFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+        let timeline = try AudioFinalizer.readPTSTimeline(at: directory.ptsStreamingLog, outputSampleRate: 16000)
+        let reader = try AudioFinalizer.TimelineStreamReader(
+            file: AVAudioFile(forReading: directory.micFinal), target: analysisFormat,
+            segments: timeline.mic, chunkFrames: 800
+        )
+        var analysisSamples = [Float](repeating: 0, count: 6400)
+        try analysisSamples.withUnsafeMutableBufferPointer {
+            try reader.render(into: $0.baseAddress!, outputStartFrame: 0, frameCount: $0.count)
+        }
+        XCTAssertEqual(reader.endFrame, 6400)
+        XCTAssertGreaterThan(analysisSamples[5300..<6000].reduce(Float.zero) { $0 + abs($1) }, 50)
+        XCTAssertLessThan(analysisSamples[2200..<4000].reduce(Float.zero) { $0 + abs($1) }, 1)
+    }
+
+    func testCompetingCaptureCannotChangeExistingAudio() throws {
+        let id = SessionID(from: Date(), timeZone: TimeZone(identifier: "UTC")!)
+        let directory = try SessionDirectory.create(under: root, id: id)
+        let claim = try XCTUnwrap(SessionClaim.acquire(at: directory.claim))
+        defer { SessionClaim.release(claim) }
+        let audio = Data("active recording bytes".utf8)
+        try audio.write(to: directory.micPartial)
+        XCTAssertThrowsError(try CaptureSession(
+            directory: directory, mic: FakeAudioCaptureSource(), system: FakeAudioCaptureSource(),
+            sampleRate: 48000, channelCount: 1
+        )) { XCTAssertEqual($0 as? CaptureSession.CaptureError, .alreadyClaimed) }
+        XCTAssertEqual(try Data(contentsOf: directory.micPartial), audio)
+    }
+
+    func testSourceStopFailureRetainsClaimUntilRetry() async throws {
+        let id = SessionID(from: Date(), timeZone: TimeZone(identifier: "UTC")!)
+        let directory = try SessionDirectory.create(under: root, id: id)
+        let mic = FakeAudioCaptureSource()
+        let system = FakeAudioCaptureSource()
+        let session = try CaptureSession(directory: directory, mic: mic, system: system, sampleRate: 48000, channelCount: 1)
+        try await session.start()
+        mic.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        system.emit(SyntheticSampleBuffer.make(ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480))
+        mic.stopError = FakeAudioCaptureSource.StartError()
+        await XCTAssertThrowsErrorAsync(try await session.stop())
+        let needsStopRetry = await session.needsStopRetry
+        XCTAssertTrue(needsStopRetry)
+        XCTAssertNil(SessionClaim.acquire(at: directory.claim))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.transcript.path))
+        mic.stopError = nil
+        try await session.stop()
+        let stopped = await session.needsStopRetry
+        XCTAssertFalse(stopped)
+        let releasedClaim = try XCTUnwrap(SessionClaim.acquire(at: directory.claim))
+        SessionClaim.release(releasedClaim)
+    }
+
     func testFullLifecycleProducesAllArtifacts() async throws {
         let mic = FakeAudioCaptureSource()
         let sys = FakeAudioCaptureSource()
@@ -45,6 +124,11 @@ final class CaptureSessionTests: XCTestCase {
         let pts = try JSONDecoder().decode(PTSMetadata.self, from: try Data(contentsOf: dir.ptsSidecar))
         XCTAssertEqual(pts.mic.frameCount, 5 * 480)
         XCTAssertEqual(pts.system.frameCount, 5 * 480)
+        try await AudioFinalizer.finalize(
+            mic: dir.micFinal, system: dir.systemFinal,
+            output: dir.audioFinal, ptsLogURL: dir.ptsStreamingLog
+        )
+        XCTAssertTrue(CanonicalAudio.isUsable(in: dir.url))
     }
 
     /// CDX-S2-CHAL.1 regression: directory.finalize() (atomic .partial -> .m4a rename)

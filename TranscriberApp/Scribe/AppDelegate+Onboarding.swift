@@ -157,7 +157,6 @@ extension AppDelegate {
       starter: AppOnboardingTestRecordingStarter(start: {
         [weak self] allowPendingPrivacyAcknowledgementForOnboardingTest in
         guard let self else { return false }
-        // Source-guard marker: await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)
         await self.startRecording(
           allowPendingPrivacyAcknowledgementForOnboardingTest:
             allowPendingPrivacyAcknowledgementForOnboardingTest)

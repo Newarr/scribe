@@ -40,7 +40,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var menu: RecordingMenu?
   private var hotKeyRegistrar: StartStopHotKeyRegistrar?
   var session: CaptureSession?
-  var status: SessionStatus = .idle
+  var captureStopTask: Task<Void, Never>?
+  enum CapturePhase {
+    case idle, starting, recording, stopping, failed
+
+    var status: SessionStatus {
+      switch self {
+      case .idle: .idle
+      case .starting: .starting
+      case .recording: .recording
+      case .stopping: .stopping
+      case .failed: .failed
+      }
+    }
+  }
+
+  struct TranscriptionPresentation {
+    enum State {
+      case running
+      case finished(TranscriptionWorker.FinalState)
+
+      var status: SessionStatus {
+        switch self {
+        case .running: .finalized
+        case .finished(.failed): .failed
+        case .finished(.complete), .finished(.cancelled): .idle
+        }
+      }
+    }
+
+    let directory: URL
+    let engineMode: EngineMode
+    let sourceLabel: String
+    var state: State = .running
+  }
+
+  var capturePhase: CapturePhase = .idle
+  var foregroundTranscription: TranscriptionPresentation?
+  var transcriptionTasks: [URL: Task<Void, Never>] = [:]
+  let termination = TerminationCoordinator()
+
+  var status: SessionStatus {
+    capturePhase == .idle ? foregroundTranscription?.state.status ?? .idle : capturePhase.status
+  }
+
+  var canStartRecording: Bool {
+    !termination.hasStarted && session == nil && captureStopTask == nil
+      && (capturePhase == .idle || capturePhase == .failed)
+  }
   let permissions = PermissionsService()
   let calendar = CalendarLookup()
   let calendarWatcher = CalendarWatcher()
@@ -66,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // Detection layer (slice 5 light)
   var detectionEngine: DetectionEngine?
   private var processWatcher: ProcessWatcher?
-  let startPromptCoordinator = StartPromptCoordinator()
+  lazy var startPromptCoordinator = StartPromptCoordinator()
   private var queuedDetectionCandidate: QueuedDetectionCandidate?
   var pendingPromptCalendarEventForStart: CalendarEvent?
   var pendingPromptCandidateForStart: DetectionCandidate?
@@ -569,6 +616,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    requestTermination(confirm: Self.confirmRecordingQuit) {
+      NSApp.reply(toApplicationShouldTerminate: true)
+    }
+  }
+
+  func requestTermination(
+    confirm: () -> Bool,
+    completion: @escaping @MainActor () -> Void
+  ) -> NSApplication.TerminateReply {
+    guard !termination.hasStarted else { return .terminateLater }
+    let hasLiveCapture = session != nil || capturePhase == .starting || capturePhase == .recording
+    let relaunchAfterTermination = ScreenRecordingRelaunchAssist.isArmed()
+    if hasLiveCapture && !confirm() {
+      ScreenRecordingRelaunchAssist.disarm()
+      return .terminateCancel
+    }
+
     processWatcher?.stop()
     if let wakeObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
@@ -578,16 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NotificationCenter.default.removeObserver(calendarChangeObserver)
       self.calendarChangeObserver = nil
     }
-    Task { await self.calendarWatcher.stop() }
-    let inflight = Array(inflightTasks.values)
-    let hasLiveCapture = (session != nil)
-    let relaunchAfterTermination = ScreenRecordingRelaunchAssist.isArmed()
-
-    // Codex extensive-review P1.1 fix: a live CaptureSession isn't tracked
-    // in inflightTasks, so a Quit during recording previously exited
-    // immediately with the SCStream + AVAssetWriter still live, leaving
-    // .partial files and no transcript. Finalize the capture first.
-    if !hasLiveCapture && inflight.isEmpty {
+    let tasks = Array(inflightTasks.values) + Array(transcriptionTasks.values)
+    if !hasLiveCapture && tasks.isEmpty {
       if relaunchAfterTermination {
         ScreenRecordingRelaunchAssist.disarm()
         Self.spawnDelayedRelaunch()
@@ -595,64 +651,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return .terminateNow
     }
 
-    // Codex PM-review UX-20: confirm before quitting during
-    // recording. The user might have hit Cmd-Q by accident, or
-    // be unaware a recording is running. Default action is "stop
-    // and quit" (saves their work); secondary keeps recording.
-    if hasLiveCapture {
-      let alert = NSAlert()
-      alert.messageText = "Stop recording before quitting?"
-      alert.informativeText =
-        "Scribe is recording. Quitting now will save the audio and finalize the transcript before exit."
-      alert.addButton(withTitle: "Stop and quit")
-      alert.addButton(withTitle: "Keep recording")
-      alert.window.sharingType = WindowChromeSharing.confidential  // UX-4
-      let choice = alert.runModal()
-      if choice == .alertSecondButtonReturn {
-        Log.lifecycle.info("Quit cancelled by user; recording continues")
+    termination.start(
+      drain: { [self] in
+        tasks.forEach { $0.cancel() }
+        if session != nil {
+          await stopRecording()
+        }
+        await calendarWatcher.stop()
+        for task in tasks {
+          await task.value
+        }
+      },
+      completion: {
         if relaunchAfterTermination {
           ScreenRecordingRelaunchAssist.disarm()
+          Self.spawnDelayedRelaunch()
         }
-        return .terminateCancel
+        completion()
       }
-    }
-
-    Log.lifecycle.info(
-      "Quit requested: capture=\(hasLiveCapture, privacy: .public), in-flight tasks=\(inflight.count, privacy: .public); finalizing up to 10s"
     )
-    inflight.forEach { $0.cancel() }
-
-    Task { @MainActor in
-      // First, finalize any active recording. This produces mic.m4a +
-      // system.m4a + transcript.md so the next launch's supervisor can
-      // pick up the rest of the pipeline.
-      if hasLiveCapture {
-        await self.stopRecording()
-      }
-
-      // Then wait briefly for in-flight transcription tasks to observe
-      // cancellation. status: retrying on disk survives, so the next
-      // launch resumes them.
-      let deadline = Date().addingTimeInterval(10.0)
-      for task in inflight {
-        let remaining = deadline.timeIntervalSinceNow
-        if remaining <= 0 { break }
-        _ = await withTaskGroup(of: Void.self) { group in
-          group.addTask { _ = await task.value }
-          group.addTask {
-            try? await Task.sleep(nanoseconds: UInt64(max(0, remaining) * 1_000_000_000))
-          }
-          await group.next()
-          group.cancelAll()
-        }
-      }
-      if relaunchAfterTermination {
-        ScreenRecordingRelaunchAssist.disarm()
-        Self.spawnDelayedRelaunch()
-      }
-      NSApp.reply(toApplicationShouldTerminate: true)
-    }
     return .terminateLater
+  }
+
+  private static func confirmRecordingQuit() -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Stop recording before quitting?"
+    alert.informativeText =
+      "Scribe will save the recording before quitting. Any unfinished transcription will resume when Scribe starts again."
+    alert.addButton(withTitle: "Stop and quit")
+    alert.addButton(withTitle: "Keep recording")
+    alert.window.sharingType = WindowChromeSharing.confidential
+    return alert.runModal() == .alertFirstButtonReturn
   }
 
   @MainActor

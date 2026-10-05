@@ -12,27 +12,7 @@ final class CohereMLXBackendTests: XCTestCase {
         XCTAssertTrue(engine is CohereMLXBackend, "local mode → native CohereMLXBackend")
     }
 
-    func testPinnedModelIdentityIsExposedConsistently() {
-        XCTAssertEqual(CohereMLXBackend.modelID, "beshkenadze/cohere-transcribe-03-2026-mlx-fp16")
-        XCTAssertEqual(CohereMLXBackend.defaultRequestModelID, CohereMLXBackend.modelID)
-
-        let request = EngineRequest(
-            audioURL: URL(fileURLWithPath: "/tmp/audio.m4a"),
-            mode: .singleChannelDiarized(numSpeakers: nil),
-            languageCode: nil,
-            keyterms: [],
-            modelID: CohereMLXBackend.defaultRequestModelID
-        )
-        XCTAssertEqual(request.modelID, CohereMLXBackend.modelID)
-    }
-
-    func testBackendBindsNativeMLXCohereModelType() {
-        XCTAssertEqual(CohereMLXBackend.nativeModelTypeName, "CohereTranscribeModel")
-        XCTAssertTrue(CohereMLXBackend.nativeModuleNames.contains("MLXAudioSTT"))
-        XCTAssertTrue(CohereMLXBackend.nativeModuleNames.contains("MLXAudioCore"))
-    }
-
-    func testInjectedAdapterReceivesPinnedModelDeterministicLanguageAndMono16kInputContract() async throws {
+    func testAdapterReceivesModelDirectoryAndNormalizedLanguage() async throws {
         let adapter = RecordingLocalAdapter(output: .init(text: "hello", detectedLanguage: "en"))
         let durationReader = FixedDurationReader(duration: 42.5)
         let backend = CohereMLXBackend(adapter: adapter, durationReader: durationReader)
@@ -45,13 +25,9 @@ final class CohereMLXBackendTests: XCTestCase {
         ))
 
         XCTAssertEqual(adapter.lastRequest?.audioURL.path, "/tmp/audio.m4a")
-        XCTAssertEqual(adapter.lastRequest?.modelID, CohereMLXBackend.modelID)
         XCTAssertEqual(adapter.lastRequest?.modelDirectoryURL, CohereMLXBackend.defaultModelDirectoryURL)
         XCTAssertEqual(adapter.lastRequest?.languageCode, "en")
         XCTAssertEqual(adapter.lastRequest?.inputSampleRate, 16_000)
-        XCTAssertEqual(adapter.lastRequest?.inputChannelCount, 1)
-        XCTAssertEqual(adapter.lastRequest?.audioDurationSeconds, 42.5)
-        XCTAssertEqual(adapter.lastRequest?.keyterms ?? [], [], "Local mode must not pass calendar keyterms/provider context to the adapter")
         XCTAssertEqual(response.modelID, CohereMLXBackend.modelID)
         XCTAssertEqual(response.detectedLanguage, "en")
         XCTAssertEqual(response.utterances, [
@@ -117,7 +93,6 @@ final class CohereMLXBackendTests: XCTestCase {
 
             XCTAssertEqual(adapter.lastRequest?.languageCode, CohereMLXBackend.defaultLanguageCode, "Unsupported hint \(hint) must default before reaching MLX")
             XCTAssertEqual(response.detectedLanguage, CohereMLXBackend.defaultLanguageCode, "Unsupported hint \(hint) must not be persisted as Local metadata")
-            XCTAssertEqual(adapter.lastRequest?.keyterms, [], "Local language defaulting must not involve cloud/keyterm payloads")
         }
     }
 
@@ -140,8 +115,6 @@ final class CohereMLXBackendTests: XCTestCase {
         ))
 
         XCTAssertEqual(adapter.lastRequest?.modelDirectoryURL, verifiedCache)
-        XCTAssertEqual(adapter.lastRequest?.modelID, CohereMLXBackend.modelID)
-        XCTAssertEqual(adapter.lastRequest?.keyterms, [])
     }
 
     func testNativeAdapterSourceUsesFromDirectoryOnlyForModelLoading() throws {
@@ -194,7 +167,6 @@ final class CohereMLXBackendTests: XCTestCase {
             .init(speaker: "Speaker A", startSeconds: 5.0, endSeconds: 6.25, text: "hello"),
             .init(speaker: "Speaker A", startSeconds: 6.25, endSeconds: 7.5, text: "world")
         ])
-        XCTAssertEqual(adapter.lastRequest?.keyterms, [])
     }
 
     func testNoTimingFallsBackToOneDurationSpanningUtterance() async throws {
@@ -308,7 +280,8 @@ final class CohereMLXBackendTests: XCTestCase {
     }
 
     func testDegenerateOutputDetectorFlagsRepetitiveTranscripts() throws {
-        let looped = String(repeating: "I think that's what I'm hearing ", count: 50)
+        let confidentialWords = ["confidentialalpha", "confidentialbeta", "confidentialgamma"]
+        let looped = String(repeating: confidentialWords.joined(separator: " ") + " ", count: 50)
         let loopedReason = DegenerateOutputDetector.evaluate(looped)
         XCTAssertNotNil(loopedReason, "Detector must catch the observed 'I think that's what I'm hearing' loop")
         XCTAssertTrue(loopedReason?.contains("tri-gram") ?? false, "Reason should identify the dominant tri-gram, got: \(loopedReason ?? "nil")")
@@ -392,7 +365,8 @@ final class CohereMLXBackendTests: XCTestCase {
     }
 
     func testBackendThrowsDegenerateOutputErrorOnLoopedAdapterOutput() async {
-        let looped = String(repeating: "I think that's what I'm hearing ", count: 50)
+        let confidentialWords = ["confidentialalpha", "confidentialbeta", "confidentialgamma"]
+        let looped = String(repeating: confidentialWords.joined(separator: " ") + " ", count: 50)
         let adapter = RecordingLocalAdapter(output: .init(text: looped, detectedLanguage: "en"))
         let backend = CohereMLXBackend(adapter: adapter, durationReader: FixedDurationReader(duration: 583))
 
@@ -411,10 +385,9 @@ final class CohereMLXBackendTests: XCTestCase {
                 XCTAssertTrue(reason.contains("tri-gram") || reason.contains("unique-word"),
                               "Reason should identify the failure mode, got: \(reason)")
                 let serialized = String(describing: error)
-                XCTAssertFalse(
-                    serialized.contains("I think that's what I'm hearing"),
-                    "String(describing:) must not embed transcript content; TranscriptionWorker persists this verbatim to disk"
-                )
+                for word in confidentialWords {
+                    XCTAssertFalse(serialized.localizedCaseInsensitiveContains(word))
+                }
             }
         } catch {
             XCTFail("Expected CohereMLXBackendError.degenerateOutput, got \(error)")

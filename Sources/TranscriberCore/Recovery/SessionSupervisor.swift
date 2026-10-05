@@ -39,12 +39,6 @@ public actor SessionSupervisor {
         public var totalFailed: Int { markedFailed + partialAudioMarkedFailed }
     }
 
-    /// Codex rc1-final P1.2: needed for the launch-time raw-stream
-    /// sweep. nil here means "preserve everything" (treats every
-    /// terminal-complete session as if keepRawStreams=true was in
-    /// effect when it ran).
-    private var keepRawStreams: Bool = false
-
     public init() {}
 
     /// Walks `root`, recovers orphaned audio, and dispatches workers for any
@@ -55,7 +49,6 @@ public actor SessionSupervisor {
         contextFactory: ContextFactory,
         workerFactory: WorkerFactory
     ) async -> ScanResult {
-        self.keepRawStreams = keepRawStreams
         var result = ScanResult()
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
@@ -69,6 +62,11 @@ public actor SessionSupervisor {
                 continue
             }
             let dir = SessionDirectory(url: entry)
+            guard let claim = SessionClaim.acquire(at: dir.claim) else {
+                result.skipped += 1
+                continue
+            }
+            defer { SessionClaim.release(claim) }
 
             // Read existing frontmatter once. Reused for: terminal-status
             // skip, original-context preservation, attempts count.
@@ -81,28 +79,18 @@ public actor SessionSupervisor {
             // transcript body.
             if let existing, existing.status == .complete || existing.status == .failed {
                 result.skipped += 1
-                // Codex rc1-final P1.2: sweep raw streams that survived
-                // a prior cleanup attempt (immutable flag, transient I/O,
-                // half-written metadata gate). Only fires when the
-                // canonical audio.m4a is on disk AND the user opted-in
-                // to default-OFF retention. The session itself is
-                // terminal; we're just catching up on cleanup.
-                if existing.status == .complete && !keepRawStreams {
-                    sweepStrandedRawStreams(in: dir)
+                if existing.status == .complete {
+                    do {
+                        try CompletedSession.repairMetadataAndCleanup(in: dir, keepRawStreams: keepRawStreams)
+                    } catch {
+                        Log.engine.error("Completed session cleanup deferred: \(String(describing: error), privacy: .public)")
+                    }
                 }
                 continue
             }
 
-            let recovery = OrphanRecoverer.recover(dir)
+            let recovery = OrphanRecoverer.recover(dir, claim: claim)
             switch recovery {
-            case .activeCapture:
-                // Codex rc2-audit CAP-5: another process / window of
-                // this app holds an active capture claim on this
-                // directory. Skip — moving the .partial files would
-                // corrupt the live capture's AVAssetWriter output.
-                Log.engine.info("supervisor: skipping \(dir.url.lastPathComponent, privacy: .public): active capture claim held")
-                result.skipped += 1
-                continue
             case .alreadyFinalized:
                 break  // both tracks present pre-scan; no rescue counter
             case .rescued:
@@ -192,30 +180,6 @@ public actor SessionSupervisor {
         return result
     }
 
-    /// Codex rc1-final P1.2: sweep raw streams (mic.m4a / system.m4a)
-    /// from a terminal-complete session that previously failed
-    /// cleanup (immutable flag, transient I/O, half-written metadata
-    /// gate). Same guards as the worker's per-session cleanup:
-    ///   - audio.m4a must exist (don't orphan the user's only copy)
-    ///   - keepRawStreams must be false (handled at the call site)
-    /// NEVER sweeps for failed-status sessions — those raws are the
-    /// user's only path to manual recovery.
-    private func sweepStrandedRawStreams(in dir: SessionDirectory) {
-        let canonicalAudio = dir.audioFinal
-        guard FileManager.default.fileExists(atPath: canonicalAudio.path) else { return }
-        for url in [dir.micFinal, dir.systemFinal] {
-            if FileManager.default.fileExists(atPath: url.path) {
-                do {
-                    try FileManager.default.removeItem(at: url)
-                    Log.engine.info("Supervisor swept stranded raw stream: \(url.lastPathComponent, privacy: .public)")
-                } catch {
-                    Log.engine.warning("Supervisor sweep failed for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
-                }
-            }
-        }
-    }
-
-
     private static func writeFailedMetadata(
         in dir: SessionDirectory,
         context: TranscriptContext,
@@ -293,5 +257,28 @@ public actor SessionSupervisor {
             attendees: base.attendees,
             language: base.language
         )
+    }
+}
+
+
+enum CompletedSession {
+    static func repairMetadataAndCleanup(in directory: SessionDirectory, keepRawStreams: Bool) throws {
+        guard let transcript = TranscriptFrontmatterReader.read(at: directory.transcript),
+              transcript.status == .complete else { return }
+        let metadata = MetadataJSONWriter.Metadata(
+            status: .complete,
+            context: transcript.context,
+            audio: MetadataJSONWriter.primaryAudioReference(context: transcript.context),
+            aecStatus: .failed
+        )
+        try MetadataJSONWriter.write(at: directory.url.appendingPathComponent("metadata.json"), metadata: metadata)
+        guard !keepRawStreams,
+              CanonicalAudio.isUsable(at: directory.audioFinal),
+              transcript.context.audioRelativePaths == [CanonicalAudio.fileName] else { return }
+        for rawAudio in [directory.micFinal, directory.systemFinal] {
+            if FileManager.default.fileExists(atPath: rawAudio.path) {
+                try FileManager.default.removeItem(at: rawAudio)
+            }
+        }
     }
 }

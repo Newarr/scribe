@@ -330,6 +330,37 @@ final class AudioFinalizerTests: XCTestCase {
       surviving, goodBytes, "previous good output must not be overwritten by a failed retry")
   }
 
+  func testIncompleteTimelinePreservesRawAudioAndExistingOutput() async throws {
+    let micURL = tmp.appendingPathComponent("mic-incomplete.m4a")
+    let sysURL = tmp.appendingPathComponent("system-incomplete.m4a")
+    let ptsURL = tmp.appendingPathComponent("pts-incomplete.jsonl")
+    let outURL = tmp.appendingPathComponent("audio-incomplete.m4a")
+    try writeAACSilence(to: micURL, durationSec: 0.3)
+    try writeAACSilence(to: sysURL, durationSec: 0.3)
+    let originalMic = try Data(contentsOf: micURL)
+    let originalSystem = try Data(contentsOf: sysURL)
+    let originalOutput = Data("existing recording".utf8)
+    try originalOutput.write(to: outURL)
+    try writePTSLog(to: ptsURL, entries: [
+      PTSLogEntry(stream: "mic", ptsSeconds: 0, sampleCount: 4800, sampleRate: 48000),
+      PTSLogEntry(stream: "mic", ptsSeconds: 0.2, sampleCount: 4800, sampleRate: 48000),
+      PTSLogEntry(stream: "system", ptsSeconds: 0, sampleCount: 14400, sampleRate: 48000)
+    ])
+    do {
+      try await AudioFinalizer.finalize(mic: micURL, system: sysURL, output: outURL, ptsLogURL: ptsURL)
+      XCTFail("Expected missing timing coverage to fail")
+    } catch AudioFinalizer.FinalizeError.invalidPTSLog {}
+    XCTAssertEqual(try Data(contentsOf: micURL), originalMic)
+    XCTAssertEqual(try Data(contentsOf: sysURL), originalSystem)
+    XCTAssertEqual(try Data(contentsOf: outURL), originalOutput)
+  }
+
+  func testTruncatedTimelineIsRejected() throws {
+    let ptsURL = tmp.appendingPathComponent("pts-truncated.jsonl")
+    try "{\"ptsSeconds\":0}".write(to: ptsURL, atomically: true, encoding: .utf8)
+    XCTAssertThrowsError(try AudioFinalizer.readPTSTimeline(at: ptsURL, outputSampleRate: 48000))
+  }
+
   func testPTSTimelinePreservesInterBufferGap() async throws {
     let micURL = tmp.appendingPathComponent("mic-gap.m4a")
     let sysURL = tmp.appendingPathComponent("system-gap.m4a")
@@ -400,8 +431,8 @@ final class AudioFinalizerTests: XCTestCase {
       for i in 0..<frames { ptr[i] = Float(0.45 * sin(2 * .pi * 440 * Double(i) / 48000.0)) }
     }
     try writeAACSilence(to: sysURL, durationSec: 1.0)
-    let micEntries = (0..<93).map {
-      PTSLogEntry(stream: "mic", ptsSeconds: Double($0 * 512) / 48000, sampleCount: 512, sampleRate: 48000)
+    let micEntries = (0..<94).map {
+      PTSLogEntry(stream: "mic", ptsSeconds: Double($0 * 512) / 48000, sampleCount: min(512, 48000 - $0 * 512), sampleRate: 48000)
     }
     let systemEntries = (0..<50).map {
       PTSLogEntry(stream: "system", ptsSeconds: Double($0 * 960) / 48000, sampleCount: 960, sampleRate: 48000)
@@ -547,8 +578,8 @@ final class AudioFinalizerTests: XCTestCase {
       try writePTSLog(
         to: ptsURL,
         entries: [
-          PTSLogEntry(stream: "mic", ptsSeconds: 42.0, sampleCount: 4800, sampleRate: 48000),
-          PTSLogEntry(stream: "system", ptsSeconds: 42.0, sampleCount: 4800, sampleRate: 48000),
+          PTSLogEntry(stream: "mic", ptsSeconds: 42.0, sampleCount: 9600, sampleRate: 48000),
+          PTSLogEntry(stream: "system", ptsSeconds: 42.0, sampleCount: 9600, sampleRate: 48000),
         ])
     }
 

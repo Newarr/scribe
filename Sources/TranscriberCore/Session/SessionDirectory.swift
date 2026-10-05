@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct SessionDirectory: Equatable, Sendable {
     public let url: URL
@@ -11,23 +12,20 @@ public struct SessionDirectory: Equatable, Sendable {
         under parent: URL,
         id: SessionID
     ) throws -> SessionDirectory {
-        var targetUrl = parent.appendingPathComponent(id.slug)
-        var suffix = 2
-
-        // Check for collisions and resolve with suffix
-        while FileManager.default.fileExists(atPath: targetUrl.path) {
-            targetUrl = parent.appendingPathComponent(id.slugWithSuffix(suffix))
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        var suffix = 1
+        while true {
+            let name = suffix == 1 ? id.slug : id.slugWithSuffix(suffix)
+            let target = parent.appendingPathComponent(name)
+            if mkdir(target.path, 0o700) == 0 {
+                return SessionDirectory(url: target)
+            }
+            let failure = errno
+            guard failure == EEXIST else {
+                throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO)
+            }
             suffix += 1
         }
-
-        // Create directory with 0o700 permissions (owner read-write-execute only)
-        try FileManager.default.createDirectory(
-            at: targetUrl,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-
-        return SessionDirectory(url: targetUrl)
     }
 
     var micPartial: URL {
@@ -59,10 +57,6 @@ public struct SessionDirectory: Equatable, Sendable {
         url.appendingPathComponent("pts.jsonl")
     }
 
-    /// Atomic per-session claim file used by SessionClaim to prevent two
-    /// concurrent TranscriptionWorker runs (Phase γ). Stores
-    /// {pid, boot_time, started_at, heartbeat_at} so a relaunched
-    /// SessionSupervisor can detect a dead claimer and reclaim safely.
     public var claim: URL {
         url.appendingPathComponent("claim.json")
     }

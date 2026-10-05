@@ -39,7 +39,7 @@ public final class PTSCollector: @unchecked Sendable {
     private let streamingLogURL: URL?
     private let logQueue = DispatchQueue(label: "pts.collector.log", qos: .utility)
     private var logHandle: FileHandle?
-    private var logOpenAttempted = false
+    private var logError: Error?
     private var logTerminallyClosed = false
 
     init(streamingLogURL: URL? = nil) {
@@ -110,9 +110,13 @@ public final class PTSCollector: @unchecked Sendable {
     /// is safe to call repeatedly after capture has stopped. Mid-session
     /// readers use `synchronizeLogForRead()` instead so observing the log
     /// cannot disable future writes.
-    func flushLog() {
-        logQueue.sync {
-            self.synchronizeAndCloseLog(markTerminal: true)
+    func flushLog() throws {
+        try logQueue.sync {
+            do { try logHandle?.synchronize() } catch { logError = logError ?? error }
+            do { try logHandle?.close() } catch { logError = logError ?? error }
+            logHandle = nil
+            logTerminallyClosed = true
+            if let logError { throw logError }
         }
     }
 
@@ -123,7 +127,7 @@ public final class PTSCollector: @unchecked Sendable {
     /// must not throw on the survivable case.
     func loggedEntries() throws -> [PTSLogEntry] {
         guard let url = streamingLogURL else { return [] }
-        synchronizeLogForRead()
+        try synchronizeLogForRead()
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
         guard let text = String(data: data, encoding: .utf8) else { return [] }
@@ -152,64 +156,36 @@ public final class PTSCollector: @unchecked Sendable {
 
     private func appendLogEntry(_ entry: PTSLogEntry) {
         guard let url = streamingLogURL else { return }
-        // Encode on the caller (cheap, no I/O), dispatch the write so SCK
-        // output queues don't block on disk. Errors log + drop — losing a
-        // log line is preferable to deadlocking capture.
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(entry) else { return }
-        var encodedLine = data
-        encodedLine.append(0x0A) // '\n'
-        let line = encodedLine
-
         logQueue.async { [self] in
-            guard self.logTerminallyClosed == false else { return }
-            self.openLogIfNeeded(at: url)
-            guard let handle = self.logHandle else { return }
+            guard logError == nil else { return }
             do {
-                try handle.write(contentsOf: line)
+                guard !logTerminallyClosed else { throw POSIXError(.EPIPE) }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                var line = try encoder.encode(entry)
+                line.append(0x0A)
+                if logHandle == nil {
+                    if !FileManager.default.fileExists(atPath: url.path) {
+                        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                            throw CocoaError(.fileWriteUnknown)
+                        }
+                    }
+                    let handle = try FileHandle(forWritingTo: url)
+                    try handle.seekToEnd()
+                    logHandle = handle
+                }
+                try logHandle?.write(contentsOf: line)
             } catch {
-                Log.capture.error("PTS log write failed: \(String(describing: error), privacy: .public)")
+                logError = error
+                Log.capture.error("PTS log persistence failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
 
-    private func synchronizeLogForRead() {
-        logQueue.sync {
-            do {
-                try self.logHandle?.synchronize()
-            } catch {
-                Log.capture.error("PTS log sync failed: \(String(describing: error), privacy: .public)")
-            }
-        }
-    }
-
-    private func synchronizeAndCloseLog(markTerminal: Bool) {
-        do {
-            try self.logHandle?.synchronize()
-            try self.logHandle?.close()
-        } catch {
-            Log.capture.error("PTS log close failed: \(String(describing: error), privacy: .public)")
-        }
-        self.logHandle = nil
-        if markTerminal {
-            self.logTerminallyClosed = true
-        }
-    }
-
-    private func openLogIfNeeded(at url: URL) {
-        if logTerminallyClosed || logHandle != nil { return }
-        if logOpenAttempted == false { logOpenAttempted = true }
-        let fm = FileManager.default
-        if fm.fileExists(atPath: url.path) == false {
-            fm.createFile(atPath: url.path, contents: nil)
-        }
-        do {
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
-            logHandle = handle
-        } catch {
-            Log.capture.error("PTS log open failed: \(String(describing: error), privacy: .public)")
+    private func synchronizeLogForRead() throws {
+        try logQueue.sync {
+            do { try logHandle?.synchronize() } catch { logError = logError ?? error }
+            if let logError { throw logError }
         }
     }
 }

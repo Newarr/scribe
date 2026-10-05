@@ -9,6 +9,7 @@ extension AppDelegate {
   /// as the supervisor dispatches a worker).
   @MainActor
   func scheduleSupervisorRecovery() {
+    guard !termination.hasStarted else { return }
     let snap = settings
     let outputRoot = snap.outputRoot
     let keepRaw = snap.keepRawStreams
@@ -50,21 +51,25 @@ extension AppDelegate {
 
   @MainActor
   func markRecoverySetupRequired(payload: SessionRepairRouting.LocalRepairPayload? = nil) {
-    status = .idle
     setupNeedsAttention = true
     sessionRepairPayload = payload
     menu?.setupNeedsAttention = true
-    menu?.outcomeFolderURL = payload?.sessionDirectory
+    if session == nil, capturePhase != .starting {
+      menu?.outcomeFolderURL = payload?.sessionDirectory
+    }
     menu?.rebuild(for: status)
     applyTrustIcon()
   }
 
   @MainActor
   private func showRecoveryNoticeIfNeeded(result: SessionSupervisor.ScanResult) {
-    guard let notice = SessionRepairRouting.recoveryNotice(for: result) else { return }
+    guard !termination.hasStarted,
+      let notice = SessionRepairRouting.recoveryNotice(for: result) else { return }
     if let payload = notice.localRepairPayloads.first {
       sessionRepairPayload = payload
-      menu?.outcomeFolderURL = payload.sessionDirectory
+      if session == nil, capturePhase != .starting {
+        menu?.outcomeFolderURL = payload.sessionDirectory
+      }
     }
     let title = notice.transcribingStarted ? "Transcription is resuming" : notice.title
     let message = notice.transcribingStarted ? notice.title : notice.message
@@ -87,9 +92,11 @@ extension AppDelegate {
   func retryFailedSession() async {
     guard let sessionURL = menu?.outcomeFolderURL ?? mostRecentFailedSessionURL() else {
       Log.engine.error("Failed-session retry unavailable: no failed session with saved audio")
-      status = .failed
-      menu?.outcomeFolderURL = nil
-      menu?.rebuild(for: status)
+      if session == nil, capturePhase != .starting {
+        capturePhase = .failed
+        menu?.outcomeFolderURL = nil
+        menu?.rebuild(for: status)
+      }
       return
     }
     await retryFailedSession(at: sessionURL)
@@ -97,62 +104,45 @@ extension AppDelegate {
 
   @MainActor
   func retryFailedSession(at sessionURL: URL) async {
-    // Same usability predicate FailedSessionRetryCoordinator enforces one
-    // call later, so this routing pre-check can't disagree with it.
+    guard !termination.hasStarted else { return }
+    if let task = transcriptionTasks[sessionURL] {
+      await task.value
+      return
+    }
+    let persisted = TranscriptFrontmatterReader.read(at: sessionURL.appendingPathComponent("transcript.md"))
+    let mode = persisted.flatMap { EngineMode(persistedIdentifier: $0.context.engine) } ?? .cloud
     guard CanonicalAudio.isUsable(in: sessionURL) else {
-      Log.engine.error(
-        "Failed-session retry unavailable: saved audio missing for selected failed session")
-      if let frontmatter = TranscriptFrontmatterReader.read(
-        at: sessionURL.appendingPathComponent("transcript.md")),
-        EngineMode(persistedIdentifier: frontmatter.context.engine) == .local
-      {
-        markRecoverySetupRequired(
-          payload: SessionRepairRouting.LocalRepairPayload(
-            sessionDirectory: sessionURL,
-            reason: "Saved audio is missing; repair this Local session before retrying."
-          ))
-      } else {
-        status = .failed
+      if mode == .local {
+        markRecoverySetupRequired(payload: .init(
+          sessionDirectory: sessionURL,
+          reason: "Saved audio is missing. Repair this Local session before retrying."))
+      } else if session == nil, capturePhase != .starting {
+        capturePhase = .failed
         menu?.outcomeFolderURL = nil
         menu?.rebuild(for: status)
       }
       return
     }
-    menu?.outcomeFolderURL = sessionURL
-    status = .starting
-    menu?.rebuild(for: status)
-    let localStatus = await currentLocalModelStatus()
-    do {
-      let final = try await Self.retryFailedSession(
-        at: sessionURL,
-        localModelStatus: localStatus
-      )
-      switch final {
-      case .complete:
-        status = .idle
-        resetMenuAfterWorker(status: status)
-        markSavedFlash()
-      case .failed, .cancelled:
-        status = .failed
-      }
-    } catch let error as FailedSessionRetryCoordinator.RetryError {
-      Log.engine.error(
-        "Failed-session retry could not start: \(String(describing: error), privacy: .public)")
-      if case .localSetupRequired = error {
-        markRecoverySetupRequired(
-          payload: SessionRepairRouting.LocalRepairPayload(
+    beginTranscription(at: sessionURL, engineMode: mode, sourceLabel: persisted?.context.title ?? "Recording")
+    let task = Task { [weak self] in
+      guard let self else { return }
+      let localStatus = await self.currentLocalModelStatus()
+      do {
+        let final = try await Self.retryFailedSession(at: sessionURL, localModelStatus: localStatus)
+        self.finishTranscription(final, at: sessionURL)
+      } catch {
+        self.finishTranscription(.failed(reason: String(describing: error)), at: sessionURL)
+        if let retryError = error as? FailedSessionRetryCoordinator.RetryError,
+          case .localSetupRequired = retryError {
+          self.markRecoverySetupRequired(payload: .init(
             sessionDirectory: sessionURL,
-            reason: "Cohere setup is required before retrying this Local session."
-          ))
-      } else {
-        status = .failed
+            reason: "Cohere setup is required before retrying this Local session."))
+        }
       }
-    } catch {
-      Log.engine.error(
-        "Failed-session retry could not start: \(String(describing: error), privacy: .public)")
-      status = .failed
+      self.transcriptionTasks.removeValue(forKey: sessionURL)
     }
-    menu?.rebuild(for: status)
+    transcriptionTasks[sessionURL] = task
+    await task.value
   }
 
   @MainActor

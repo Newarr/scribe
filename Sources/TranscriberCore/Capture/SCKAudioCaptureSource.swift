@@ -58,8 +58,18 @@ public final class SCKDualOutputStream: @unchecked Sendable {
 
     private struct Registration {
         let kind: Kind
-        let output: SCStreamOutput
+        let output: WeakOutput
         let queue: DispatchQueue
+    }
+
+    private final class WeakOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+        weak var target: (any SCStreamOutput)?
+
+        init(target: any SCStreamOutput) { self.target = target }
+
+        func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+            target?.stream?(stream, didOutputSampleBuffer: sampleBuffer, of: type)
+        }
     }
 
     /// Serial dispatch queue around mutable state. Same pattern as
@@ -76,11 +86,8 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     /// same start, and stopIfRunning() can wait for it to finish before
     /// tearing the stream down.
     private var inFlightStart: Task<Void, Error>?
-    /// Latched when stopIfRunning runs while a start is still in flight.
-    /// The start task checks this after startCapture and skips storing
-    /// the stream if a stop is pending — closing codex P0.1's
-    /// "stop-during-start orphans the SCStream" hole.
-    private var stopRequested: Bool = false
+    private var inFlightStop: Task<Void, Error>?
+    private var startFailure: Error?
     private var sampleRate: Int
     private var channelCount: Int
     private let streamFactory: any SCKStreamFactory
@@ -99,123 +106,83 @@ public final class SCKDualOutputStream: @unchecked Sendable {
     /// itself during construction without racing the first `start()`.
     public func register(kind: Kind, output: SCStreamOutput, queue handlerQueue: DispatchQueue) {
         queue.sync {
-            registrations.append(.init(kind: kind, output: output, queue: handlerQueue))
+            registrations.append(.init(kind: kind, output: WeakOutput(target: output), queue: handlerQueue))
         }
     }
 
-    /// Builds the `SCStream`, adds every registered output, and starts capture.
-    /// Idempotent: a second call after the stream is already running returns
-    /// without creating a new stream. Concurrent calls share the same start
-    /// Task so only one SCStream is ever built per coordinator.
     func startIfNeeded() async throws {
+        if let stopping = queue.sync(execute: { inFlightStop }) {
+            try await stopping.value
+        }
         let task: Task<Void, Error> = queue.sync {
             if let existing = inFlightStart { return existing }
-            if stream != nil {
-                // Already running — return a no-op task so callers wait on
-                // a value rather than branching.
-                return Task<Void, Error> { }
-            }
+            if let failure = startFailure { return Task { throw failure } }
+            if stream != nil { return Task {} }
             let snapshot = registrations
             let sr = sampleRate
             let cc = channelCount
-            let newTask = Task<Void, Error> { [weak self] in
-                try await self?.performStart(snapshot: snapshot, sampleRate: sr, channelCount: cc)
+            let task = Task<Void, Error> { [self] in
+                defer { queue.sync { inFlightStart = nil } }
+                try await performStart(snapshot: snapshot, sampleRate: sr, channelCount: cc)
             }
-            inFlightStart = newTask
-            return newTask
+            inFlightStart = task
+            return task
         }
         try await task.value
     }
 
-    /// Stops the shared stream once. Waits for any in-flight start so the
-    /// stop never races a stream that hasn't been stored yet.
-    ///
-    /// Codex rc2-audit P1 (audits 2+3): the v0 path set
-    /// `stopRequested = true` for every stop and only cleared it on a
-    /// later start's cleanup branch. Reusing one coordinator after a
-    /// normal start/stop/start cycle made the second start
-    /// self-stop. Now: only mark the stop request while there's an
-    /// in-flight start to drain (so performStart can self-clean), and
-    /// clear it after the stop completes so the next start runs to
-    /// completion.
-    func stopIfRunning() async {
-        let pendingStart: Task<Void, Error>? = queue.sync {
-            // Only signal stop to an in-flight start; if no start is
-            // racing us, there's nothing to cancel via the flag.
-            if inFlightStart != nil {
-                stopRequested = true
+    func stopIfRunning() async throws {
+        let task: Task<Void, Error> = queue.sync {
+            if let existing = inFlightStop { return existing }
+            let pendingStart = inFlightStart
+            let task = Task<Void, Error> { [self] in
+                defer { queue.sync { inFlightStop = nil } }
+                if let pendingStart { _ = try? await pendingStart.value }
+                if let active = queue.sync(execute: { stream }) {
+                    try await active.stopCapture()
+                    queue.sync {
+                        stream = nil
+                        startFailure = nil
+                    }
+                }
             }
-            return inFlightStart
+            inFlightStop = task
+            return task
         }
-        if let pendingStart {
-            _ = try? await pendingStart.value
-        }
-        // Codex rc2-audit CAP-7: the v0 path nil'd `stream` BEFORE
-        // calling stopCapture(). If stopCapture threw, capture
-        // continued running with no way to retry the stop or report
-        // it. New flow: keep `stream` populated while attempting stop;
-        // only nil it after a successful stopCapture. On failure, log
-        // and leave `stream` intact so a later stop attempt has
-        // something to operate on.
-        let toStop: (any SCKStreaming)? = queue.sync { self.stream }
-        if let toStop {
-            do {
-                try await toStop.stopCapture()
-                queue.sync { self.stream = nil }
-            } catch {
-                Log.capture.error("SCStream stopCapture failed: \(String(describing: error), privacy: .public). Stream retained for next stop attempt.")
-                // Don't clear stopRequested in this branch — leave
-                // the coordinator in a "stop pending" state so a
-                // subsequent stopIfRunning() can try again.
-                return
-            }
-        }
-        // Clear so the NEXT start isn't poisoned by this stop's flag.
-        queue.sync { stopRequested = false }
+        try await task.value
     }
 
     private func performStart(snapshot: [Registration], sampleRate: Int, channelCount: Int) async throws {
-        let newStream: any SCKStreaming
+        let activeRegistrations = snapshot.filter { $0.output.target != nil }
+        let newStream = try await streamFactory.makeStream(
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            capturesAudio: activeRegistrations.contains { $0.kind == .system },
+            capturesMicrophone: activeRegistrations.contains { $0.kind == .microphone }
+        )
+        queue.sync { stream = newStream }
         do {
-            newStream = try await streamFactory.makeStream(
-                sampleRate: sampleRate,
-                channelCount: channelCount,
-                capturesAudio: snapshot.contains(where: { $0.kind == .system }),
-                capturesMicrophone: snapshot.contains(where: { $0.kind == .microphone })
-            )
-        } catch {
-            queue.sync { inFlightStart = nil }
-            throw error
-        }
-
-        do {
-            for reg in snapshot {
-                let outputType: SCStreamOutputType = (reg.kind == .microphone) ? .microphone : .audio
-                try newStream.addStreamOutput(reg.output, type: outputType, sampleHandlerQueue: reg.queue)
+            for registration in activeRegistrations {
+                let outputType: SCStreamOutputType = registration.kind == .microphone ? .microphone : .audio
+                try newStream.addStreamOutput(registration.output, type: outputType, sampleHandlerQueue: registration.queue)
             }
             try await newStream.startCapture()
         } catch {
-            queue.sync { inFlightStart = nil }
-            try? await newStream.stopCapture()
-            throw SCKError.streamFailedToStart(error)
-        }
-
-        // Codex Phase β review P0.1: stop arrived during start. Don't
-        // store the stream — clean up immediately and let stopIfRunning
-        // see stream == nil so it can return.
-        let shouldStop: Bool = queue.sync {
-            inFlightStart = nil
-            if stopRequested {
-                stopRequested = false
-                return true
+            let failure = SCKError.streamFailedToStart(error)
+            queue.sync { startFailure = failure }
+            do {
+                try await newStream.stopCapture()
+                queue.sync {
+                    stream = nil
+                    startFailure = nil
+                }
+            } catch {
+                throw error
             }
-            self.stream = newStream
-            return false
-        }
-        if shouldStop {
-            try? await newStream.stopCapture()
+            throw failure
         }
     }
+
 }
 
 /// Adapter from the shared `SCKDualOutputStream` coordinator to the
@@ -258,13 +225,13 @@ public final class SCKAudioCaptureSource: NSObject, AudioCaptureSource, SCStream
         try await stream.startIfNeeded()
     }
 
-    public func stop() async {
+    public func stop() async throws {
         // Both mic + system call stop(); the coordinator drops the second
         // call cheaply. Clear the handler on the per-output queue so any
         // in-flight SCK callback sees nil and exits early instead of
         // delivering into a torn-down ingest path.
         handlerQueue.sync { self.handler = nil }
-        await stream.stopIfRunning()
+        try await stream.stopIfRunning()
     }
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

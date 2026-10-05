@@ -5,6 +5,7 @@ extension AudioFinalizer {
   struct TimelineSegment {
     let startFrame: Int
     let frameCount: Int
+    let sourceDuration: Double
   }
 
   struct PTSTimeline {
@@ -18,29 +19,49 @@ extension AudioFinalizer {
     let rawLines = content.split(separator: "\n", omittingEmptySubsequences: true)
     var entries: [PTSLogEntry] = []
     entries.reserveCapacity(rawLines.count)
-    for (index, line) in rawLines.enumerated() {
-      do {
-        entries.append(try decoder.decode(PTSLogEntry.self, from: Data(line.utf8)))
-      } catch {
-        if index == rawLines.count - 1 { break }
-        throw FinalizeError.invalidPTSLog
+    for line in rawLines {
+      guard let entry = try? decoder.decode(PTSLogEntry.self, from: Data(line.utf8)),
+        entry.stream == "mic" || entry.stream == "system",
+        entry.ptsSeconds.isFinite, entry.sampleRate > 0, entry.sampleCount > 0
+      else { throw FinalizeError.invalidPTSLog }
+      entries.append(entry)
+    }
+    let sidecar = url.deletingLastPathComponent().appendingPathComponent("pts.json")
+    if FileManager.default.fileExists(atPath: sidecar.path) {
+      let metadata = try decoder.decode(PTSMetadata.self, from: Data(contentsOf: sidecar))
+      for (name, stream) in [("mic", metadata.mic), ("system", metadata.system)] {
+        let streamEntries = entries.filter { $0.stream == name }
+        guard streamEntries.allSatisfy({ $0.sampleRate == stream.sampleRate }),
+          streamEntries.reduce(0.0, { $0 + Double($1.sampleCount) }) == Double(stream.frameCount)
+        else { throw FinalizeError.invalidPTSLog }
       }
     }
-    let relevantPTS =
-      entries
-      .filter { $0.stream == "mic" || $0.stream == "system" }
-      .map(\.ptsSeconds)
-    let sessionBasePTS = relevantPTS.min() ?? 0
-    func segments(for stream: String) -> [TimelineSegment] {
-      entries.filter { $0.stream == stream }.map { entry in
-        let relativePTS = entry.ptsSeconds - sessionBasePTS
-        let start = Int((relativePTS * outputSampleRate).rounded())
-        let frames = Int(
-          (Double(entry.sampleCount) * outputSampleRate / Double(entry.sampleRate)).rounded())
-        return TimelineSegment(startFrame: max(0, start), frameCount: max(0, frames))
+    let sessionBasePTS = entries.map(\.ptsSeconds).min() ?? 0
+    func segments(for stream: String) throws -> [TimelineSegment] {
+      var sourceDuration = 0.0
+      var sourceFrames = 0
+      var endFrame = 0
+      return try entries.filter { $0.stream == stream }.map { entry in
+        let startValue = ((entry.ptsSeconds - sessionBasePTS) * outputSampleRate).rounded()
+        let duration = Double(entry.sampleCount) / Double(entry.sampleRate)
+        sourceDuration += duration
+        let sourceEndValue = (sourceDuration * outputSampleRate).rounded()
+        guard startValue.isFinite, startValue >= 0, startValue < Double(Int.max),
+          sourceEndValue.isFinite, sourceEndValue < Double(Int.max)
+        else { throw FinalizeError.invalidPTSLog }
+        let start = Int(startValue)
+        let sourceEnd = Int(sourceEndValue)
+        let frames = sourceEnd - sourceFrames
+        guard start >= endFrame - 1, frames >= 0, max(start, endFrame) <= Int.max - frames else {
+          throw FinalizeError.invalidPTSLog
+        }
+        let alignedStart = max(start, endFrame)
+        endFrame = alignedStart + frames
+        sourceFrames = sourceEnd
+        return TimelineSegment(startFrame: alignedStart, frameCount: frames, sourceDuration: duration)
       }
     }
-    return PTSTimeline(mic: segments(for: "mic"), system: segments(for: "system"))
+    return try PTSTimeline(mic: segments(for: "mic"), system: segments(for: "system"))
   }
 
   static func finalizeWithTimeline(
@@ -171,6 +192,10 @@ extension AudioFinalizer {
       file: AVAudioFile, target: AVAudioFormat, segments: [TimelineSegment],
       chunkFrames: AVAudioFrameCount
     ) throws {
+      let loggedFrames = (segments.reduce(0.0) { $0 + $1.sourceDuration } * file.processingFormat.sampleRate).rounded()
+      guard abs(loggedFrames - Double(file.length)) <= 1 else {
+        throw FinalizeError.invalidPTSLog
+      }
       self.segments = segments
       self.endFrame = segments.map { $0.startFrame + $0.frameCount }.max() ?? 0
       self.reader = try StreamReader(file: file, target: target, chunkFrames: chunkFrames)
@@ -195,6 +220,7 @@ extension AudioFinalizer {
         let overlapEnd = min(outputStartFrame + frameCount, segmentEnd)
         let needed = overlapEnd - overlapStart
         let produced = try readSamples(count: needed)
+        guard produced.count == needed else { throw FinalizeError.invalidPTSLog }
         if !produced.isEmpty {
           let dest = overlapStart - outputStartFrame
           produced.withUnsafeBufferPointer { ptr in

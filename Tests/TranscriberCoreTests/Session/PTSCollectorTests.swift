@@ -145,8 +145,8 @@ final class PTSCollectorTests: XCTestCase {
             ))
         }
 
-        collector.flushLog()
-        collector.flushLog()
+        try collector.flushLog()
+        try collector.flushLog()
 
         let entries = try collector.loggedEntries()
         XCTAssertEqual(entries.count, 50)
@@ -154,6 +154,24 @@ final class PTSCollectorTests: XCTestCase {
         XCTAssertEqual(entries.last?.stream, "system")
         XCTAssertEqual(entries.last?.ptsSeconds ?? -1, 0.49, accuracy: 1e-6)
         XCTAssertEqual(entries.allSatisfy { $0.sampleCount == 480 && $0.sampleRate == 48000 }, true)
+    }
+
+    func testPersistenceFailureRemainsVisibleAfterThePathIsRepaired() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = root.appendingPathComponent("pts.jsonl")
+        let collector = PTSCollector(streamingLogURL: log)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+        XCTAssertThrowsError(try collector.loggedEntries())
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        collector.observe(.mic, buffer: SyntheticSampleBuffer.make(
+            ptsSeconds: 0.01, sampleRate: 48000, channelCount: 1, frameCount: 480
+        ))
+        XCTAssertThrowsError(try collector.flushLog())
+        XCTAssertThrowsError(try collector.flushLog())
+        XCTAssertEqual(collector.snapshot().mic.frameCount, 960)
     }
 
     func testNilLogURLDisablesStreamingLog() throws {

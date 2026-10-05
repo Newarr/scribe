@@ -37,6 +37,123 @@ final class SessionSupervisorTests: XCTestCase {
         XCTAssertEqual(TranscriptStatusReader.read(at: dir.transcript), .complete)
     }
 
+    func testCompletedSessionRepairsMetadataBeforeRemovingRawAudio() async throws {
+        let dir = try completedSessionWithRawAudio("metadata-repair")
+        let metadataURL = dir.url.appendingPathComponent("metadata.json")
+        try Data("stale metadata".utf8).write(to: metadataURL)
+        let transcriptBefore = try Data(contentsOf: dir.transcript)
+
+        await scanCompletedSessions()
+
+        let metadata = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: Data(contentsOf: metadataURL))
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertEqual(metadata.title, "Completed meeting")
+        XCTAssertEqual(metadata.language, "pl")
+        XCTAssertEqual(metadata.audio, "audio.m4a")
+        XCTAssertEqual(try Data(contentsOf: dir.transcript), transcriptBefore)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+    }
+
+    func testMetadataWriteFailurePreservesRawAudioUntilLaterScanRepairsIt() async throws {
+        let dir = try completedSessionWithRawAudio("metadata-blocked")
+        let metadataURL = dir.url.appendingPathComponent("metadata.json")
+        try FileManager.default.createDirectory(at: metadataURL, withIntermediateDirectories: false)
+        try Data("block replacement".utf8).write(to: metadataURL.appendingPathComponent("blocker"))
+
+        await scanCompletedSessions()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+        try FileManager.default.removeItem(at: metadataURL)
+        await scanCompletedSessions()
+        let metadata = try JSONDecoder().decode(MetadataJSONWriter.Metadata.self, from: Data(contentsOf: metadataURL))
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+    }
+
+    func testCompletedSessionWithActiveClaimIsUntouched() async throws {
+        let dir = try completedSessionWithRawAudio("claimed-complete")
+        let claim = try XCTUnwrap(SessionClaim.acquire(at: dir.claim))
+        defer { SessionClaim.release(claim) }
+
+        await scanCompletedSessions()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.url.appendingPathComponent("metadata.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+    }
+
+    func testUnusableCanonicalAudioPreservesRawTracks() async throws {
+        for node in ["directory", "empty", "unreadable"] {
+            let dir = try completedSessionWithRawAudio("unusable-" + node)
+            try FileManager.default.removeItem(at: dir.audioFinal)
+            switch node {
+            case "directory":
+                try FileManager.default.createDirectory(at: dir.audioFinal, withIntermediateDirectories: false)
+            case "empty":
+                try Data().write(to: dir.audioFinal)
+            default:
+                try Data("audio".utf8).write(to: dir.audioFinal)
+                try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: dir.audioFinal.path)
+            }
+
+            await scanCompletedSessions()
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path), node)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path), node)
+            if node == "unreadable" {
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dir.audioFinal.path)
+            }
+        }
+    }
+
+    func testRetentionPolicyStillRepairsCompletedMetadata() async throws {
+        let dir = try completedSessionWithRawAudio("retained-complete")
+
+        await scanCompletedSessions(keepRawStreams: true)
+
+        let metadata = try JSONDecoder().decode(
+            MetadataJSONWriter.Metadata.self,
+            from: Data(contentsOf: dir.url.appendingPathComponent("metadata.json"))
+        )
+        XCTAssertEqual(metadata.status, "complete")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
+    }
+
+    private func scanCompletedSessions(keepRawStreams: Bool = false) async {
+        _ = await SessionSupervisor().scanAndResume(
+            under: root,
+            keepRawStreams: keepRawStreams,
+            contextFactory: { _ in Self.makeContext("unused") },
+            workerFactory: { _, _ in
+                XCTFail("Completed transcripts must not run inference again")
+                return nil
+            }
+        )
+    }
+
+    private func completedSessionWithRawAudio(_ name: String) throws -> SessionDirectory {
+        let dir = makeSessionDir(name)
+        for file in [dir.micFinal, dir.systemFinal, dir.audioFinal] {
+            try Data("audio".utf8).write(to: file)
+        }
+        let context = TranscriptContext(
+            title: "Completed meeting",
+            date: "2026-10-05",
+            engine: "cohere",
+            audioRelativePaths: ["audio.m4a"],
+            startedAt: "2026-10-05T10:00:00Z",
+            endedAt: "2026-10-05T11:00:00Z",
+            attendees: [],
+            language: "pl"
+        )
+        try TranscriptWriter.writeComplete(at: dir.transcript, context: context, utterances: Self.makeResponse().utterances, speakerMapping: [:])
+        return dir
+    }
+
     func testPendingSessionGetsTranscribed() async throws {
         let dir = makeSessionDir("b")
         try Data("mic".utf8).write(to: dir.micFinal)

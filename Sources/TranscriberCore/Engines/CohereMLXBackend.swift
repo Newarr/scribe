@@ -10,34 +10,22 @@ public struct CohereMLXAdapterRequest: Sendable, Equatable {
     /// adapter derives its in-memory mono 16 kHz input from this file and
     /// must never replace or mutate it.
     public let audioURL: URL
-    public let modelID: String
     let modelDirectoryURL: URL
     public let languageCode: String
-    public let keyterms: [String]
     let inputSampleRate: Int
-    let inputChannelCount: Int
-    let audioDurationSeconds: Double
     let channelActivity: ChannelActivity?
 
     public init(
         audioURL: URL,
-        modelID: String,
         modelDirectoryURL: URL,
         languageCode: String,
-        keyterms: [String],
         inputSampleRate: Int = 16_000,
-        inputChannelCount: Int = 1,
-        audioDurationSeconds: Double = 0,
         channelActivity: ChannelActivity? = nil
     ) {
         self.audioURL = audioURL
-        self.modelID = modelID
         self.modelDirectoryURL = modelDirectoryURL
         self.languageCode = languageCode
-        self.keyterms = keyterms
         self.inputSampleRate = inputSampleRate
-        self.inputChannelCount = inputChannelCount
-        self.audioDurationSeconds = audioDurationSeconds
         self.channelActivity = channelActivity
     }
 }
@@ -127,10 +115,10 @@ enum DegenerateOutputDetector {
         // The fraction alone would flag a 30-word transcript with three
         // repeats of "thank you very" (3/28 ≈ 11%) as degenerate; an
         // observed real-world loop has 12+ repeats, well above the floor.
-        if let (top, n) = counts.max(by: { $0.value < $1.value }),
+        if let n = counts.values.max(),
            n >= 5,
            Double(n) / Double(total) > 0.08 {
-            return "tri-gram \"\(top)\" repeats \(n)/\(total) times"
+            return "tri-gram repeats \(n)/\(total) times"
         }
 
         let fraction = Double(Set(words).count) / Double(words.count)
@@ -144,11 +132,8 @@ enum DegenerateOutputDetector {
 
 public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     public static let modelID = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
-    static let defaultRequestModelID = modelID
     static let defaultLanguageCode = "en"
     static let unattributedSpeaker = "Speaker A"
-    static let nativeModelTypeName = "CohereTranscribeModel"
-    static let nativeModuleNames = ["MLXAudioSTT", "MLXAudioCore"]
 
     public static let defaultModelCacheRoot = FileManager.default
         .homeDirectoryForCurrentUser
@@ -173,7 +158,6 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
     }
 
     static let inferenceSampleRate = 16_000
-    static let inferenceChannelCount = 1
 
     // Inference parameter overrides. The upstream `mlx-audio-swift` defaults
     // (`chunkDuration=1200`, `repetitionPenalty=1.0`) are unsafe for real
@@ -206,13 +190,9 @@ public final class CohereMLXBackend: TranscriptionEngine, @unchecked Sendable {
         let duration = try await durationReader.durationSeconds(for: request.audioURL)
         let localRequest = CohereMLXAdapterRequest(
             audioURL: request.audioURL,
-            modelID: Self.modelID,
             modelDirectoryURL: modelDirectoryURL,
             languageCode: language,
-            keyterms: [],
             inputSampleRate: Self.inferenceSampleRate,
-            inputChannelCount: Self.inferenceChannelCount,
-            audioDurationSeconds: duration,
             channelActivity: channelActivity
         )
         let output = try await adapter.transcribe(localRequest)
@@ -466,14 +446,12 @@ public enum EngineSelector {
     public static func makeEngine(
         for mode: EngineMode,
         cloudAPIKey: () -> String,
-        cohereBinary: URL? = nil,
         urlSession: URLSession = .shared
     ) -> TranscriptionEngine {
         switch mode {
         case .cloud:
             return ElevenLabsScribeBackend(apiKey: cloudAPIKey(), session: urlSession)
         case .local:
-            _ = cohereBinary
             return CohereMLXBackend()
         }
     }

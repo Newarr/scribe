@@ -8,7 +8,6 @@ struct SettingsForm: View {
   let onShowInMenuBarChange: @MainActor (Bool) -> Void
   let onShortcutChange: @MainActor (KeyboardShortcutSetting) -> Void
   let onSettingsChange: @MainActor (SessionSettings) async -> Void
-  let onSave: @MainActor (SessionSettings) async -> Void
   let onCancel: @MainActor () -> Void
   let initialEngineFocus: EngineSettingsCardFocus?
   @State private var selectedPage: SettingsPage = .general

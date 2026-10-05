@@ -4,6 +4,7 @@ import TranscriberCore
 extension AppDelegate {
   @MainActor
   func startEndGuard(startedAt: Date) async {
+    guard let capture = session, capturePhase == .recording else { return }
     endGuardTickTimer?.invalidate()
     endCountdownController.dismiss()
     activeEndPromptGeneration = nil
@@ -12,28 +13,21 @@ extension AppDelegate {
 
     let guardInstance = EndGuard(
       onPrompt: { [weak self] reason in
-        Task { @MainActor [weak self] in
-          await self?.handleEndGuardPrompt(reason: reason)
-        }
+        await self?.handleEndGuardPrompt(reason: reason, capture: capture)
       },
       onCountdownTick: { [weak self] remaining in
-        Task { @MainActor [weak self] in
-          self?.handleEndGuardCountdownTick(remaining: remaining)
-        }
+        await self?.handleEndGuardCountdownTick(remaining: remaining, capture: capture)
       },
       onAutoStop: { [weak self] reason in
-        Task { @MainActor [weak self] in
-          await self?.handleEndGuardAutoStop(reason: reason)
-        }
+        await self?.handleEndGuardAutoStop(reason: reason, capture: capture)
       },
       onCancel: { [weak self] in
-        Task { @MainActor [weak self] in
-          self?.cancelEndGuardPrompt()
-        }
+        await self?.cancelEndGuardPrompt(capture: capture)
       }
     )
     endGuard = guardInstance
     await guardInstance.start(at: startedAt)
+    guard endGuard === guardInstance, capturePhase == .recording else { return }
     startEndGuardTickTimer()
   }
 
@@ -62,10 +56,10 @@ extension AppDelegate {
   }
 
   @MainActor
-  private func handleEndGuardPrompt(reason: EndGuard.Reason) async {
-    guard session != nil, status == .recording else { return }
-    guard let endGuard else { return }
+  private func handleEndGuardPrompt(reason: EndGuard.Reason, capture: CaptureSession) async {
+    guard session === capture, capturePhase == .recording, let endGuard else { return }
     let generation = await endGuard.promptGeneration
+    guard session === capture, self.endGuard === endGuard, capturePhase == .recording else { return }
     let promptID = UUID().uuidString
     activeEndPromptGeneration = generation
     activeEndPromptID = promptID
@@ -82,12 +76,14 @@ extension AppDelegate {
       secondsRemaining: initialSeconds,
       onKeep: { [weak self, generation] in
         Task { @MainActor [weak self] in
-          await self?.keepRecordingFromEndPrompt(generation: generation)
+          guard let self, self.endGuard === endGuard else { return }
+          await self.keepRecordingFromEndPrompt(generation: generation)
         }
       },
       onStopNow: { [weak self, generation] in
         Task { @MainActor [weak self] in
-          await self?.stopRecordingFromEndPrompt(generation: generation)
+          guard let self, self.endGuard === endGuard else { return }
+          await self.stopRecordingFromEndPrompt(generation: generation)
         }
       }
     )
@@ -102,10 +98,12 @@ extension AppDelegate {
         reason: reason,
         secondsRemaining: initialSeconds,
         onKeep: { [weak self] generation in
-          await self?.keepRecordingFromEndPrompt(generation: generation)
+          guard let self, self.endGuard === endGuard else { return }
+          await self.keepRecordingFromEndPrompt(generation: generation)
         },
         onStopNow: { [weak self] generation in
-          await self?.stopRecordingFromEndPrompt(generation: generation)
+          guard let self, self.endGuard === endGuard else { return }
+          await self.stopRecordingFromEndPrompt(generation: generation)
         }
       )
     }
@@ -114,8 +112,8 @@ extension AppDelegate {
   }
 
   @MainActor
-  private func handleEndGuardCountdownTick(remaining: TimeInterval) {
-    guard activeEndPromptGeneration != nil else { return }
+  private func handleEndGuardCountdownTick(remaining: TimeInterval, capture: CaptureSession) {
+    guard session === capture, capturePhase == .recording, activeEndPromptGeneration != nil else { return }
     let seconds = max(0, Int(ceil(remaining)))
     endCountdownController.update(secondsRemaining: seconds)
     if let endPrompt = menu?.endPrompt {
@@ -128,8 +126,8 @@ extension AppDelegate {
   }
 
   @MainActor
-  private func handleEndGuardAutoStop(reason: EndGuard.Reason) async {
-    guard session != nil else { return }
+  private func handleEndGuardAutoStop(reason: EndGuard.Reason, capture: CaptureSession) async {
+    guard session === capture, capturePhase == .recording, endGuard != nil else { return }
     Log.lifecycle.info(
       "End guard auto-stop firing: \(Self.endGuardReasonLabel(reason), privacy: .public)")
     clearEndGuardPromptSurface()
@@ -138,27 +136,21 @@ extension AppDelegate {
 
   @MainActor
   func keepRecordingFromEndPrompt(generation: Int) async {
-    guard let endGuard else {
-      clearEndGuardPromptSurface()
-      return
-    }
+    guard let endGuard, let capture = session else { return }
     let accepted = await endGuard.keepRecording(now: Date(), generation: generation)
-    guard accepted else {
+    guard accepted, self.endGuard === endGuard, session === capture, capturePhase == .recording else {
       Log.lifecycle.info("Ignoring stale end guard Keep Recording action")
       return
     }
     Log.lifecycle.info("End guard prompt dismissed: keep recording")
-    cancelEndGuardPrompt()
+    cancelEndGuardPrompt(capture: capture)
   }
 
   @MainActor
   func stopRecordingFromEndPrompt(generation: Int) async {
-    guard let endGuard else {
-      clearEndGuardPromptSurface()
-      return
-    }
+    guard let endGuard, let capture = session else { return }
     let accepted = await endGuard.stopNow(generation: generation)
-    guard accepted else {
+    guard accepted, self.endGuard === endGuard, session === capture, capturePhase == .recording else {
       Log.lifecycle.info("Ignoring stale end guard Stop now action")
       return
     }
@@ -167,8 +159,8 @@ extension AppDelegate {
   }
 
   @MainActor
-  private func cancelEndGuardPrompt() {
-    guard activeEndPromptGeneration != nil else { return }
+  private func cancelEndGuardPrompt(capture: CaptureSession) {
+    guard session === capture, capturePhase == .recording, activeEndPromptGeneration != nil else { return }
     clearEndGuardPromptSurface()
     menu?.rebuild(for: status)
     applyTrustIcon()

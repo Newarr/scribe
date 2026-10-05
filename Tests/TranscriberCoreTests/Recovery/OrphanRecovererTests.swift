@@ -3,12 +3,16 @@ import XCTest
 
 final class OrphanRecovererTests: XCTestCase {
     var root: URL!
+    var claim: SessionClaim.Token!
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        claim = try XCTUnwrap(SessionClaim.acquire(at: SessionDirectory(url: root).claim))
     }
     override func tearDownWithError() throws {
+        SessionClaim.release(claim)
+        claim = nil
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -16,7 +20,7 @@ final class OrphanRecovererTests: XCTestCase {
         let dir = SessionDirectory(url: root)
         try Data("mic".utf8).write(to: dir.micFinal)
         try Data("sys".utf8).write(to: dir.systemFinal)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .alreadyFinalized)
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .alreadyFinalized)
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
     }
 
@@ -24,7 +28,7 @@ final class OrphanRecovererTests: XCTestCase {
         let dir = SessionDirectory(url: root)
         try Data("mic".utf8).write(to: dir.micPartial)
         try Data("sys".utf8).write(to: dir.systemPartial)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .rescued)
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .rescued)
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micPartial.path))
@@ -35,14 +39,14 @@ final class OrphanRecovererTests: XCTestCase {
         let dir = SessionDirectory(url: root)
         try Data("mic".utf8).write(to: dir.micFinal)
         try Data("sys".utf8).write(to: dir.systemPartial)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .rescued)
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .rescued)
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
     }
 
     func testEmptyDirReportsNoAudio() throws {
         let dir = SessionDirectory(url: root)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .noAudio)
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .noAudio)
     }
 
     // MARK: - Phase ζ: one-sided audio (spec line 339)
@@ -55,7 +59,7 @@ final class OrphanRecovererTests: XCTestCase {
         // referencing the surviving file.
         let dir = SessionDirectory(url: root)
         try Data("mic".utf8).write(to: dir.micFinal)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .partialAudio(stream: .mic))
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .partialAudio(stream: .mic))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemFinal.path))
     }
@@ -64,7 +68,7 @@ final class OrphanRecovererTests: XCTestCase {
         // Mirror image: mic crashed, system survived.
         let dir = SessionDirectory(url: root)
         try Data("sys".utf8).write(to: dir.systemFinal)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .partialAudio(stream: .system))
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .partialAudio(stream: .system))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
     }
@@ -76,7 +80,7 @@ final class OrphanRecovererTests: XCTestCase {
         // .rescued and would have dispatched a worker.
         let dir = SessionDirectory(url: root)
         try Data("mic-bytes".utf8).write(to: dir.micPartial)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .partialAudio(stream: .mic))
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .partialAudio(stream: .mic))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micPartial.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemFinal.path))
@@ -85,7 +89,7 @@ final class OrphanRecovererTests: XCTestCase {
     func testSystemOnlyPartialRenamesAndReportsPartialAudio() throws {
         let dir = SessionDirectory(url: root)
         try Data("sys-bytes".utf8).write(to: dir.systemPartial)
-        XCTAssertEqual(OrphanRecoverer.recover(dir), .partialAudio(stream: .system))
+        XCTAssertEqual(OrphanRecoverer.recover(dir, claim: claim), .partialAudio(stream: .system))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.micFinal.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.systemFinal.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.systemPartial.path))
@@ -110,7 +114,7 @@ final class OrphanRecovererTests: XCTestCase {
             try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: micPartialPath)
         }
 
-        let result = OrphanRecoverer.recover(dir)
+        let result = OrphanRecoverer.recover(dir, claim: claim)
         // mic rename fails (immutable), system rename succeeds.
         // Recoverer defers because mic.partial is still on disk.
         XCTAssertEqual(result, .recoveryDeferred(stream: .mic))

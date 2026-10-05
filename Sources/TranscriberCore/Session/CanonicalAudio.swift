@@ -13,10 +13,10 @@ public enum CanonicalAudio {
 
   public static func isUsable(at audioURL: URL, fileManager: FileManager = .default) -> Bool {
     guard fileManager.isReadableFile(atPath: audioURL.path) else { return false }
-    guard let values = try? audioURL.resourceValues(forKeys: [.isRegularFileKey]) else {
+    guard let values = try? audioURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else {
       return false
     }
-    return values.isRegularFile == true
+    return values.isRegularFile == true && (values.fileSize ?? 0) > 0
   }
 
   public static func isUsable(in sessionDirectory: URL, fileManager: FileManager = .default) -> Bool

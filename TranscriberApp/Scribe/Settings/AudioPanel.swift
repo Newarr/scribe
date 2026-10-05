@@ -38,8 +38,6 @@ struct FidelityAudioPanel: View {
   @ObservedObject var model: SettingsFormModel
   let onSettingsChange: @MainActor (SessionSettings) async -> Void
   let focusedEngineCard: EngineSettingsCardFocus?
-  @State private var inputDevice = "MacBook Pro Microphone"
-  @State private var speakerLabels = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -105,19 +103,6 @@ struct FidelityAudioPanel: View {
       .padding(.bottom, 22)
 
       FidelitySection(title: "Recording") {
-        FidelityRow(label: "Input device") {
-          HStack(spacing: 12) {
-            FidelitySelectLike(
-              selection: $inputDevice,
-              options: [
-                "MacBook Pro Microphone", "AirPods Pro", "External USB-C Mic", "System default",
-              ],
-              minWidth: 240
-            )
-            FidelityMeter()
-          }
-        }
-        FidelityRowDivider()
         FidelityRow(label: "Language") {
           HStack(spacing: 10) {
             FidelitySelectLike(
@@ -136,13 +121,7 @@ struct FidelityAudioPanel: View {
             FidelityHelpText("Applies to Cohere (local). ElevenLabs always auto-detects.")
           }
         }
-        FidelityRowDivider()
-        FidelityRow(label: "Speaker labels") {
-          HStack(spacing: 10) {
-            FidelityToggle(isOn: $speakerLabels)
-            FidelityHelpText("Diarize speakers when more than one voice is detected.")
-          }
-        }
+
       }
     }
   }
@@ -206,10 +185,7 @@ private struct FidelityCloudAPIKeyEditor: View {
       HStack(spacing: 8) {
         FidelitySecondaryButton(model.isSavingCloudAPIKey ? "Saving…" : "Save key") {
           Task {
-            // Keychain-first: persist key before committing
-            // non-secret settings. On failure, stay open.
-            let ok = await model.persistAPIKeyIfChanged()
-            if ok { await onCommitSettings(model.currentSettings) }
+            await model.persistAPIKeyIfChanged(onCommitSettings: onCommitSettings)
           }
         }
         .disabled(model.isSavingCloudAPIKey || !model.cloudAPIKeyHasChanges)
@@ -219,10 +195,7 @@ private struct FidelityCloudAPIKeyEditor: View {
 
         FidelityDangerButton("Clear key") {
           Task {
-            // Keychain-first: delete key before committing
-            // non-secret settings. On failure, stay open.
-            let ok = await model.clearCloudAPIKey()
-            if ok { await onCommitSettings(model.currentSettings) }
+            await model.clearCloudAPIKey(onCommitSettings: onCommitSettings)
           }
         }
         .disabled(model.isSavingCloudAPIKey || model.apiKey.isEmpty)
@@ -274,7 +247,6 @@ private struct FidelityCloudAPIKeyEditor: View {
         get: { model.apiKey },
         set: { value in
           model.apiKey = value
-          model.apiKeyEditedFromInitial = true
         }
       )
     )
@@ -460,39 +432,6 @@ private struct FidelitySelectLike: View {
     }
     .buttonStyle(.plain)
     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-  }
-}
-
-private struct FidelityMeter: View {
-  @State private var high = false
-
-  var body: some View {
-    GeometryReader { proxy in
-      ZStack(alignment: .leading) {
-        Capsule()
-          .fill(FidelitySettings.meterFill)
-          .overlay(Capsule().stroke(FidelitySettings.line, lineWidth: 1))
-        Capsule()
-          .fill(
-            LinearGradient(
-              colors: [
-                FidelitySettings.green, FidelitySettings.green, FidelitySettings.amber,
-                FidelitySettings.rust,
-              ],
-              startPoint: .leading,
-              endPoint: .trailing
-            )
-          )
-          .frame(width: proxy.size.width * (high ? 0.72 : 0.38))
-      }
-    }
-    .frame(width: 200, height: 6)
-    .clipShape(Capsule())
-    .onAppear {
-      withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
-        high = true
-      }
-    }
   }
 }
 

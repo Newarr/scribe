@@ -9,6 +9,7 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
     private(set) var started = false
     private(set) var stopped = false
     var startError: Error?
+    var stopError: Error?
     var suspendStart = false
     var startContinuation: CheckedContinuation<Void, Never>?
     var onStop: (@Sendable () -> Void)?
@@ -33,7 +34,8 @@ final class FakeAudioCaptureSource: AudioCaptureSource, @unchecked Sendable {
         continuation?.resume()
     }
 
-    func stop() async {
+    func stop() async throws {
+        if let stopError { throw stopError }
         onStop?()
         stopped = true
     }

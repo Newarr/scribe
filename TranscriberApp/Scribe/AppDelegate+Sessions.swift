@@ -32,15 +32,8 @@ extension AppDelegate {
 
   @MainActor
   func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async {
-    // Codex P2 fix: claim .starting before any await so concurrent
-    // detection candidates (or a menu Record + a candidate firing
-    // simultaneously) can't pass the handleDetectionCandidate guard
-    // and create two CaptureSessions.
-    guard status != .recording, status != .starting else {
-      Log.lifecycle.info(
-        "startRecording skipped: already \(self.status.rawValue, privacy: .public)")
-      return
-    }
+    guard canStartRecording else { return }
+    foregroundTranscription = nil
     // F-2: a new attempt clears any leftover saved/failed flash so
     // the icon doesn't keep mourning the previous session.
     clearTerminalFlash()
@@ -63,13 +56,14 @@ extension AppDelegate {
       )
     }
 
-    self.status = .starting
+    self.capturePhase = .starting
     menu?.rebuild(for: status)
     applyTrustIcon()
 
     // Audit before capture so permission prompts stay inside Scribe UI.
     let report = await preflightDoctor.audit(
       outputRoot: snapshot.outputRoot, engineMode: snapshot.engineMode)
+    guard !termination.hasStarted, capturePhase == .starting else { return }
     if let freeBytes = Self.availableDiskBytes(for: snapshot.outputRoot),
       freeBytes < Self.minimumFreeDiskBytes
     {
@@ -92,20 +86,27 @@ extension AppDelegate {
       let promptedEvent = pendingPromptCalendarEventForStart
       let cachedEvent = promptedEvent == nil ? await calendarWatcher.eventOverlapping(Date()) : nil
       let event = promptedEvent ?? cachedEvent ?? calendar.eventOverlapping(Date())
-      self.currentCalendarEvent = event
       Log.calendar.info(
         "Calendar lookup at session start: matched=\(event != nil ? "yes" : "no", privacy: .public)"
       )
 
-      try await session.start()
-      await finishSuccessfulStart(directory: dir, event: event)
+      guard !termination.hasStarted, self.session === session, capturePhase == .starting else { return }
+      self.currentCalendarEvent = event
+      do {
+        try await session.start()
+        guard self.session === session, capturePhase == .starting else { return }
+        await finishSuccessfulStart(directory: dir, event: event)
+      } catch {
+        guard self.session === session else { return }
+        await handleStartFailure(error, session: session)
+      }
     } catch {
-      handleStartFailure(error)
+      await handleStartFailure(error, session: nil)
     }
   }
 
   @MainActor
-  private func handleStartPreflightResult(_ report: PreflightReport) -> Bool {
+  func handleStartPreflightResult(_ report: PreflightReport) -> Bool {
     switch RecordRequestGate().verdict(from: report) {
     case .deny(let reasons):
       // Codex rc2-audit P0 (privacy): String(describing: reasons)
@@ -115,7 +116,7 @@ extension AppDelegate {
       Log.lifecycle.error(
         "startRecording denied by preflight: \(reasons.publicLabels, privacy: .public) [\(String(describing: reasons), privacy: .private)]"
       )
-      status = .idle
+      capturePhase = .idle
       // Codex PM-review UX-7: flag the menu so "Setup Required…"
       // appears (instead of the neutral "Check setup…") until
       // the next successful start.
@@ -190,7 +191,7 @@ extension AppDelegate {
   private func denyStartForLowDisk(freeBytes: Int64, outputRoot: URL) {
     Log.lifecycle.error(
       "startRecording denied: low disk space (\(freeBytes, privacy: .public) bytes free)")
-    status = .idle
+    capturePhase = .idle
     menu?.rebuild(for: status)
     applyTrustIcon()
     presentLowDiskAlert(freeBytes: freeBytes, outputRoot: outputRoot)
@@ -198,9 +199,10 @@ extension AppDelegate {
 
   @MainActor
   private func finishSuccessfulStart(directory: SessionDirectory, event: CalendarEvent?) async {
-    status = .recording
+    capturePhase = .recording
     pendingPromptCandidateForStart = nil
     await startEndGuard(startedAt: currentSessionStartedAt ?? Date())
+    guard currentSessionDirectory == directory, capturePhase == .recording else { return }
     // Wire the popover's live trust-surface readouts so the user sees
     // a ticking timer and the matched meeting title the moment they
     // open the menu bar.
@@ -214,14 +216,20 @@ extension AppDelegate {
   }
 
   @MainActor
-  private func handleStartFailure(_ error: Error) {
+  func handleStartFailure(_ error: Error, session failedSession: CaptureSession?) async {
+    let needsStopRetry = await failedSession?.needsStopRetry ?? false
+    guard session === failedSession else { return }
+    if needsStopRetry {
+      showCaptureStopFailure()
+      return
+    }
     Log.lifecycle.error("Start failed: \(String(describing: error), privacy: .public)")
     // Codex rc2-audit STATE-3: a failed start would leave
     // self.session / currentSessionDirectory / currentSessionStartedAt
     // populated. A subsequent Stop or Quit would then write a
     // pending transcript for a never-started session. Clear all
     // session state on the catch path so the app is well-defined.
-    status = .failed
+    capturePhase = .failed
     session = nil
     currentSessionDirectory = nil
     currentSessionStartedAt = nil
@@ -320,127 +328,137 @@ extension AppDelegate {
 
   @MainActor
   func stopRecording() async {
+    if let captureStopTask {
+      await captureStopTask.value
+      return
+    }
     guard let session, let dir = currentSessionDirectory else { return }
-    await tearDownEndGuard()
-    self.status = .stopping
+    capturePhase = .stopping
     menu?.rebuild(for: status)
     applyTrustIcon()
+    let task = Task { await finishRecording(session: session, directory: dir) }
+    captureStopTask = task
+    await task.value
+    captureStopTask = nil
+    if capturePhase == .idle, !termination.hasStarted {
+      reevaluateQueuedDetectionCandidateAfterStop()
+    }
+  }
+
+  private func finishRecording(session: CaptureSession, directory dir: SessionDirectory) async {
     let endedAt = Date()
     let started = currentSessionStartedAt ?? endedAt
     let event = currentCalendarEvent
-    // One settings read for the whole stop path: session.stop() below is
-    // a commit window, and the worker must not mix engineMode from one
-    // snapshot with keepRawStreams/transcriptionLanguage from another.
     let snap = settings
     let sessionEngineMode = currentSessionEngineMode ?? snap.engineMode
+    await tearDownEndGuard()
 
-    var stopSucceeded = false
     do {
       try await session.stop()
       guard Self.captureFinalizationIsDurable(in: dir) else {
         throw CaptureSession.CaptureError.noDurableAudio
       }
-      self.status = .finalized
-      stopSucceeded = true
     } catch {
-      Log.lifecycle.error("Stop failed: \(String(describing: error), privacy: .public)")
-      self.status = .failed
-    }
-    self.session = nil
-    self.currentSessionDirectory = nil
-    self.currentSessionStartedAt = nil
-    self.currentCalendarEvent = nil
-    self.currentSessionEngineMode = nil
-    self.currentDiagnosticsLiveLevels = nil
-    self.currentRecordingTriggerIdentity = nil
-    self.pendingPromptCandidateForStart = nil
-    stopElapsedTickTimer()
-    menu?.outcomeFolderName = dir.url.lastPathComponent
-    menu?.outcomeFolderURL = dir.url
-    menu?.sessionEngineMode = sessionEngineMode
-    menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
-    menu?.elapsedSeconds = max(0, Int(endedAt.timeIntervalSince(started)))
-    menu?.rebuild(for: status)
-    applyTrustIcon()
-
-    // session.stop() failure is a terminal failure (audio commit
-    // broke). Flash the failed glyph and bail before spawning the
-    // transcript worker.
-    if !stopSucceeded {
-      self.status = .failed
-      clearQueuedDetectionCandidate()
-      menu?.rebuild(for: status)
-      markFailureFlash()
+      Log.engine.error("Stop failed: \(String(describing: error), privacy: .public)")
+      if await session.needsStopRetry {
+        showCaptureStopFailure()
+      } else {
+        releaseCapture()
+        capturePhase = .failed
+        clearQueuedDetectionCandidate()
+        menu?.outcomeFolderName = dir.url.lastPathComponent
+        menu?.outcomeFolderURL = dir.url
+        menu?.rebuild(for: status)
+        markFailureFlash()
+      }
       return
     }
 
+    releaseCapture()
+    capturePhase = .idle
     let context = Self.makeContext(
       dir: dir, startedAt: started, endedAt: endedAt, event: event, engineMode: sessionEngineMode)
     do {
       try TranscriptWriter.writePending(at: dir.transcript, context: context)
     } catch {
-      Log.engine.error(
-        "Failed to write pending transcript: \(String(describing: error), privacy: .public)")
+      Log.engine.error("Failed to write pending transcript: \(String(describing: error), privacy: .public)")
     }
+    guard !termination.hasStarted else { return }
 
+    beginTranscription(at: dir.url, engineMode: sessionEngineMode, sourceLabel: Self.recordingSourceLabel(for: event))
     let worker = Self.makeWorker(
       dir: dir, context: context, event: event, keepRawStreams: snap.keepRawStreams,
       engineMode: sessionEngineMode, transcriptionLanguage: snap.transcriptionLanguage)
-    // Source-order guard: reevaluateQueuedDetectionCandidateAfterStop() runs after worker creation below.
-    let id = UUID()
-    let durationSeconds = Int(endedAt.timeIntervalSince(started))
-    let engineLabel = sessionEngineMode.displayName
-    reevaluateQueuedDetectionCandidateAfterStop()
     let task = Task { [weak self] in
       let outcome = await worker.run()
-      await MainActor.run {
-        guard let self else { return }
-        // F-2: spinner ran while the worker was in flight. On
-        // success, revert to idle and flash saved. On failure,
-        // keep the failed popover actionable against the saved
-        // audio folder so Retry has a concrete target.
-        switch outcome {
-        case .complete:
-          self.status = .idle
-          self.resetMenuAfterWorker(status: self.status)
-          self.markSavedFlash()
-          self.presentSavedNotification(
-            dir: dir,
-            event: event,
-            durationSeconds: durationSeconds,
-            engineLabel: engineLabel
-          )
-        case .failed(let reason):
-          self.status = .failed
-          self.menu?.sessionEngineMode = sessionEngineMode
-          self.menu?.outcomeFolderName = dir.url.lastPathComponent
-          self.menu?.outcomeFolderURL = dir.url
-          self.menu?.recordingSourceLabel = Self.recordingSourceLabel(for: event)
-          self.menu?.rebuild(for: self.status)
-          Log.engine.error("Worker terminated with failure: \(reason, privacy: .public)")
-          self.markFailureFlash()
-        case .cancelled:
-          self.status = .idle
-          self.resetMenuAfterWorker(status: self.status)
-          // App was quit / session forcibly aborted. Don't
-          // flash either success or failure; just settle
-          // back to idle.
-          self.applyTrustIcon()
-        }
+      guard let self else { return }
+      self.finishTranscription(outcome, at: dir.url)
+      self.transcriptionTasks.removeValue(forKey: dir.url)
+      if case .complete = outcome, self.session == nil, !self.termination.hasStarted {
+        self.presentSavedNotification(
+          dir: dir, event: event, durationSeconds: Int(endedAt.timeIntervalSince(started)),
+          engineLabel: sessionEngineMode.displayName)
       }
-      await self?.removeTask(id: id)
     }
-    inflightTasks[id] = task
+    transcriptionTasks[dir.url] = task
   }
 
-  @MainActor
-  func resetMenuAfterWorker(status: SessionStatus) {
+  private func releaseCapture() {
+    session = nil
+    currentSessionDirectory = nil
+    currentSessionStartedAt = nil
+    currentCalendarEvent = nil
+    currentSessionEngineMode = nil
+    currentDiagnosticsLiveLevels = nil
+    currentRecordingTriggerIdentity = nil
+    pendingPromptCandidateForStart = nil
+    stopElapsedTickTimer()
+  }
+
+  private func showCaptureStopFailure() {
+    capturePhase = .recording
+    menu?.recordingSourceLabel = "Could not stop recording. Try Stop again."
+    menu?.rebuild(for: status)
+    applyTrustIcon()
+  }
+
+  func beginTranscription(at directory: URL, engineMode: EngineMode, sourceLabel: String) {
+    if capturePhase == .idle || (capturePhase == .failed && session == nil) {
+      capturePhase = .idle
+      foregroundTranscription = .init(directory: directory, engineMode: engineMode, sourceLabel: sourceLabel)
+      menu?.outcomeFolderName = directory.lastPathComponent
+      menu?.outcomeFolderURL = directory
+      menu?.sessionEngineMode = engineMode
+      menu?.recordingSourceLabel = sourceLabel
+      menu?.rebuild(for: status)
+      applyTrustIcon()
+    }
+  }
+
+  func finishTranscription(_ outcome: TranscriptionWorker.FinalState, at directory: URL) {
+    guard foregroundTranscription?.directory == directory else { return }
+    foregroundTranscription?.state = .finished(outcome)
+    guard capturePhase == .idle else { return }
+    switch outcome {
+    case .complete:
+      resetMenuAfterWorker()
+      markSavedFlash()
+    case .failed:
+      menu?.rebuild(for: status)
+      markFailureFlash()
+    case .cancelled:
+      resetMenuAfterWorker()
+      applyTrustIcon()
+    }
+  }
+
+  func resetMenuAfterWorker() {
     menu?.outcomeFolderName = nil
     menu?.outcomeFolderURL = nil
     menu?.recordingSourceLabel = "Recording"
     menu?.elapsedSeconds = 0
-    menu?.rebuild(for: status)
     menu?.sessionEngineMode = .cloud
+    menu?.rebuild(for: status)
   }
 
   @MainActor

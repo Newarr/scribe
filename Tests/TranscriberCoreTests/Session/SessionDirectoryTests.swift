@@ -32,6 +32,21 @@ final class SessionDirectoryTests: XCTestCase {
         XCTAssertEqual(second.url.lastPathComponent, "1970-01-01-0000-2")
     }
 
+    func testConcurrentAllocationCreatesDistinctFolders() async throws {
+        let parent = tmpRoot!
+        let id = SessionID(from: Date(timeIntervalSince1970: 0), timeZone: TimeZone(identifier: "UTC")!)
+        let directories = try await withThrowingTaskGroup(of: SessionDirectory.self) { group in
+            for _ in 0..<32 {
+                group.addTask { try SessionDirectory.create(under: parent, id: id) }
+            }
+            var results: [SessionDirectory] = []
+            for try await directory in group { results.append(directory) }
+            return results
+        }
+        XCTAssertEqual(Set(directories.map(\.url)).count, 32)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: parent.path).count, 32)
+    }
+
     func testPartialPaths() {
         let url = tmpRoot.appendingPathComponent("session-x")
         let dir = SessionDirectory(url: url)

@@ -24,7 +24,7 @@ final class TranscriptionWorkerTests: XCTestCase {
   /// Slice 9a output contract: a successful run must produce
   /// `audio.m4a` + `metadata.json` and the completed transcript should
   /// reference `audio.m4a` (not the raw mic/system files).
-  func testSuccessfulRunProducesAudioAndMetadata() async throws {
+  func testLegacyTracksWithoutTimingProduceAudioAndMetadata() async throws {
     let dir = self.dir()
     try FileManager.default.createDirectory(at: dir.url, withIntermediateDirectories: true)
     // AudioFinalizer needs real m4a inputs to mix.
@@ -91,6 +91,41 @@ final class TranscriptionWorkerTests: XCTestCase {
     XCTAssertNotNil(metadata.audio_duration_seconds)
     XCTAssertNotNil(metadata.audio_size_bytes)
     XCTAssertGreaterThan(metadata.audio_size_bytes ?? 0, 0)
+  }
+
+  func testCapturedTracksWithMissingOrInvalidTimingFailWithoutInference() async throws {
+    for metadataName in ["session.json", "pts.json", "pts.jsonl"] {
+      let session = SessionDirectory(url: root.appendingPathComponent(metadataName + "-session"))
+      try FileManager.default.createDirectory(at: session.url, withIntermediateDirectories: true)
+      try writeAACSilence(to: session.micFinal, durationSec: 0.3)
+      try writeAACSilence(to: session.systemFinal, durationSec: 0.3)
+      let micBefore = try Data(contentsOf: session.micFinal)
+      let systemBefore = try Data(contentsOf: session.systemFinal)
+      try Data("invalid metadata".utf8).write(to: session.url.appendingPathComponent(metadataName))
+      let engine = RecordingEngine(responses: [.success(makeResponse())])
+      let worker = makeWorker(
+        engine: engine,
+        directory: session,
+        context: makeContext(),
+        request: EngineRequest(
+          audioURL: session.audioFinal,
+          mode: .singleChannelDiarized(numSpeakers: nil),
+          languageCode: nil,
+          keyterms: []
+        )
+      )
+
+      let result = await worker.run()
+      guard case .failed = result else {
+        XCTFail("Capture with invalid timing must fail: \(metadataName)")
+        continue
+      }
+      let callCount = await engine.callCount
+      XCTAssertEqual(callCount, 0)
+      XCTAssertEqual(try Data(contentsOf: session.micFinal), micBefore)
+      XCTAssertEqual(try Data(contentsOf: session.systemFinal), systemBefore)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: session.audioFinal.path))
+    }
   }
 
   func testNormalStopCanonicalAudioHonorsFlushedPTSLog() async throws {

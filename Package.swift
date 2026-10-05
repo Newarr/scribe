@@ -32,6 +32,17 @@ let package = Package(
             dependencies: ["TranscriberCore"],
             path: "Sources/TranscribeCLI"
         ),
+        .target(
+            name: "ScribeAppLogic",
+            dependencies: ["TranscriberCore"],
+            path: "TranscriberApp/Scribe",
+            exclude: ["ScribeApp.swift", "Info.plist", "Scribe.entitlements", "Assets.xcassets", "AppIcon.icon", "Fonts"]
+        ),
+        .testTarget(
+            name: "ScribeAppTests",
+            dependencies: ["ScribeAppLogic", "TranscriberCore"],
+            path: "Tests/ScribeAppTests"
+        ),
         .testTarget(
             name: "TranscriberCoreTests",
             dependencies: ["TranscriberCore", .product(name: "MLX", package: "mlx-swift")],

@@ -42,7 +42,6 @@ final class AudioFileWriter: @unchecked Sendable {
     private var backpressureDropCount: Int = 0
 
     init(url: URL, sampleRate: Int, channelCount: Int) throws {
-        try? FileManager.default.removeItem(at: url)
         writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
 
         let settings: [String: Any] = [

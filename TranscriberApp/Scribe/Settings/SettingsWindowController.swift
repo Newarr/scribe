@@ -81,7 +81,6 @@ final class SettingsWindowController {
     host.backgroundColor = .clear
     host.isMovableByWindowBackground = true
     host.isReleasedWhenClosed = false
-    // Codex PM-review UX-4: confidential UI.
     host.sharingType = WindowChromeSharing.confidential
     host.contentView = NSHostingView(
       rootView: SettingsForm(
@@ -117,22 +116,6 @@ final class SettingsWindowController {
             model.saveError = "Failed to save settings: \(error.localizedDescription)"
           }
         },
-        onSave: { [weak self, weak host] settings in
-          guard let self else { return }
-          // Keychain persistence must complete before settings commit,
-          // readiness refresh, or closing. If Keychain fails, the
-          // window stays open with a non-secret error and Cloud
-          // readiness is not marked ready from the typed value.
-          guard await model.persistAPIKeyIfChanged() else { return }
-          do {
-            try await self.store.commit(settings)
-            await model.refreshEngineViewState()
-            host?.close()
-            self.window = nil
-          } catch {
-            model.saveError = "Failed to save settings: \(error.localizedDescription)"
-          }
-        },
         onCancel: { [weak self, weak host] in
           guard model.canCloseOrSurfaceUnsavedCloudKeyWarning() else { return }
           host?.close()
@@ -141,9 +124,6 @@ final class SettingsWindowController {
         initialEngineFocus: focus
       ))
 
-    // Codex Phase η P1.3: a title-bar close should behave like
-    // Cancel (drop the in-flight model + clear the window pointer
-    // so the next open re-reads the on-disk snapshot fresh).
     let delegate = CloseCallbackWindowDelegate(
       shouldClose: {
         model.canCloseOrSurfaceUnsavedCloudKeyWarning()

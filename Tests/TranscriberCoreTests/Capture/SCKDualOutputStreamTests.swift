@@ -9,20 +9,6 @@ import XCTest
 /// contract that doesn't require live SCK.
 final class SCKDualOutputStreamTests: XCTestCase {
 
-  func testRegisterIsSynchronousAndAccumulates() {
-    // The coordinator's API contract: register() runs on the caller's
-    // thread synchronously so SCKAudioCaptureSource init can hand off
-    // its handler queue without racing the first start().
-    let coordinator = SCKDualOutputStream()
-    let dummy = DummySCStreamOutput()
-    let q = DispatchQueue(label: "test.handler")
-    coordinator.register(kind: .microphone, output: dummy, queue: q)
-    coordinator.register(kind: .system, output: dummy, queue: q)
-    // No throw, no assertion needed beyond reaching this line — we just
-    // care that register() returns synchronously.
-    XCTAssertTrue(true)
-  }
-
   func testContentFetchFailureClearsInFlightStartAndRetries() async throws {
     let factory = FakeSCKStreamFactory([
       .failure(FakeSCKError.contentUnavailable),
@@ -122,7 +108,7 @@ final class SCKDualOutputStreamTests: XCTestCase {
     async let stopResult: Void = coordinator.stopIfRunning()
     firstStream.resumeStartCapture()
     try await startResult
-    await stopResult
+    try await stopResult
 
     let firstStartCalls = firstStream.startCaptureCallCount()
     XCTAssertEqual(firstStartCalls, 1)
@@ -139,35 +125,77 @@ final class SCKDualOutputStreamTests: XCTestCase {
     XCTAssertEqual(secondStopCalls, 0)
   }
 
-  func testStopIfRunningOnIdleStreamIsNoOp() async {
+  func testStopFailureReachesCallerAndRetainsStreamForRetry() async throws {
+    let stream = FakeSCKStreaming(stopFailuresRemaining: 1)
+    let factory = FakeSCKStreamFactory([.success(stream)])
+    let coordinator = SCKDualOutputStream(streamFactory: factory)
+    try await coordinator.startIfNeeded()
+    do {
+      try await coordinator.stopIfRunning()
+      XCTFail("Expected stop failure")
+    } catch FakeSCKError.stopCaptureFailed {}
+    try await coordinator.stopIfRunning()
+    XCTAssertEqual(stream.stopCaptureCallCount(), 2)
+    try await coordinator.stopIfRunning()
+    XCTAssertEqual(stream.stopCaptureCallCount(), 2)
+  }
+
+  func testFailedStartupCleanupRetainsStreamForStopRetry() async throws {
+    let stream = FakeSCKStreaming(startCaptureError: FakeSCKError.startCaptureFailed, stopFailuresRemaining: 1)
+    let factory = FakeSCKStreamFactory([.success(stream)])
+    let coordinator = SCKDualOutputStream(streamFactory: factory)
+    do {
+      try await coordinator.startIfNeeded()
+      XCTFail("Expected startup cleanup failure")
+    } catch FakeSCKError.stopCaptureFailed {}
+    try await coordinator.stopIfRunning()
+    XCTAssertEqual(stream.stopCaptureCallCount(), 2)
+  }
+
+  func testRegistrationDoesNotRetainSourcesOrCoordinator() {
+    weak var weakSource: SCKAudioCaptureSource?
+    weak var weakCoordinator: SCKDualOutputStream?
+    do {
+      let coordinator = SCKDualOutputStream()
+      let source = SCKAudioCaptureSource(kind: .microphone, stream: coordinator)
+      weakSource = source
+      weakCoordinator = coordinator
+    }
+    XCTAssertNil(weakSource)
+    XCTAssertNil(weakCoordinator)
+  }
+
+  func testStopIfRunningOnIdleStreamIsNoOp() async throws {
     // Both `SCKAudioCaptureSource.stop()` calls invoke stopIfRunning().
     // The second one must drop cheaply without touching SCK.
     let coordinator = SCKDualOutputStream()
-    await coordinator.stopIfRunning()
-    await coordinator.stopIfRunning()
+    try await coordinator.stopIfRunning()
+    try await coordinator.stopIfRunning()
     // No crash, no exception. Real SCK isn't touched because no stream
     // was created.
   }
 
-  func testParallelStopsCompleteWithoutCrash() async {
-    // Codex Phase β review P2.8: real concurrency hits both
-    // stop callers at the same time. The serial DispatchQueue +
-    // single-stop-extracts-stream pattern must absorb the race.
-    let coordinator = SCKDualOutputStream()
-    await withTaskGroup(of: Void.self) { group in
+  func testParallelStopsStopActiveStreamOnce() async throws {
+    let stream = FakeSCKStreaming()
+    let factory = FakeSCKStreamFactory([.success(stream)])
+    let coordinator = SCKDualOutputStream(streamFactory: factory)
+    try await coordinator.startIfNeeded()
+    try await withThrowingTaskGroup(of: Void.self) { group in
       for _ in 0..<8 {
-        group.addTask { await coordinator.stopIfRunning() }
+        group.addTask { try await coordinator.stopIfRunning() }
       }
+      try await group.waitForAll()
     }
-    // No crash, no exception. The first stop sees a nil stream and
-    // returns; subsequent stops see the same nil and also return.
+    XCTAssertEqual(stream.stopCaptureCallCount(), 1)
   }
+
 }
 
 private enum FakeSCKError: Error {
   case contentUnavailable
   case addOutputFailed
   case startCaptureFailed
+  case stopCaptureFailed
 }
 
 private actor FakeSCKStreamFactory: SCKStreamFactory {
@@ -208,15 +236,18 @@ private final class FakeSCKStreaming: SCKStreaming, @unchecked Sendable {
   private var addStreamOutputCalls = 0
   private var startCaptureCalls = 0
   private var stopCaptureCalls = 0
+  private var stopFailuresRemaining: Int
 
   init(
     addStreamOutputError: Error? = nil,
     startCaptureError: Error? = nil,
-    startCaptureSuspends: Bool = false
+    startCaptureSuspends: Bool = false,
+    stopFailuresRemaining: Int = 0
   ) {
     self.addStreamOutputError = addStreamOutputError
     self.startCaptureError = startCaptureError
     self.startCaptureSuspends = startCaptureSuspends
+    self.stopFailuresRemaining = stopFailuresRemaining
   }
 
   func addStreamOutput(
@@ -246,7 +277,15 @@ private final class FakeSCKStreaming: SCKStreaming, @unchecked Sendable {
   }
 
   func stopCapture() async throws {
-    stateQueue.sync { stopCaptureCalls += 1 }
+    let shouldFail = stateQueue.sync {
+      stopCaptureCalls += 1
+      if stopFailuresRemaining > 0 {
+        stopFailuresRemaining -= 1
+        return true
+      }
+      return false
+    }
+    if shouldFail { throw FakeSCKError.stopCaptureFailed }
   }
 
   func waitUntilStartCaptureCalled() async {

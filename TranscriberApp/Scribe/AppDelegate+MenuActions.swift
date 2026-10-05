@@ -15,16 +15,6 @@ extension AppDelegate {
   }
 
   @MainActor
-
-
-  /* Source-guard markers retained for tests after formatter line wrapping:
-} else if detectionPromptActive {
-                let event = pendingPromptCalendarEventForStart
-if setupNeedsAttention {
-                pendingPromptCalendarEventForStart = event
-pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: triggerIdentity)
-  */
-
   func handle(_ action: RecordingMenu.Action) async {
     switch action {
     case .record: await startRecording()
@@ -50,15 +40,12 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
       if startPromptCoordinator.hasActivePrompt {
         startPromptCoordinator.chooseStartFromRecovery()
       } else if detectionPromptActive {
-        // Source-guard marker: } else if detectionPromptActive {
-        //                 let event = pendingPromptCalendarEventForStart
         let event = pendingPromptCalendarEventForStart
         if pendingPromptCandidateForStart == nil,
           let bundleID = pendingPromptAppBundleID,
           let triggerIdentity = pendingPromptTriggerIdentity,
           let app = MeetingApps.appFor(bundleID: bundleID)
         {
-          // Source-guard marker: pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: triggerIdentity)
           pendingPromptCandidateForStart = DetectionCandidate(
             app: app, triggerIdentity: triggerIdentity)
         }
@@ -67,12 +54,7 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
           pendingPromptCalendarEventForStart = event
           applyTrustIcon()
         } else {
-          pendingPromptCalendarEventForStart = nil
-          pendingPromptCandidateForStart = nil
-          detectionPromptActive = false
-          pendingPromptAppBundleID = nil
-          pendingPromptTriggerIdentity = nil
-          menu?.pendingPrompt = nil
+          clearPendingRecordingPrompt()
           applyTrustIcon()
         }
       }
@@ -80,24 +62,14 @@ pendingPromptCandidateForStart = DetectionCandidate(app: app, triggerIdentity: t
       if startPromptCoordinator.hasActivePrompt {
         startPromptCoordinator.chooseNotNowFromRecovery()
       } else {
-        detectionPromptActive = false
-        pendingPromptAppBundleID = nil
-        pendingPromptTriggerIdentity = nil
-        pendingPromptCalendarEventForStart = nil
-        pendingPromptCandidateForStart = nil
-        menu?.pendingPrompt = nil
+        clearPendingRecordingPrompt()
         applyTrustIcon()
       }
     case .promptSuppressApp:
       if startPromptCoordinator.hasActivePrompt {
         startPromptCoordinator.chooseSuppressAppFromRecovery()
       } else {
-        detectionPromptActive = false
-        pendingPromptAppBundleID = nil
-        pendingPromptTriggerIdentity = nil
-        pendingPromptCalendarEventForStart = nil
-        pendingPromptCandidateForStart = nil
-        menu?.pendingPrompt = nil
+        clearPendingRecordingPrompt()
         applyTrustIcon()
       }
     case .endPromptKeepRecording(let generation):

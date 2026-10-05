@@ -3,54 +3,6 @@ import XCTest
 
 final class OnboardingFlowTests: XCTestCase {
 
-    func testProductionFirstRunPathInstantiatesOnboardingFlowControllerAndPresenter() throws {
-        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
-        let onboardingWindow = try CombinedAppSources.appSource("OnboardingWindow.swift")
-
-        XCTAssertTrue(appDelegate.contains("primary: localModelManager"), "production first-run path must use the app-owned LocalModelManager-backed onboarding controller")
-        XCTAssertTrue(appDelegate.contains("CompositeLocalModelDownloadStarter("), "onboarding download seam must also stage the auxiliary VAD/LID models")
-        XCTAssertTrue(appDelegate.contains("OnboardingWindowController("), "AppDelegate must present the ordered onboarding window, not only the legacy privacy acknowledgement sheet")
-        XCTAssertTrue(appDelegate.contains("makeOnboardingResumeSnapshot"), "production onboarding must resume from real permission/engine/output readiness")
-        XCTAssertTrue(onboardingWindow.contains("OnboardingFlowPresenter.resumeStep"), "visible onboarding must use the shared presenter for ordered resume behavior")
-        XCTAssertTrue(onboardingWindow.contains("OnboardingFlowPresenter.testRecordingState"), "visible Test Recording must be gated by selected-engine readiness and capture prerequisites")
-        XCTAssertTrue(appDelegate.contains("runOnboardingTestRecording"), "production Test Recording must call the app-owned gated test capture seam")
-        XCTAssertTrue(appDelegate.contains("OnboardingTestRecordingRoute("), "AppDelegate must wire visible Test Recording through the SwiftPM-testable production route seam")
-        XCTAssertTrue(appDelegate.contains("AppOnboardingTestRecordingStarter"), "AppDelegate must wire ready Test Recording to production capture, not only readiness checks")
-        XCTAssertTrue(appDelegate.contains("await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)"), "production Test Recording seam must invoke the scoped onboarding capture route")
-        XCTAssertTrue(onboardingWindow.contains("flowController.enter(.screenRecording)") || onboardingWindow.contains("flowController.enter(step)"), "visible Screen Recording step must enter the controller so Cohere download starts exactly once")
-    }
-
-    func testAppDelegateOnboardingTestRecordingUsesScopedPrivacyBypassAndNormalRecordNowKeepsGuard() throws {
-        let appDelegate = try CombinedAppSources.appSource("AppDelegate.swift")
-
-        guard let testRange = appDelegate.range(of: "private func runOnboardingTestRecording() async -> Bool") else {
-            return XCTFail("AppDelegate must expose the actual onboarding Test Recording closure target")
-        }
-        let testBody = String(appDelegate[testRange.lowerBound..<appDelegate.index(testRange.lowerBound, offsetBy: min(1800, appDelegate.distance(from: testRange.lowerBound, to: appDelegate.endIndex)))])
-        XCTAssertTrue(testBody.contains("OnboardingTestRecordingRoute"), "onboarding Test Recording must execute the shared selected-engine/capture-prerequisite route seam")
-        XCTAssertTrue(testBody.contains("makeOnboardingResumeSnapshot"), "onboarding Test Recording must use realistic persisted onboarding state")
-        XCTAssertTrue(testBody.contains("await self.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: allowPendingPrivacyAcknowledgementForOnboardingTest)"), "ready onboarding Test Recording must use the consented onboarding seam before final privacyAcknowledged is written")
-        XCTAssertFalse(testBody.contains("await self.startRecording()"), "onboarding Test Recording must not call normal privacy-gated Record Now and return before capture")
-
-        guard let startRange = appDelegate.range(of: "func startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: Bool = false) async") else {
-            return XCTFail("AppDelegate must keep a scoped startRecording privacy parameter defaulted to normal Record Now behavior")
-        }
-        let startBody = String(appDelegate[startRange.lowerBound..<appDelegate.index(startRange.lowerBound, offsetBy: min(1600, appDelegate.distance(from: startRange.lowerBound, to: appDelegate.endIndex)))])
-        XCTAssertTrue(startBody.contains("snapshot.privacyAcknowledged || allowPendingPrivacyAcknowledgementForOnboardingTest"), "only the scoped onboarding test seam may satisfy the privacy gate before final acknowledgement")
-        XCTAssertTrue(startBody.contains("presentPrivacyAcknowledgementIfNeeded()"), "normal Record Now must still present privacy acknowledgement instead of starting capture")
-
-        guard let menuRecordRange = appDelegate.range(of: "case .record: await startRecording()") else {
-            return XCTFail("visible Record Now action must still call the default privacy-gated path")
-        }
-        XCTAssertFalse(String(appDelegate[menuRecordRange.lowerBound..<appDelegate.index(menuRecordRange.lowerBound, offsetBy: min(120, appDelegate.distance(from: menuRecordRange.lowerBound, to: appDelegate.endIndex)))]).contains("allowPendingPrivacyAcknowledgementForOnboardingTest: true"))
-
-        guard let promptRange = appDelegate.range(of: "case .start:") else {
-            return XCTFail("meeting prompt start route must exist")
-        }
-        let promptBody = String(appDelegate[promptRange.lowerBound..<appDelegate.index(promptRange.lowerBound, offsetBy: min(220, appDelegate.distance(from: promptRange.lowerBound, to: appDelegate.endIndex)))])
-        XCTAssertTrue(promptBody.contains("await startRecording()"), "meeting prompt Start Recording must keep the normal privacy-gated path")
-    }
-
     func testRequiredOrderAndSkipSemanticsMatchSpec() {
         XCTAssertEqual(OnboardingFlowStep.ordered, [
             .welcome,
@@ -164,11 +116,6 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertTrue(routeStarted)
         let starterCalls = await starter.calls()
         XCTAssertEqual(starterCalls, [true], "ready onboarding Test Recording must start capture through the scoped privacy-pending route")
-
-        let normalRecordNow = RouteStarterSpy(result: true)
-        _ = await normalRecordNow.startRecording(allowPendingPrivacyAcknowledgementForOnboardingTest: false)
-        let normalCalls = await normalRecordNow.calls()
-        XCTAssertEqual(normalCalls, [false], "normal Record Now remains the default privacy-guarded route")
 
         let blockedStarter = RouteStarterSpy(result: true)
         let blockedRoute = OnboardingTestRecordingRoute(

@@ -3,13 +3,53 @@ import CoreGraphics
 import TranscriberCore
 import UserNotifications
 
-/// Presents meeting detections through the spec's redundant-channel start
-/// prompt: a modal AppKit decision surface first, plus a recoverable
-/// Notification Center backup when notifications are available.
+@MainActor
+protocol PromptNotificationClient {
+    func setDelegate(_ delegate: any UNUserNotificationCenterDelegate)
+    func setCategories(_ categories: Set<UNNotificationCategory>)
+    func isAuthorized() async -> Bool
+    func add(_ request: UNNotificationRequest) async throws
+    func remove(identifiers: [String])
+}
+
+@MainActor
+struct SystemPromptNotificationClient: PromptNotificationClient {
+    private let center = UNUserNotificationCenter.current()
+
+    func setDelegate(_ delegate: any UNUserNotificationCenterDelegate) {
+        center.delegate = delegate
+    }
+
+    func setCategories(_ categories: Set<UNNotificationCategory>) {
+        center.setNotificationCategories(categories)
+    }
+
+    func isAuthorized() async -> Bool {
+        let settings = await center.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .notDetermined:
+            return (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        default:
+            return false
+        }
+    }
+
+    func add(_ request: UNNotificationRequest) async throws {
+        try await center.add(request)
+    }
+
+    func remove(identifiers: [String]) {
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+}
+
 @MainActor
 final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
-    enum Choice {
+    enum Choice: Equatable {
         case start
         /// App-level 30-minute suppression, exposed only behind More options.
         case notAMeeting
@@ -28,8 +68,10 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         static let stopNow = "scribe.end-prompt.action.stop-now"
     }
 
+    @MainActor
     private final class Pending {
         let identifier: String
+        let notificationPrefix = UUID().uuidString
         let candidate: DetectionCandidate
         let event: CalendarEvent?
 
@@ -66,8 +108,10 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    @MainActor
     private final class PendingEndPrompt {
         let identifier: String
+        let notificationPrefix = UUID().uuidString
         let generation: Int
         let onKeep: @MainActor @Sendable (Int) async -> Void
         let onStopNow: @MainActor @Sendable (Int) async -> Void
@@ -96,6 +140,8 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private var pendingEndPrompts: [String: PendingEndPrompt] = [:]
     private var activePromptIdentifier: String?
     private var registeredCategories = false
+    private let notifications: any PromptNotificationClient
+    private let runModal: @MainActor (PromptModalWindow.Model, (NSWindow) -> Void, (NSWindow) -> Void) -> PromptModalWindow.Decision
 
     var hasActivePrompt: Bool { activePromptIdentifier != nil }
 
@@ -111,9 +157,14 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         await CoreAudioInputProbe().isActive(bundleID: app.bundleID) == true
     }
 
-    override init() {
+    init(
+        notifications: any PromptNotificationClient = SystemPromptNotificationClient(),
+        runModal: @escaping @MainActor (PromptModalWindow.Model, (NSWindow) -> Void, (NSWindow) -> Void) -> PromptModalWindow.Decision = PromptModalWindow.run
+    ) {
+        self.notifications = notifications
+        self.runModal = runModal
         super.init()
-        UNUserNotificationCenter.current().delegate = self
+        notifications.setDelegate(self)
     }
 
     func prompt(for app: MeetingApp, event: CalendarEvent? = nil) async -> Choice {
@@ -122,7 +173,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
     func prompt(for candidate: DetectionCandidate, event: CalendarEvent? = nil) async -> Choice {
         let identifier = candidate.triggerIdentity
-        await ensureRegistered()
+        ensureRegistered()
 
         return await withCheckedContinuation { continuation in
             if let entry = pending[identifier] {
@@ -143,13 +194,11 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             scheduleRecoveryTimers(for: entry)
             Task { @MainActor [weak self] in
                 await self?.postNotificationIfPossible(
-                    promptID: identifier,
-                    kind: .backup,
-                    app: candidate.app,
-                    event: event
+                    entry: entry,
+                    kind: .backup
                 )
             }
-            presentModalPrompt(identifier: identifier, app: candidate.app, event: event)
+            presentModalPrompt(entry: entry)
         }
     }
 
@@ -210,24 +259,26 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         onKeep: @escaping @MainActor @Sendable (Int) async -> Void,
         onStopNow: @escaping @MainActor @Sendable (Int) async -> Void
     ) async -> Bool {
-        await ensureRegistered()
-        pendingEndPrompts[promptID] = PendingEndPrompt(
+        ensureRegistered()
+        clearEndPromptNotification(promptID: promptID)
+        let entry = PendingEndPrompt(
             identifier: promptID,
             generation: generation,
             onKeep: onKeep,
             onStopNow: onStopNow
         )
+        pendingEndPrompts[promptID] = entry
 
-        guard await ensureAuthorization() else {
+        guard await notifications.isAuthorized() else {
             Log.lifecycle.info("End prompt notification unavailable: authorization missing; HUD/menu recovery remain active (id=\(promptID, privacy: .public))")
             return false
         }
-        guard pendingEndPrompts[promptID] != nil else {
+        guard pendingEndPrompts[promptID] === entry else {
             Log.lifecycle.info("Skipping stale end prompt notification after authorization completed (id=\(promptID, privacy: .public))")
             return false
         }
 
-        let notificationID = "\(promptID).end"
+        let notificationID = "\(entry.notificationPrefix).end"
         let content = UNMutableNotificationContent()
         content.title = "Call seems over"
         content.subtitle = Self.endPromptSubtitle(for: reason)
@@ -242,8 +293,12 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
         let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
         do {
-            try await UNUserNotificationCenter.current().add(request)
-            pendingEndPrompts[promptID]?.notificationIdentifiers.insert(notificationID)
+            entry.notificationIdentifiers.insert(notificationID)
+            try await notifications.add(request)
+            guard pendingEndPrompts[promptID] === entry else {
+                notifications.remove(identifiers: [notificationID])
+                return false
+            }
             Log.lifecycle.info("End prompt notification posted: \(Self.endPromptReasonPayload(reason), privacy: .public) (id=\(promptID, privacy: .public), generation=\(generation, privacy: .public))")
             return true
         } catch {
@@ -255,27 +310,25 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
     func clearEndPromptNotification(promptID: String) {
         guard let entry = pendingEndPrompts.removeValue(forKey: promptID) else { return }
         let ids = Array(entry.notificationIdentifiers)
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+        notifications.remove(identifiers: ids)
     }
 
     private func scheduleRecoveryTimers(for entry: Pending) {
         let promptID = entry.identifier
-        entry.reminderTimer = Timer.scheduledTimer(withTimeInterval: reminderDelay, repeats: false) { [weak self] _ in
+        entry.reminderTimer = Timer.scheduledTimer(withTimeInterval: reminderDelay, repeats: false) { [weak self, weak entry] _ in
             Task { @MainActor in
-                guard let self, let entry = self.pending[promptID] else { return }
+                guard let self, let entry, self.pending[promptID] === entry else { return }
                 Log.lifecycle.info("Start prompt reminder firing for \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
                 await self.postNotificationIfPossible(
-                    promptID: promptID,
-                    kind: .reminder,
-                    app: entry.app,
-                    event: entry.event
+                    entry: entry,
+                    kind: .reminder
                 )
             }
         }
-        entry.expiryTimer = Timer.scheduledTimer(withTimeInterval: expiryDelay, repeats: false) { [weak self] _ in
+        entry.expiryTimer = Timer.scheduledTimer(withTimeInterval: expiryDelay, repeats: false) { [weak self, weak entry] _ in
             Task { @MainActor in
-                await self?.handleIgnoredPromptExpiry(promptID: promptID)
+                guard let self, let entry, self.pending[promptID] === entry else { return }
+                await self.handleIgnoredPromptExpiry(promptID: promptID)
             }
         }
     }
@@ -284,6 +337,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         guard let entry = pending[promptID] else { return }
 
         let callStillActive = await callActivityChecker(entry.app)
+        guard pending[promptID] === entry else { return }
         guard callStillActive else {
             Log.lifecycle.info("Start prompt expired for inactive or ended call in \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public)); clearing stale recovery actions")
             resolve(identifier: promptID, with: .skipForNow, removeNotifications: true)
@@ -299,30 +353,30 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         entry.expiryTimer = nil
         Log.lifecycle.info("Start prompt final reminder firing for still-active call in \(entry.app.bundleID, privacy: .public) (id=\(promptID, privacy: .public)); prompt remains user-controlled")
         await postNotificationIfPossible(
-            promptID: promptID,
-            kind: .finalReminder,
-            app: entry.app,
-            event: entry.event
+            entry: entry,
+            kind: .finalReminder
         )
     }
 
     @discardableResult
     private func postNotificationIfPossible(
-        promptID: String,
-        kind: NotificationKind,
-        app: MeetingApp,
-        event: CalendarEvent?
+        entry: Pending,
+        kind: NotificationKind
     ) async -> Bool {
-        guard await ensureAuthorization() else {
+        let promptID = entry.identifier
+        let app = entry.app
+        let event = entry.event
+        guard pending[promptID] === entry else { return false }
+        guard await notifications.isAuthorized() else {
             Log.lifecycle.info("Start prompt \(kind.rawValue, privacy: .public) notification unavailable for \(app.bundleID, privacy: .public): authorization missing; modal/menu recovery remain active")
             return false
         }
-        guard pending[promptID] != nil else {
+        guard pending[promptID] === entry else {
             Log.lifecycle.info("Skipping stale start prompt \(kind.rawValue, privacy: .public) notification after authorization completed (id=\(promptID, privacy: .public))")
             return false
         }
 
-        let notificationID = "\(promptID).\(kind.rawValue)"
+        let notificationID = "\(entry.notificationPrefix).\(kind.rawValue)"
         let content = UNMutableNotificationContent()
         content.title = promptTitle(for: app, event: event)
         content.subtitle = event == nil ? "Detected in \(app.displayName)" : "From Apple Calendar · \(app.displayName)"
@@ -346,8 +400,12 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
 
         let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
         do {
-            try await UNUserNotificationCenter.current().add(request)
-            pending[promptID]?.notificationIdentifiers.insert(notificationID)
+            entry.notificationIdentifiers.insert(notificationID)
+            try await notifications.add(request)
+            guard pending[promptID] === entry else {
+                notifications.remove(identifiers: [notificationID])
+                return false
+            }
             Log.lifecycle.info("Start prompt \(kind.rawValue, privacy: .public) notification posted for \(app.bundleID, privacy: .public) (id=\(promptID, privacy: .public))")
             return true
         } catch {
@@ -356,35 +414,32 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func presentModalPrompt(
-        identifier: String,
-        app: MeetingApp,
-        event: CalendarEvent?
-    ) {
-        NSApp.activate(ignoringOtherApps: true)
-
-        let decision = PromptModalWindow.run(
-            model: PromptModalWindow.Model(
+    private func presentModalPrompt(entry: Pending) {
+        let identifier = entry.identifier
+        let app = entry.app
+        let event = entry.event
+        let decision = runModal(
+            PromptModalWindow.Model(
                 badge: app.displayName,
                 title: promptTitle(for: app, event: event),
                 message: promptSubtitle(for: app, event: event),
                 secondaryTitle: "Not now",
                 primaryTitle: "Start Recording"
             ),
-            place: { [weak self] window in
+            { [weak self] window in
+                NSApp.activate(ignoringOtherApps: true)
                 self?.place(window: window, nearActiveWindowFor: app)
             },
-            onWindowReady: { window in
-                if let entry = pending[identifier] {
+            { window in
+                if pending[identifier] === entry {
                     entry.modalWindow = window
                     entry.isModalVisible = true
                 }
             }
         )
-        if let entry = pending[identifier] {
-            entry.isModalVisible = false
-            entry.modalWindow = nil
-        }
+        guard pending[identifier] === entry else { return }
+        entry.isModalVisible = false
+        entry.modalWindow = nil
         switch decision {
         case .primary:
             resolve(identifier: identifier, with: .start, removeNotifications: true)
@@ -420,31 +475,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         max(1, Int(Date().timeIntervalSince(event.startDate) / 60))
     }
 
-    private func ensureAuthorization() async -> Bool {
-        let center = UNUserNotificationCenter.current()
-        // Re-query every time instead of caching process-lifetime denial or
-        // grant. Users can flip notification permission in System Settings
-        // while Scribe is running, and both start/end redundant channels must
-        // immediately reflect denied -> granted and granted -> denied changes.
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral:
-            return true
-        case .denied:
-            return false
-        case .notDetermined:
-            do {
-                return try await center.requestAuthorization(options: [.alert, .sound])
-            } catch {
-                Log.lifecycle.error("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
-                return false
-            }
-        @unknown default:
-            return false
-        }
-    }
-
-    private func ensureRegistered() async {
+    private func ensureRegistered() {
         guard !registeredCategories else { return }
         let startCategory = UNNotificationCategory(
             identifier: Self.categoryIdentifier,
@@ -480,7 +511,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
             intentIdentifiers: [],
             options: [.customDismissAction]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([startCategory, endCategory])
+        notifications.setCategories([startCategory, endCategory])
         registeredCategories = true
     }
 
@@ -498,8 +529,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         dismissModalIfVisible(for: entry)
         if removeNotifications {
             let ids = Array(entry.notificationIdentifiers)
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
+            notifications.remove(identifiers: ids)
         }
         entry.resumeAll(returning: choice)
     }
@@ -512,7 +542,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
         Log.lifecycle.info("Stopped visible start prompt modal after non-modal resolution (id=\(entry.identifier, privacy: .public))")
     }
 
-    private func resolveEndPromptNotification(
+    func resolveEndPromptNotification(
         promptID: String,
         generation: Int?,
         actionID: String
@@ -637,6 +667,7 @@ final class StartPromptCoordinator: NSObject, UNUserNotificationCenterDelegate {
                 )
                 return
             }
+            guard self.pending[identifier]?.notificationIdentifiers.contains(notificationIdentifier) == true else { return }
             switch actionID {
             case Action.start:
                 self.resolve(identifier: identifier, with: .start, removeNotifications: true)

@@ -26,7 +26,8 @@ extension AppDelegate {
       )
       return
     }
-    if status == .recording || status == .starting {
+    guard !termination.hasStarted else { return }
+    if !canStartRecording {
       queueDetectionCandidate(candidate, event: event)
       return
     }
@@ -54,7 +55,6 @@ extension AppDelegate {
     )
     applyTrustIcon()
     let choice = await startPromptCoordinator.prompt(for: candidate, event: event)
-    // Source-guard marker: let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention
     let shouldClearPendingPrompt = choice != .start || !setupNeedsAttention
     if shouldClearPendingPrompt {
       detectionPromptActive = false
@@ -65,30 +65,10 @@ extension AppDelegate {
     applyTrustIcon()
     switch choice {
     case .start:
-      pendingPromptCalendarEventForStart = event
-      pendingPromptCandidateForStart = candidate
+      retainPromptForSetup(candidate: candidate, event: event)
       await startRecording()
-      if setupNeedsAttention {
-        // Source-guard marker: if setupNeedsAttention {
-        //                 pendingPromptCalendarEventForStart = event
-        pendingPromptCalendarEventForStart = event
-        detectionPromptActive = true
-        pendingPromptAppBundleID = app.bundleID
-        pendingPromptTriggerIdentity = candidate.triggerIdentity
-        menu?.pendingPrompt = PendingPromptRecovery(
-          title: Self.promptRecoveryTitle(for: app, event: event),
-          subtitle: event == nil
-            ? "Detected in \(app.displayName). Fix setup, then start recording."
-            : "From Apple Calendar · \(app.displayName). Fix setup, then start recording.",
-          appDisplayName: app.displayName
-        )
-      } else {
-        pendingPromptCalendarEventForStart = nil
-        pendingPromptCandidateForStart = nil
-        detectionPromptActive = false
-        pendingPromptAppBundleID = nil
-        pendingPromptTriggerIdentity = nil
-        menu?.pendingPrompt = nil
+      if !setupNeedsAttention {
+        clearPendingRecordingPrompt()
       }
       applyTrustIcon()
     case .notAMeeting:
@@ -107,6 +87,27 @@ extension AppDelegate {
         "User skipped \(app.bundleID, privacy: .public) for now (trigger=\(candidate.triggerIdentity, privacy: .public))"
       )
     }
+  }
+
+  func retainPromptForSetup(candidate: DetectionCandidate, event: CalendarEvent?) {
+    pendingPromptCalendarEventForStart = event
+    pendingPromptCandidateForStart = candidate
+    detectionPromptActive = true
+    pendingPromptAppBundleID = candidate.app.bundleID
+    pendingPromptTriggerIdentity = candidate.triggerIdentity
+    menu?.pendingPrompt = PendingPromptRecovery(
+      title: Self.promptRecoveryTitle(for: candidate.app, event: event),
+      subtitle: "Detected in \(candidate.app.displayName). Fix setup, then start recording.",
+      appDisplayName: candidate.app.displayName)
+  }
+
+  func clearPendingRecordingPrompt() {
+    pendingPromptCalendarEventForStart = nil
+    pendingPromptCandidateForStart = nil
+    detectionPromptActive = false
+    pendingPromptAppBundleID = nil
+    pendingPromptTriggerIdentity = nil
+    menu?.pendingPrompt = nil
   }
 
   @MainActor
@@ -148,6 +149,7 @@ extension AppDelegate {
 
   @MainActor
   private func scheduleRearm(for app: MeetingApp, after seconds: TimeInterval) {
+    guard !termination.hasStarted else { return }
     let id = UUID()
     let task = Task { [weak self] in
       do {
